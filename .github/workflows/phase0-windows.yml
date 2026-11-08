@@ -80,6 +80,14 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File C:\ShinzxTest\finish.ps1 -Ci
           if %ERRORLEVEL%==1 (exit /b 0) else (exit /b 1)
 
+      - name: On failure, show the kit folder's permissions
+        if: failure()
+        shell: cmd
+        run: |
+          icacls C:\ShinzxTest
+          icacls C:\ShinzxTest\ShinzxTimerTest.exe
+          icacls C:\ShinzxTest\start.ps1
+
       - name: Keep the reports
         if: always()
         uses: actions/upload-artifact@v4

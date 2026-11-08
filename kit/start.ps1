@@ -16,7 +16,7 @@ $logs = Join-Path $root "logs"
 Get-ChildItem $root -File | Unblock-File   # kit files only, before the transcript file is open
 # Folders made in C:\ let every user change their files. Lock the kit: measure.ps1 runs as SYSTEM and
 # START/FINISH as admin, so a customer who could edit them would get full control of the PC.
-icacls $root /inheritance:r /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX" /T /Q | Out-Null
+icacls $root /inheritance:r /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX" /Q | Out-Null # files inside inherit these
 if ($LASTEXITCODE) { throw "Could not lock the test folder (icacls exit $LASTEXITCODE)" }
 $userLogs = Join-Path $logs "users"   # the only place normal users may write: the timer's own logs
 New-Item -ItemType Directory $userLogs -Force | Out-Null
