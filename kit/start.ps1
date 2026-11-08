@@ -104,10 +104,11 @@ function Remove-TestUser { # user and its profile; also clears one left by an ea
 }
 Remove-TestUser
 $rnd = New-Object byte[] 24; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($rnd)
-$pw = [Convert]::ToBase64String($rnd) + "Aa9!"   # crypto-random; suffix meets Windows complexity rules
-New-LocalUser $user -Password (ConvertTo-SecureString $pw -AsPlainText -Force) -PasswordNeverExpires -AccountNeverExpires | Out-Null
+$pw = New-Object Security.SecureString   # crypto-random; suffix meets Windows complexity rules
+foreach ($c in ([Convert]::ToBase64String($rnd) + "Aa9!").ToCharArray()) { $pw.AppendChar($c) }
+New-LocalUser $user -Password $pw -PasswordNeverExpires -AccountNeverExpires | Out-Null
 Add-LocalGroupMember -Group $usersGroup -Member $user
-$cred = [pscredential]::new($user, (ConvertTo-SecureString $pw -AsPlainText -Force))
+$cred = [pscredential]::new($user, $pw)
 $sid = (Get-LocalUser $user).SID.Value
 $sys32 = "$env:WINDIR\System32"
 try {
