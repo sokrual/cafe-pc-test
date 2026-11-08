@@ -1,0 +1,91 @@
+# Runs the owner's kit end to end on GitHub's Windows machines before it goes to the cafe.
+# windows-latest = Windows Server 2025. windows-11-arm = real Windows 11 (our x64 exe runs under emulation).
+name: phase0-windows
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  kit:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Code checks (PowerShell 5.1 lint, known-vulnerable packages)
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $bad = Invoke-ScriptAnalyzer -Path kit, ci -Severity Error -Settings @{ Rules = @{ PSUseCompatibleSyntax = @{ Enable = $true; TargetVersions = @("5.1") } } }
+          $bad | Format-Table -AutoSize
+          if ($bad) { exit 1 }
+          dotnet restore timer
+          dotnet list timer package --vulnerable --include-transitive 2>&1 | Tee-Object -Variable v
+          if ($v -match "has the following vulnerable packages") { exit 1 }
+
+      - name: Build the timer exactly as shipped
+        shell: pwsh
+        run: dotnet publish timer -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -o out
+
+      - name: Put the kit where the owner puts it
+        shell: powershell
+        run: |
+          New-Item C:\ShinzxTest -ItemType Directory -Force | Out-Null
+          Copy-Item kit\* C:\ShinzxTest -Force
+          Copy-Item out\ShinzxTimerTest.exe C:\ShinzxTest -Force
+          "OS: " + (Get-CimInstance Win32_OperatingSystem).Caption
+          "Is admin: " + ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole("Administrators")
+
+      # Round 1: first run on a clean PC
+      - name: Round 1 START-TEST
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File C:\ShinzxTest\start.ps1 -Ci
+      - name: Round 1 short day
+        shell: powershell
+        run: .\ci\simulate-day.ps1
+      - name: Round 1 FINISH-TEST
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File C:\ShinzxTest\finish.ps1 -Ci -VoiceHeard No
+      - name: Round 1 check
+        shell: powershell
+        run: .\ci\check.ps1 -Round 1
+
+      # Round 2: the owner runs it again on the same PC (must start clean and restore again)
+      - name: Round 2 START-TEST
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File C:\ShinzxTest\start.ps1 -Ci
+      - name: Round 2 short day
+        shell: powershell
+        run: .\ci\simulate-day.ps1
+      - name: Round 2 FINISH-TEST
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File C:\ShinzxTest\finish.ps1 -Ci -VoiceHeard No
+      - name: Round 2 check
+        shell: powershell
+        run: .\ci\check.ps1 -Round 2
+
+      # Round 3: FINISH-TEST clicked twice must not break anything
+      - name: FINISH-TEST with no test running says so and exits 1
+        shell: cmd
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File C:\ShinzxTest\finish.ps1 -Ci
+          if %ERRORLEVEL%==1 (exit /b 0) else (exit /b 1)
+
+      - name: Keep the reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-${{ matrix.os }}
+          path: |
+            C:\ShinzxTest\*.zip
+            C:\ShinzxTest\logs*\**
+          if-no-files-found: warn

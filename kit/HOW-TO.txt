@@ -1,0 +1,21 @@
+SHINZX TEST v3 - 3 STEPS
+
+1. Copy this folder to  C:\ShinzxTest
+   On a PC that is free for 5 minutes, double-click START-TEST.
+   - Click "Yes" when Windows asks for admin permission.
+   - If a blue "Windows protected your PC" box appears: click "More info", then "Run anyway".
+   - It takes about 5 minutes, then asks to restart the PC. Click "Yes".
+
+2. Use the PC normally for one full day. Customers can play as usual.
+   A small timer will show at the bottom-right. It hides by itself during games.
+   Once in a while a short voice says "Shinzx Gaming Hub test message" in the headset. Nothing to do.
+
+3. Next day, double-click FINISH-TEST and answer the one question it asks.
+   It puts the PC back exactly as before and makes a file "Shinzx-Test-Report-....zip"
+   in the C:\ShinzxTest folder. That folder opens by itself with the file selected.
+   Send that file to Kushagra on WhatsApp.
+
+(If FINISH-TEST is forgotten, the timer and voice switch off by themselves after 3 days.
+ Running FINISH-TEST later still restores everything.)
+
+After Kushagra confirms he got the file, you can delete the C:\ShinzxTest folder.
