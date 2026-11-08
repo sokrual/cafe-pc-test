@@ -25,7 +25,7 @@ jobs:
         shell: pwsh
         run: |
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
-          $bad = Invoke-ScriptAnalyzer -Path kit, ci -Severity Error -Settings @{ Rules = @{ PSUseCompatibleSyntax = @{ Enable = $true; TargetVersions = @("5.1") } } }
+          $bad = "kit", "ci" | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Severity Error -Settings @{ Rules = @{ PSUseCompatibleSyntax = @{ Enable = $true; TargetVersions = @("5.1") } } } }
           $bad | Format-Table -AutoSize
           if ($bad) { exit 1 }
           dotnet restore timer
