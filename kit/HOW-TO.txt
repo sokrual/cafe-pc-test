@@ -13,7 +13,7 @@ SHINZX TEST v3 - 3 STEPS
 3. Next day, double-click FINISH-TEST and answer the one question it asks.
    It puts the PC back exactly as before and makes a file "Shinzx-Test-Report-....zip"
    in the C:\ShinzxTest folder. That folder opens by itself with the file selected.
-   Send that file on WhatsApp to the person who gave you this test.
+   Send that file on Discord to the person who gave you this test.
 
 (If FINISH-TEST is forgotten, the timer and voice switch off by themselves after 3 days.
  Running FINISH-TEST later still restores everything.)

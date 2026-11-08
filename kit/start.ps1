@@ -8,7 +8,7 @@ function Say($text, $buttons = "OK") {
     if ($Ci) { Write-Host $text; return "No" }
     [System.Windows.Forms.MessageBox]::Show($text, "Shinzx test", $buttons)
 }
-trap { Say "Something went wrong:`n$_`n`nCustomers can keep using this PC - nothing is blocked for them.`n`nPlease take a photo of this window and send it on WhatsApp to the person who gave you this test. Then double-click FINISH-TEST to undo any changes." | Out-Null; break }
+trap { Say "Something went wrong:`n$_`n`nCustomers can keep using this PC - nothing is blocked for them.`n`nPlease take a photo of this window and send it on Discord to the person who gave you this test. Then double-click FINISH-TEST to undo any changes." | Out-Null; break }
 
 $root = $PSScriptRoot
 if ($root -match '\\(Downloads|Desktop|Documents|OneDrive)(\\|$)') { Say "Please move this folder to C:\ShinzxTest and run START-TEST again."; exit 1 }

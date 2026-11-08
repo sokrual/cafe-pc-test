@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 trap {
     if (-not $ReportOnly -and -not $Ci) {
         Add-Type -AssemblyName System.Windows.Forms
-        [System.Windows.Forms.MessageBox]::Show("Something went wrong:`n$_`n`nPlease take a photo of this window and send it on WhatsApp to the person who gave you this test. Then double-click FINISH-TEST once more.", "Shinzx test") | Out-Null
+        [System.Windows.Forms.MessageBox]::Show("Something went wrong:`n$_`n`nPlease take a photo of this window and send it on Discord to the person who gave you this test. Then double-click FINISH-TEST once more.", "Shinzx test") | Out-Null
     }
     break
 }
@@ -176,7 +176,7 @@ if (-not $ReportOnly) {
     Rename-Item $logs ("logs-done-{0:yyyyMMdd-HHmm}" -f (Get-Date))
     Write-Host "ZIP=$zip"
     if (-not $Ci) {
-        [System.Windows.Forms.MessageBox]::Show("Done. The PC is back to normal.`n`nSend this file on WhatsApp to the person who gave you this test:`n$zip`n`n($pass passed, $fail failed, $nt not tested)", "Shinzx test") | Out-Null
+        [System.Windows.Forms.MessageBox]::Show("Done. The PC is back to normal.`n`nSend this file on Discord to the person who gave you this test:`n$zip`n`n($pass passed, $fail failed, $nt not tested)", "Shinzx test") | Out-Null
         Start-Process explorer.exe "/select,`"$zip`""
     }
 }
