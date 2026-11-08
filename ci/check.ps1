@@ -26,6 +26,11 @@ $blocks = @($res | Where-Object { $_.id -eq "T0.2b" -and $_.text -notmatch "USB"
 if ($blocks.Count -lt 6) { $hard.Add("only $($blocks.Count) folder block checks ran, expected 6") }
 foreach ($b in $blocks) { if ($b.r -ne "PASS") { $hard.Add("T0.2b $($b.r): $($b.text)") } }
 
+# no customer account may change the kit (measure.ps1 runs as SYSTEM, start/finish as admin)
+foreach ($f in "$root\measure.ps1", "$root\start.ps1", "$root\finish.ps1", "$root\ShinzxTimerTest.exe") {
+    if ((Get-Acl $f).Access | Where-Object { $_.IdentityReference -match "Authenticated Users|Everyone|\\Users$" -and $_.FileSystemRights -match "Write|Modify|FullControl" }) { $hard.Add("customers can change $f") }
+}
+
 # the PC must really be back to normal
 if (Get-LocalUser "ShinzxTest" -ErrorAction SilentlyContinue) { $hard.Add("temporary user ShinzxTest still exists") }
 if (Get-CimInstance Win32_UserProfile | Where-Object LocalPath -like "*\ShinzxTest*") { $hard.Add("ShinzxTest profile still exists") }

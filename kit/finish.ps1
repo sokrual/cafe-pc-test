@@ -89,8 +89,9 @@ if (-not $ReportOnly) {
 $rows = @()
 if (Test-Path (Join-Path $logs "measure.csv")) {
     $rows = @(Import-Csv (Join-Path $logs "measure.csv") | ForEach-Object {
-        [pscustomobject]@{ t = [datetime]::ParseExact($_.time, "yyyy-MM-dd HH:mm:ss", $inv); pid = $_.pid
-            cpu = [double]::Parse($_.cpu_percent, $inv); priv = [double]::Parse($_.private_mb, $inv); gpu = [double]::Parse($_.gpu_percent, $inv) } })
+        try { [pscustomobject]@{ t = [datetime]::ParseExact($_.time, "yyyy-MM-dd HH:mm:ss", $inv); pid = $_.pid
+            cpu = [double]::Parse($_.cpu_percent, $inv); priv = [double]::Parse($_.private_mb, $inv); gpu = [double]::Parse("0$($_.gpu_percent)", $inv) } }
+        catch { } }) # a damaged row must not stop the report (blank GPU = 0)
 }
 # timer logs: when was the timer hidden (= a game was in front)?
 $events = [System.Collections.Generic.List[object]]::new()

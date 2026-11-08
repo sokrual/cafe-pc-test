@@ -16,11 +16,8 @@ while ((Get-Date) -lt $until -and -not (Test-Path $stopFlag)) {
         $last[$p.Id] = @($p.TotalProcessorTime, $now)
         if (-not $prev) { continue } # first sight of this process: need two readings for CPU %
         $cpu = ($p.TotalProcessorTime - $prev[0]).TotalMilliseconds / ($now - $prev[1]).TotalMilliseconds / $cores * 100
-        $gpu = 0
-        try {
-            $gpu = ((Get-Counter "\GPU Engine(pid_$($p.Id)_*)\Utilization Percentage" -ErrorAction Stop).CounterSamples |
-                    Measure-Object CookedValue -Sum).Sum
-        } catch { $gpu = 0 } # no GPU engine instances = the timer used no GPU
+        # [double] turns "no samples" into 0; no GPU counter at all also means the timer used no GPU
+        $gpu = try { [double](@((Get-Counter "\GPU Engine(pid_$($p.Id)_*)\Utilization Percentage" -ErrorAction Stop).CounterSamples) | Measure-Object CookedValue -Sum).Sum } catch { 0 }
         # invariant culture + F formats: no thousands commas or comma decimals that would break the CSV
         [string]::Format([Globalization.CultureInfo]::InvariantCulture, "{0:yyyy-MM-dd HH:mm:ss},{1},{2:F3},{3:F1},{4:F1},{5:F3}",
             $now, $p.Id, $cpu, ($p.PrivateMemorySize64 / 1MB), ($p.WorkingSet64 / 1MB), $gpu) |

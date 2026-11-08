@@ -16,8 +16,13 @@ $logs = Join-Path $root "logs"
 Get-ChildItem $root -File | Unblock-File   # kit files only, before the transcript file is open
 # Folders made in C:\ let every user change their files. Lock the kit: measure.ps1 runs as SYSTEM and
 # START/FINISH as admin, so a customer who could edit them would get full control of the PC.
-icacls $root /inheritance:r /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX" /Q | Out-Null # files inside inherit these
-if ($LASTEXITCODE) { throw "Could not lock the test folder (icacls exit $LASTEXITCODE)" }
+# Replace the whole permission list (a folder can carry its own "Authenticated Users: Modify"); files inside inherit it.
+$acl = New-Object Security.AccessControl.DirectorySecurity
+$acl.SetAccessRuleProtection($true, $false)
+foreach ($r in ("S-1-5-32-544", "FullControl"), ("S-1-5-18", "FullControl"), ("S-1-5-32-545", "ReadAndExecute")) {
+    $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]$r[0], $r[1], "ContainerInherit, ObjectInherit", "None", "Allow"))
+}
+Set-Acl $root $acl
 $userLogs = Join-Path $logs "users"   # the only place normal users may write: the timer's own logs
 New-Item -ItemType Directory $userLogs -Force | Out-Null
 icacls $userLogs /grant "*S-1-5-32-545:(OI)(CI)M" | Out-Null
