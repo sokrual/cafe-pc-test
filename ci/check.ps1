@@ -15,7 +15,8 @@ $lines = Get-Content (Join-Path $done.FullName "REPORT.txt")
 $res = foreach ($l in $lines) { if ($l -match '^\[(PASS|FAIL|NOT TESTED)\] (\S+) (.*)$') { [pscustomobject]@{ r = $Matches[1]; id = $Matches[2]; text = $Matches[3] } } }
 
 # must PASS on every Windows machine
-$mustPass = "T0.1a", "T0.2g", "T0.2c", "T0.2h", "T0.2e", "T0.1b", "T0.1f", "T0.1g", "T0.1h", "T0.9a", "T0.9b"
+$mustPass = "T0.1a", "T0.2g", "T0.2c", "T0.2h", "T0.2e", "T0.1b", "T0.1f", "T0.1h", "T0.9a", "T0.9b"
+if ($env:PROCESSOR_ARCHITECTURE -ne "ARM64") { $mustPass += "T0.1g" } # on Arm our x64 timer runs emulated and uses more memory
 foreach ($id in $mustPass) {
     $hit = @($res | Where-Object id -eq $id)
     if (-not $hit) { $hard.Add("$id missing from report") }
@@ -28,7 +29,9 @@ foreach ($b in $blocks) { if ($b.r -ne "PASS") { $hard.Add("T0.2b $($b.r): $($b.
 
 # no customer account may change the kit (measure.ps1 runs as SYSTEM, start/finish as admin)
 foreach ($f in "$root\measure.ps1", "$root\start.ps1", "$root\finish.ps1", "$root\ShinzxTimerTest.exe") {
-    if ((Get-Acl $f).Access | Where-Object { $_.IdentityReference -match "Authenticated Users|Everyone|\\Users$" -and $_.FileSystemRights -match "Write|Modify|FullControl" }) { $hard.Add("customers can change $f") }
+    if ((Get-Acl $f).Access | Where-Object { $_.IdentityReference -match "Authenticated Users|Everyone|\\Users$" -and $_.FileSystemRights -match "Write|Modify|FullControl" }) {
+        $hard.Add("customers can change $f"); icacls $f | Write-Host
+    }
 }
 
 # the PC must really be back to normal
@@ -42,6 +45,7 @@ Start-Sleep -Seconds 12
 if (Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match "measure\.ps1" }) { $hard.Add("measurer still running") }
 
 # soft: expected to differ on a cloud machine, shown so a real problem is not missed
+# the audit log must have caught the program run from Downloads (proves the day-long check works without a restart)
 $wb = Import-Csv (Join-Path $done.FullName "would-be-blocked.csv")
 $sawDownload = [bool]($wb | Where-Object path -match "shinzx-ci-download")
 foreach ($r in $res) { $summary.Add("| $($r.r) | $($r.id) | $($r.text -replace '\|', '/') |") }
@@ -51,5 +55,5 @@ $out = @("## Round $Round on $((Get-CimInstance Win32_OperatingSystem).Caption)"
     "| Result | ID | Check |", "|---|---|---|") + $summary + @("", "**Must-pass problems: $($hard.Count)**") + ($hard | ForEach-Object { "- $_" })
 $out | Write-Host
 if ($env:GITHUB_STEP_SUMMARY) { $out | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
-if (-not $sawDownload) { Write-Host "::warning::Round ${Round}: audit log did not record the program run from Downloads" }
+if (-not $sawDownload) { $hard.Add("audit log did not record the program run from Downloads") }
 if ($hard.Count) { exit 1 }

@@ -69,6 +69,12 @@ if (-not $ReportOnly) {
             if (([xml](Get-Content $bk -Raw)).SelectNodes("//RuleCollection").Count) { Set-AppLockerPolicy -XmlPolicy $bk }
         } catch { Write-Host "Restoring old rules failed: $_" -ForegroundColor Red }
         gpupdate /target:computer /force | Out-Null
+        try { # push the restored rules to the blocking driver now, not at the next restart (same task START uses)
+            $t = Get-ScheduledTask -TaskPath "\Microsoft\Windows\AppID\" -TaskName "PolicyConverter"
+            $off = $t.State -eq "Disabled"; if ($off) { $t | Enable-ScheduledTask | Out-Null }
+            $t | Start-ScheduledTask; Start-Sleep -Seconds 15
+            if ($off) { $t | Disable-ScheduledTask | Out-Null }
+        } catch { Write-Host "Applying the restored rules failed (they apply at the next restart): $_" -ForegroundColor Red }
         try {
             $map = @{ Automatic = "auto"; Manual = "demand"; Disabled = "disabled" }
             $old = (Get-Content (Join-Path $logs "appidsvc-starttype.txt") -Raw).Trim()
@@ -130,11 +136,14 @@ if ($use.Count) {
     $maxPriv = ($use | Measure-Object priv -Maximum).Maximum
     $avgGpu = ($use | Measure-Object gpu -Average).Average
     $longest = @($rows | Group-Object pid | Sort-Object Count -Descending | Select-Object -First 1)[0].Group
-    $growth = if ($longest[0].priv -gt 0) { ($longest[-1].priv / $longest[0].priv - 1) * 100 } else { 0 }
+    $warm = @($longest | Where-Object { $_.t -ge $longest[0].t.AddHours(1) }) # memory always rises at start-up; judge after 1 h
     Add-Result "T0.1f" "Timer CPU under 1%" ($avgCpu -lt 1) ("average {0:N2}% ({1})" -f $avgCpu, $scope)
     Add-Result "T0.1g" "Timer memory under 50 MB" ($maxPriv -lt 50) ("peak {0:N1} MB" -f $maxPriv)
     Add-Result "T0.1h" "Timer uses no GPU" ($avgGpu -lt 0.5) ("average {0:N2}%" -f $avgGpu)
-    Add-Result "T0.1i" "Timer memory does not keep growing" ($growth -lt 10) ("{0:N1} -> {1:N1} MB over {2:N1} hours" -f $longest[0].priv, $longest[-1].priv, ($longest[-1].t - $longest[0].t).TotalHours)
+    if ($warm.Count -ge 2 -and ($warm[-1].t - $warm[0].t).TotalHours -ge 1) {
+        $growth = ($warm[-1].priv / $warm[0].priv - 1) * 100
+        Add-Result "T0.1i" "Timer memory does not keep growing" ($growth -lt 10) ("{0:N1} -> {1:N1} MB over {2:N1} hours (after the first hour)" -f $warm[0].priv, $warm[-1].priv, ($warm[-1].t - $warm[0].t).TotalHours)
+    } else { Add-Result "T0.1i" "Timer memory does not keep growing" $null "timer ran under 2 hours in one go" }
 } else { Add-Result "T0.1f" "Timer measurements" $null "no measurements found - was the PC restarted after START-TEST?" }
 
 # voice
@@ -149,7 +158,8 @@ if ($vDone.Count) {
 } else { Add-Result "T0.3a" "Voice message played during games" $null "no game was played for 2+ minutes in a row" }
 
 # Level B audit: did anything game-related try to run from a blocked folder?
-$wb = @(Import-Csv (Join-Path $logs "would-be-blocked.csv") -ErrorAction SilentlyContinue)
+$wb = @(); $wbFile = Join-Path $logs "would-be-blocked.csv"
+if (Test-Path $wbFile) { $wb = @(Import-Csv $wbFile) } # Import-Csv stops on a missing file even with -ErrorAction
 $gameWords = "steam|epic|riot|vanguard|valorant|battle\.net|blizzard|ubisoft|uplay|\bea\b|\borigin\b|rockstar|garena|faceit|easyanticheat|battleye|discord|nvidia|amd"
 $gameHits = @($wb | Where-Object { $_.path -match $gameWords } | Select-Object -ExpandProperty path -Unique)
 $otherHits = @($wb | Where-Object { $_.path -notmatch $gameWords } | Select-Object -ExpandProperty path -Unique)

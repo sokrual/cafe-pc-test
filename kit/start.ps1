@@ -23,6 +23,8 @@ foreach ($r in ("S-1-5-32-544", "FullControl"), ("S-1-5-18", "FullControl"), ("S
     $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]$r[0], $r[1], "ContainerInherit, ObjectInherit", "None", "Allow"))
 }
 Set-Acl $root $acl
+icacls "$root\*" /reset /T /Q | Out-Null   # make every file inside take exactly these permissions
+if ($LASTEXITCODE) { throw "Could not lock the test files (icacls exit $LASTEXITCODE)" }
 $userLogs = Join-Path $logs "users"   # the only place normal users may write: the timer's own logs
 New-Item -ItemType Directory $userLogs -Force | Out-Null
 icacls $userLogs /grant "*S-1-5-32-545:(OI)(CI)M" | Out-Null
@@ -97,8 +99,15 @@ $shared = "$env:SystemDrive\Users\Public\*", "$env:WINDIR\Temp\*", "%REMOVABLE%\
 sc.exe config AppIDSvc start= auto | Out-Null
 Start-Service AppIDSvc
 Add-Result "T0.2g" "Windows app-control service running" ((Get-Service AppIDSvc).Status -eq "Running") "sc.exe exit $LASTEXITCODE"
-# AppLocker reads local policy at a policy refresh; force one so new rules apply straight away
-function Apply-Policy($file) { Set-AppLockerPolicy -XmlPolicy $file; gpupdate /target:computer /force | Out-Null; Start-Sleep -Seconds 10 }
+# Program (exe) rules only reach Windows' blocking driver when the built-in PolicyConverter task runs, normally at
+# restart. Run it now so rules apply straight away (measured on Windows 11: without it nothing is blocked or audited).
+function Apply-Policy($file) {
+    Set-AppLockerPolicy -XmlPolicy $file; gpupdate /target:computer /force | Out-Null
+    $t = Get-ScheduledTask -TaskPath "\Microsoft\Windows\AppID\" -TaskName "PolicyConverter"
+    $off = $t.State -eq "Disabled"; if ($off) { $t | Enable-ScheduledTask | Out-Null } # disabled on Windows Server only
+    $t | Start-ScheduledTask; Start-Sleep -Seconds 15
+    if ($off) { $t | Disable-ScheduledTask | Out-Null }
+}
 
 # --- T0.2 enforced check with a temporary standard user (removed again a minute later) ---
 $user = "ShinzxTest"
