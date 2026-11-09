@@ -36,14 +36,11 @@ try {
     Check "B3.A1" "Cafe server runs as a Windows service" ((Get-Service CafeServer).Status -eq "Running") (Get-Service CafeServer).StartType
     [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }   # the test only; PCs pin the certificate
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $code = 0; $why = ""
-    WaitFor 30 { $script:code = try { Invoke-WebRequest https://127.0.0.1:5443/pc/state -UseBasicParsing | Out-Null; 200 } catch { $script:why = $_.Exception.Message; [int]$_.Exception.Response.StatusCode }; $script:code -ne 0 } | Out-Null
-    Check "B3.A2" "Server answers HTTPS and refuses a PC without its key" ($code -eq 401) "HTTP $code $why"
-    # second opinion from a different client: curl.exe uses Windows' TLS directly, no PowerShell callback involved
+    # curl.exe uses Windows' TLS directly. Windows PowerShell 5.1 with a script-block certificate callback failed its
+    # first HTTPS call here ("unexpected error on a send") while curl.exe got the right answer (runs 42633874084)
     $curl = (curl.exe -sk -o NUL -w "%{http_code}" https://127.0.0.1:5443/pc/state) -join ""
-    Check "B3.A2b" "Server answers HTTPS (checked with curl.exe)" ($curl -eq "401") "HTTP $curl"
+    Check "B3.A2" "Server answers HTTPS and refuses a PC without its key" ($curl -eq "401") "HTTP $curl"
     if ($curl -ne "401") { cmd.exe /c "curl.exe -vk https://127.0.0.1:5443/pc/state 2>&1" | Write-Host }
-    if ($code -ne 401) { Get-WinEvent -FilterHashtable @{ LogName = "System"; ProviderName = "Schannel" } -MaxEvents 5 -ErrorAction SilentlyContinue | Format-List TimeCreated, Id, Message | Out-String | Write-Host }
     $rule = Get-NetFirewallRule -Group "Shinzx counter" | Where-Object DisplayName -like "*cafe server*" | Get-NetFirewallAddressFilter
     Check "B3.A3" "Firewall lets only the shop network reach the server" ("$($rule.RemoteAddress)" -eq "LocalSubnet") "remote: $($rule.RemoteAddress)"
     Check "B3.A4" "Internet filter (AdGuard Home) installed, checked and running" ((Get-Service AdGuardHome -ErrorAction SilentlyContinue).Status -eq "Running") "version pinned, SHA-256 checked"
