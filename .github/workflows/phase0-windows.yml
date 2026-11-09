@@ -1,12 +1,35 @@
 # Runs the owner's kit end to end on GitHub's Windows machines before it goes to the cafe.
 # windows-latest = Windows Server 2025. windows-11-arm = real Windows 11 (our x64 exe runs under emulation).
-name: phase0-windows
+name: windows-tests
 on:
   workflow_dispatch:
   push:
     branches: [main]
 
 jobs:
+  server-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Billing, money and security tests (Phase 2)
+        run: dotnet test --project Cafe.Tests
+      - name: Known-vulnerable packages
+        shell: pwsh
+        run: |
+          dotnet list Cafe.Tests package --vulnerable --include-transitive 2>&1 | Tee-Object -Variable v
+          if ($v -match "has the following vulnerable packages") { exit 1 }
+
   kit:
     strategy:
       fail-fast: false

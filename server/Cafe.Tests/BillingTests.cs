@@ -1,0 +1,213 @@
+using Cafe;
+using Microsoft.Data.Sqlite;
+using Xunit;
+
+// One test per check in the Phase 2 test plan (T2.x), plus the security rules the money depends on.
+// Placeholder rate card: ₹60/hour, 2 min grace, 30 min minimum, 30 min blocks. All amounts in paise.
+public sealed class BillingTests : IDisposable
+{
+    DateTime _clock = new(2026, 11, 9, 10, 0, 0, DateTimeKind.Utc);
+    readonly string _file = Path.Combine(Path.GetTempPath(), $"cafe-test-{Guid.NewGuid():N}.db");
+    readonly CafeCore _cafe;
+    readonly long _owner, _staff, _cust;
+
+    public BillingTests()
+    {
+        _cafe = new CafeCore(_file, "test-key-123", () => _clock);
+        _owner = _cafe.AddUser(null, Role.Owner, "Owner", "9000000001", "4321");
+        _staff = _cafe.AddUser(_owner, Role.Staff, "Staff", "9000000002", "1111");
+        _cust = _cafe.AddUser(_staff, Role.Customer, "Ravi", "9000000003", "2222");
+    }
+    public void Dispose() { _cafe.Dispose(); SqliteConnection.ClearAllPools(); File.Delete(_file); }
+
+    void Wait(double minutes) => _clock = _clock.AddMinutes(minutes);
+    long PlayFor(double minutes, string pc = "PC1")
+    {
+        var s = _cafe.StartPostpaid(_staff, pc, _cust);
+        Wait(minutes);
+        return _cafe.Stop(_staff, s).Charged;
+    }
+
+    [Fact] public void T2_1_inside_grace_is_free() => Assert.Equal(0, PlayFor(1));
+
+    [Theory]
+    [InlineData(2, 0)]       // exactly at the grace limit: still free
+    [InlineData(3, 3000)]    // just past grace: the 30 min minimum, ₹30
+    [InlineData(29, 3000)]
+    [InlineData(30, 3000)]
+    [InlineData(31, 6000)]   // grace is only at the start (as stated), so 31 min is two blocks: owner to confirm
+    [InlineData(61, 9000)]
+    public void T2_2_pay_at_end_follows_minimum_and_blocks(double minutes, long paise) => Assert.Equal(paise, PlayFor(minutes));
+
+    [Fact]
+    public void T2_3_prepaid_charges_up_front_and_never_beyond_bought_time()
+    {
+        var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 60);
+        Assert.Equal(6000, _cafe.BillFor(s).Due);
+        Wait(75); // PC was offline and did not lock: still only the hour bought
+        var bill = _cafe.Stop(_staff, s);
+        Assert.Equal(TimeSpan.FromMinutes(60), bill.Used);
+        Assert.Equal(6000, bill.Charged);
+    }
+
+    [Fact]
+    public void T2_4_pause_is_free_add_time_charges_move_keeps_time()
+    {
+        var s = _cafe.StartPostpaid(_staff, "PC1", _cust);
+        Wait(20); _cafe.Pause(_staff, s);
+        Wait(30); _cafe.Resume(_staff, s);
+        _cafe.MoveSeat(_staff, s, "PC2");
+        Assert.Throws<CafeException>(() => _cafe.StartPostpaid(_staff, "PC2", _cust)); // PC2 is now taken
+        _cafe.StartPostpaid(_staff, "PC1", _staff); // PC1 is free again
+        Wait(5);
+        var bill = _cafe.Stop(_staff, s);
+        Assert.Equal(TimeSpan.FromMinutes(25), bill.Used); // 20 + 5, the 30 paused minutes not counted
+        Assert.Equal(3000, bill.Charged);
+
+        var p = _cafe.StartPrepaid(_staff, "PC3", _cust, 30);
+        _cafe.AddTime(_staff, p, 30);
+        Assert.Equal(6000, _cafe.BillFor(p).Due);
+    }
+
+    [Fact]
+    public void T2_4b_owner_can_charge_paused_time_staff_cannot()
+    {
+        var s = _cafe.StartPostpaid(_staff, "PC1", _cust);
+        Wait(20); _cafe.Pause(_staff, s); Wait(30);
+        Assert.Throws<CafeException>(() => _cafe.Resume(_staff, s, chargePausedTime: true));
+        _cafe.Resume(_owner, s, chargePausedTime: true);
+        Assert.Equal(TimeSpan.FromMinutes(50), _cafe.Stop(_staff, s).Used);
+    }
+
+    [Fact]
+    public void T2_5_group_bill_across_four_pcs_is_one_total()
+    {
+        var lead = _cafe.StartPostpaid(_staff, "PC1", _cust);
+        var others = new[] { "PC2", "PC3", "PC4" }.Select(pc => _cafe.StartPostpaid(_staff, pc, _cust)).ToList();
+        foreach (var o in others) _cafe.JoinGroup(_staff, o, lead);
+        Wait(45);
+        foreach (var s in others.Prepend(lead)) _cafe.Stop(_staff, s);
+        var bill = _cafe.BillFor(others[2]);
+        Assert.Equal(lead, bill.SessionId);
+        Assert.Equal(4 * 6000, bill.Due); // 45 min = 2 blocks = ₹60 each
+        _cafe.Pay(_staff, lead, "cash", 24000);
+        Assert.Equal(0, _cafe.BillFor(others[0]).Due);
+    }
+
+    [Fact]
+    public void T2_6_plan_balance_expiry_and_owner_extension()
+    {
+        var plan = _cafe.BuyPlan(_staff, _cust, 600, 7, 50000, "cash");
+        var s = _cafe.StartOnPlan(_cust, "PC1", _cust);
+        Wait(180);
+        Assert.Equal(0, _cafe.Stop(_cust, s).Charged); // 3 h off the plan, nothing to pay
+        _clock = _clock.AddDays(8);
+        Assert.Throws<CafeException>(() => _cafe.StartOnPlan(_cust, "PC1", _cust)); // day 8: expired
+        Assert.Throws<CafeException>(() => _cafe.ExtendPlan(_staff, plan, 7, "goodwill"));
+        Assert.Throws<CafeException>(() => _cafe.ExtendPlan(_owner, plan, 7, " "));
+        _cafe.ExtendPlan(_owner, plan, 7, "customer was travelling");
+        var s2 = _cafe.StartOnPlan(_cust, "PC1", _cust);
+        Wait(450); // 420 min left, uses 450: 30 min beyond the plan is billed
+        Assert.Equal(3000, _cafe.Stop(_cust, s2).Charged);
+    }
+
+    [Fact]
+    public void T2_7_wallet_top_up_spend_no_overdraw_no_cash_out()
+    {
+        _cafe.TopUp(_staff, _cust, "upi", 10000, "4821"); // a paid booking that never started stays here for another day
+        Assert.Equal(10000, _cafe.WalletBalance(_cust));
+        var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 60);
+        _cafe.Pay(_staff, s, "wallet", 6000);
+        Assert.Equal(4000, _cafe.WalletBalance(_cust));
+        var s2 = _cafe.StartPrepaid(_staff, "PC2", _cust, 60);
+        Assert.Throws<CafeException>(() => _cafe.Pay(_staff, s2, "wallet", 6000)); // only ₹40 left
+        Assert.Throws<CafeException>(() => _cafe.TopUp(_staff, _cust, "wallet", 100)); // no moving wallet money around
+        Assert.Throws<CafeException>(() => _cafe.TopUp(_staff, _cust, "cash", -4000)); // no cash-out
+    }
+
+    [Fact]
+    public void T2_8_discounts_owner_only_and_need_a_reason()
+    {
+        var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 60);
+        Assert.Throws<CafeException>(() => _cafe.Adjust(_staff, s, -1000, "regular customer"));
+        Assert.Throws<CafeException>(() => _cafe.Adjust(_owner, s, -1000, ""));
+        _cafe.Adjust(_owner, s, -1000, "regular customer");
+        Assert.Equal(5000, _cafe.BillFor(s).Due);
+        Assert.Throws<CafeException>(() => _cafe.Adjust(_cust, s, -5000, "please"));
+    }
+
+    [Fact]
+    public void T2_9_stop_twice_or_at_the_same_moment_bills_once()
+    {
+        var s = _cafe.StartPostpaid(_staff, "PC1", _cust);
+        Wait(40);
+        Parallel.For(0, 8, _ => _cafe.Stop(_staff, s)); // countdown, staff and a double click all at once
+        _cafe.Stop(_cust, s);
+        Assert.Equal(6000, _cafe.BillFor(s).Charged);
+    }
+
+    [Fact]
+    public void T2_10_split_payment_and_shift_close_show_missing_cash()
+    {
+        var shift = _cafe.OpenShift(_staff);
+        var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 120);
+        _cafe.Pay(_staff, s, "cash", 7000);
+        Assert.Throws<CafeException>(() => _cafe.Pay(_staff, s, "upi", 5000));          // no last 4 digits
+        Assert.Throws<CafeException>(() => _cafe.Pay(_staff, s, "upi", 6000, "1234")); // more than is due
+        _cafe.Pay(_staff, s, "upi", 5000, "1234");
+        Assert.Equal(0, _cafe.BillFor(s).Due);
+        Assert.Equal(7000, _cafe.ShiftTotal(shift, "cash"));
+        Assert.Equal(5000, _cafe.ShiftTotal(shift, "upi"));
+        var (expected, difference) = _cafe.CloseShift(_staff, 6000); // ₹10 short in the drawer
+        Assert.Equal(7000, expected);
+        Assert.Equal(-1000, difference);
+    }
+
+    [Fact]
+    public void Money_rows_cannot_be_edited_or_deleted_even_directly()
+    {
+        var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 60);
+        _cafe.Pay(_staff, s, "cash", 6000);
+        _cafe.Dispose();
+        using var db = new SqliteConnection($"Data Source={_file};Password=test-key-123;Pooling=False");
+        db.Open();
+        foreach (var sql in new[] { "UPDATE ledger SET amount = 0", "DELETE FROM ledger", "DELETE FROM audit", "UPDATE audit SET detail = ''" })
+        {
+            using var c = db.CreateCommand(); c.CommandText = sql;
+            Assert.Throws<SqliteException>(() => c.ExecuteNonQuery());
+        }
+    }
+
+    [Fact]
+    public void Database_file_is_unreadable_without_the_key()
+    {
+        _cafe.TopUp(_staff, _cust, "cash", 500);
+        _cafe.Dispose();
+        SqliteConnection.ClearAllPools();
+        var bytes = File.ReadAllBytes(_file);
+        Assert.DoesNotContain("SQLite format 3", System.Text.Encoding.ASCII.GetString(bytes, 0, 16));
+        Assert.DoesNotContain("Ravi", System.Text.Encoding.UTF8.GetString(bytes));
+        using var wrong = new SqliteConnection($"Data Source={_file};Password=wrong-key;Pooling=False");
+        Assert.ThrowsAny<SqliteException>(() => { wrong.Open(); using var c = wrong.CreateCommand(); c.CommandText = "SELECT count(*) FROM users"; c.ExecuteScalar(); });
+    }
+
+    [Fact]
+    public void Pin_login_locks_after_five_wrong_tries_and_says_nothing_specific()
+    {
+        Assert.Equal(_cust, _cafe.Login("9000000003", "2222"));
+        var unknown = Assert.Throws<CafeException>(() => _cafe.Login("9999999999", "2222")).Message;
+        for (var i = 0; i < 5; i++) Assert.Equal(unknown, Assert.Throws<CafeException>(() => _cafe.Login("9000000003", "0000")).Message);
+        Assert.Throws<CafeException>(() => _cafe.Login("9000000003", "2222")); // right PIN, but locked
+        Wait(16);
+        Assert.Equal(_cust, _cafe.Login("9000000003", "2222"));
+    }
+
+    [Fact]
+    public void Roles_who_can_add_whom()
+    {
+        Assert.Throws<CafeException>(() => _cafe.AddUser(_staff, Role.Staff, "X", "9000000009", "1234"));
+        Assert.Throws<CafeException>(() => _cafe.AddUser(_cust, Role.Customer, "X", "9000000009", "1234"));
+        Assert.Throws<CafeException>(() => _cafe.AddUser(_staff, Role.Customer, "X", "9000000009", "12a4"));
+        Assert.Throws<CafeException>(() => _cafe.StartPostpaid(_cust, "PC1", _staff)); // customers start only their own session
+    }
+}
