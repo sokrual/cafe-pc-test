@@ -54,9 +54,9 @@ $sha = @{ amd64 = "e42294dc26b2c0d8f4576a91f09aa5129ffdfb7b647026fac77f0abac9acf
 if (-not (Test-Path "$agh\AdGuardHome.exe")) {
     $zip = Join-Path $env:TEMP "AdGuardHome.zip"
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    for ($i = 1; ; $i++) { # GitHub's download servers sometimes time out: three tries
+    for ($i = 1; ; $i++) { # GitHub's download servers sometimes time out: six tries over about 2 minutes
         try { Invoke-WebRequest "https://github.com/AdguardTeam/AdGuardHome/releases/download/$ver/AdGuardHome_windows_$arch.zip" -OutFile $zip -UseBasicParsing; break }
-        catch { if ($i -ge 3) { throw "Could not download the internet filter (is the internet on?): $_" }; Start-Sleep -Seconds 10 }
+        catch { if ($i -ge 6) { throw "Could not download the internet filter (is the internet on?): $_" }; Start-Sleep -Seconds 20 }
     }
     if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $sha) { Remove-Item $zip; throw "The internet filter download was damaged or changed. Nothing was installed." }
     Expand-Archive $zip $env:ProgramFiles -Force   # the zip holds one AdGuardHome folder
