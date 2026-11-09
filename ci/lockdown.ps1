@@ -126,8 +126,9 @@ try {
     # what a customer could leave behind to run again for the next customer, and a link meant to trick the clean-up
     $taskMade = CustomerPs "schtasks.exe /create /tn ShinzxCustomerTask /tr 'C:\Windows\System32\PING.EXE 127.0.0.1' /sc minute /mo 30 /f; exit `$LASTEXITCODE"
     $runMade = CustomerPs "Set-ItemProperty HKCU:\$runKey Evil 'C:\evil.exe'"
-    New-Item "C:\ShinzxCanary" -ItemType Directory -Force | Out-Null; "must stay" | Set-Content "C:\ShinzxCanary\keep.txt"
-    icacls.exe "C:\ShinzxCanary" /inheritance:r /grant "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX" /T | Out-Null   # the customer alone cannot delete it
+    New-Item "C:\ShinzxCanary" -ItemType Directory -Force | Out-Null
+    icacls.exe "C:\ShinzxCanary" /inheritance:r /grant "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX" | Out-Null   # the customer alone cannot delete it
+    "must stay" | Set-Content "C:\ShinzxCanary\keep.txt"   # made after the folder rule, so it takes it over
     $hard = CustomerPs "New-Item -ItemType HardLink -Path '$prof\Desktop\Game.txt' -Target 'C:\ShinzxCanary\keep.txt' -Force | Out-Null"   # a trap where the owner's shortcut was
     $linkMade = CustomerPs "New-Item -ItemType Junction -Path '$prof\Downloads\link' -Target 'C:\ShinzxCanary' | Out-Null"
     New-Item "$env:ProgramFiles\OpenFolder" -ItemType Directory -Force | Out-Null
