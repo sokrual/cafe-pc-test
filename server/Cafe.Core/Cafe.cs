@@ -144,7 +144,7 @@ public sealed class CafeCore : IDisposable
     long Start(long by, string pc, long user, int? prepaidMin, long? plan) => Tx(() =>
     {
         RequireStaffOrSelf(by, user);
-        if (Scalar<long>("SELECT count(*) FROM sessions WHERE pc = @p0 AND ended IS NULL", pc) > 0) throw new CafeException($"{pc} is already in use");
+        if (InUse(pc)) throw new CafeException($"{pc} is already in use");
         var id = Insert("INSERT INTO sessions(pc, user_id, prepaid_min, plan_id, started) VALUES(@p0, @p1, @p2, @p3, @p4)", pc, user, prepaidMin, plan, Iso(_now()));
         Audit(by, "start", $"session {id} on {pc} prepaid={prepaidMin} plan={plan}");
         return id;
@@ -180,7 +180,7 @@ public sealed class CafeCore : IDisposable
     public void MoveSeat(long by, long session, string newPc) => Tx(() =>
     {
         RequireStaff(by);
-        if (Scalar<long>("SELECT count(*) FROM sessions WHERE pc = @p0 AND ended IS NULL", newPc) > 0) throw new CafeException($"{newPc} is already in use");
+        if (InUse(newPc)) throw new CafeException($"{newPc} is already in use");
         if (Exec("UPDATE sessions SET pc = @p0 WHERE id = @p1 AND ended IS NULL", newPc, session) == 0) throw new CafeException("session is not running");
         Audit(by, "move", $"session {session} to {newPc}");
     });
@@ -251,14 +251,14 @@ public sealed class CafeCore : IDisposable
     {
         RequireOwner(by);
         var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-        Exec("INSERT INTO pcs(name, token, locked) VALUES(@p0, @p1, 0)", name, SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token)));
+        Exec("INSERT INTO pcs(name, token, locked) VALUES(@p0, @p1, 0)", name, TokenHash(token));
         Audit(by, "add_pc", name);
         return token;
     });
 
     /// Which PC this token belongs to, or null.
     public string? PcByToken(string token) => Tx(() =>
-        Scalar<string?>("SELECT name FROM pcs WHERE token = @p0", SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token))));
+        Scalar<string?>("SELECT name FROM pcs WHERE token = @p0", TokenHash(token)));
 
     /// Owner or staff lock a PC at any time (stop play, come to the counter). A running session is paused,
     /// so locked time is not charged; Unlock resumes it.
@@ -301,9 +301,9 @@ public sealed class CafeCore : IDisposable
         var now = StateOf(pc);
         if (now.SelfLocked)
         {
-            if (Login(phone, pin) != Scalar<long>("SELECT user_id FROM sessions WHERE id = @p0", now.Session)) throw new CafeException("only the customer who locked this PC can unlock it");
+            if (Login(phone, pin) != UserOf(now.Session)) throw new CafeException("only the customer who locked this PC can unlock it");
             Exec("UPDATE pcs SET self_locked = 0 WHERE name = @p0", pc);
-            Audit(Scalar<long>("SELECT user_id FROM sessions WHERE id = @p0", now.Session), "self_unlock", pc);
+            Audit(UserOf(now.Session), "self_unlock", pc);
             return StateOf(pc);
         }
         if (now.Session is not null) throw new CafeException("this PC is already in use");
@@ -319,7 +319,7 @@ public sealed class CafeCore : IDisposable
         var now = StateOf(pc);
         if (now.Session is not long s || now.Locked) throw new CafeException("only a PC in use can be locked by its customer");
         Exec("UPDATE pcs SET self_locked = 1 WHERE name = @p0", pc);
-        Audit(Scalar<long>("SELECT user_id FROM sessions WHERE id = @p0", s), "self_lock", pc);
+        Audit(UserOf(s), "self_lock", pc);
         return StateOf(pc);
     });
 
@@ -331,7 +331,7 @@ public sealed class CafeCore : IDisposable
         var floor = new[] { Scalar<string?>("SELECT last_seen FROM pcs WHERE name = @p0", pc), Scalar<string>("SELECT started FROM sessions WHERE id = @p0", s) }
             .Where(x => x is not null).Max(x => Time(x!));
         var at = new[] { _now().AddSeconds(-Math.Max(0, secondsAgo)), floor }.Max();
-        var user = Scalar<long>("SELECT user_id FROM sessions WHERE id = @p0", s);
+        var user = UserOf(s);
         // an honest outage and a pulled network cable look the same from here, so the owner gets to look at long ones
         if (_now() - at > TimeSpan.FromMinutes(2)) Audit(user, "review_late_logout", $"session {s} on {pc} ended {(int)(_now() - at).TotalMinutes} min before the PC reported it");
         return Stop(user, s, at);
@@ -372,18 +372,13 @@ public sealed class CafeCore : IDisposable
         RequireStaff(by);
         if (amount <= 0) throw new CafeException("amount must be positive");
         if (amount > BillFor(session).Due) throw new CafeException("more than is due");
-        var user = Scalar<long>("SELECT user_id FROM sessions WHERE id = @p0", session);
-        switch (method)
+        var user = UserOf(session);
+        if (method == "wallet")
         {
-            case "cash": break;
-            case "upi" when upiLast4 is { Length: 4 } && upiLast4.All(char.IsAsciiDigit): break;
-            case "upi": throw new CafeException("UPI needs the last 4 digits of the reference");
-            case "wallet":
-                if (WalletBalance(user) < amount) throw new CafeException("not enough in the wallet");
-                Ledger(by, "wallet", -amount, user: user, reference: $"paid session {session}");
-                break;
-            default: throw new CafeException("pay by cash, upi or wallet");
+            if (WalletBalance(user) < amount) throw new CafeException("not enough in the wallet");
+            Ledger(by, "wallet", -amount, user: user, reference: $"paid session {session}");
         }
+        else CashOrUpi(method, upiLast4);
         Ledger(by, "pay", amount, session: session, user: user, method: method, reference: upiLast4);
         Audit(by, "pay", $"session {session} {method} {amount}");
     });
@@ -394,8 +389,7 @@ public sealed class CafeCore : IDisposable
     {
         RequireStaff(by);
         if (amount <= 0) throw new CafeException("amount must be positive");
-        if (method == "upi" && upiLast4 is not { Length: 4 }) throw new CafeException("UPI needs the last 4 digits of the reference");
-        if (method is not ("cash" or "upi")) throw new CafeException("top up by cash or upi");
+        CashOrUpi(method, upiLast4);
         Ledger(by, "pay", amount, user: user, method: method, reference: upiLast4 ?? "wallet top-up");
         Ledger(by, "wallet", amount, user: user, reference: "top-up");
         Audit(by, "top_up", $"user {user} {method} {amount}");
@@ -407,7 +401,7 @@ public sealed class CafeCore : IDisposable
     {
         RequireStaff(by); Minutes(minutes);
         if (validDays is < 1 or > 366 || price is < 0 or > 10_000_000) throw new CafeException("plan needs 1 to 366 days and a price from ₹0 to ₹1,00,000");
-        if (method is not ("cash" or "upi") || (method == "upi" && upiLast4 is not { Length: 4 })) throw new CafeException("pay by cash, or upi with the last 4 digits");
+        CashOrUpi(method, upiLast4);
         var plan = Insert("INSERT INTO plans(user_id, minutes_left, expires) VALUES(@p0, @p1, @p2)", user, minutes, Iso(_now().AddDays(validDays)));
         Ledger(by, "pay", price, user: user, method: method, reference: upiLast4 ?? $"plan {plan}");
         Audit(by, "buy_plan", $"plan {plan} user {user} {minutes} min {validDays} days {price}");
@@ -478,6 +472,16 @@ public sealed class CafeCore : IDisposable
     void RequireOwner(long by) { if (RoleOf(by) != Role.Owner) throw new CafeException("only the owner can do this"); }
     void RequireStaff(long by) { if (RoleOf(by) is not (Role.Owner or Role.Staff)) throw new CafeException("only staff or the owner can do this"); }
     void RequireStaffOrSelf(long by, long user) { if (by != user) RequireStaff(by); }
+    long UserOf(long? session) => Scalar<long>("SELECT user_id FROM sessions WHERE id = @p0", session);
+    bool InUse(string pc) => Scalar<long>("SELECT count(*) FROM sessions WHERE pc = @p0 AND ended IS NULL", pc) > 0;
+    static byte[] TokenHash(string token) => SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token));
+    // staff type the last 4 digits of the UPI reference so a payment can be matched to the bank statement
+    static void CashOrUpi(string method, string? upiLast4)
+    {
+        if (method == "cash") return;
+        if (method != "upi") throw new CafeException("pay by cash, upi or wallet");
+        if (upiLast4 is not { Length: 4 } || !upiLast4.All(char.IsAsciiDigit)) throw new CafeException("UPI needs the last 4 digits of the reference");
+    }
     static void Minutes(int m) { if (m is < 1 or > 7 * 24 * 60) throw new CafeException("minutes must be from 1 to 10080 (a week)"); }
     static void RequireReason(string reason) { if (string.IsNullOrWhiteSpace(reason)) throw new CafeException("a reason is required"); }
 

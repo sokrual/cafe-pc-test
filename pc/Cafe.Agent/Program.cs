@@ -96,7 +96,7 @@ sealed class Agent : ApplicationContext
         if (s.Locked != _state.Locked) Program.Log(s.Locked ? $"locked: {s.Message}" : $"unlocked, session {s.Session} ({s.Mode})");
         (_state, _stateAt) = (s, DateTime.UtcNow);
         if (s.Locked) { _timer.Hide(); _lock.ShowLocked(s.Message); }
-        else { _lock.Hide(); _timer.ShowSession(); }
+        else { _lock.Hide(); _timer.Tick(); }
     }
 
     async Task<string?> Login(string phone, string pin)
@@ -188,17 +188,13 @@ sealed class TimerWidget : Form
         bye.Click += (_, _) => logout();
         buttons.Controls.Add(away, 0, 0); buttons.Controls.Add(bye, 1, 0);
         Controls.Add(_text); Controls.Add(buttons);
-        _tray.MouseClick += (_, _) => { _peekUntil = DateTime.UtcNow.AddSeconds(5); if (Active) Visible = true; };
+        _tray.MouseClick += (_, _) => { _peekUntil = DateTime.UtcNow.AddSeconds(5); if (!_now().state.Locked) Visible = true; };
         var tick = new System.Windows.Forms.Timer { Interval = 1000 };
         tick.Tick += (_, _) => Tick();
         tick.Start();
     }
 
-    bool Active => !_now().state.Locked;
-
-    public void ShowSession() { Tick(); }
-
-    void Tick()
+    public void Tick()
     {
         var (state, elapsed, left) = _now();
         if (state.Locked) { if (Visible) Hide(); return; }

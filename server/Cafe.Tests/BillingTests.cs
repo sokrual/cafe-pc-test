@@ -165,6 +165,7 @@ public sealed class BillingTests : IDisposable
         var s2 = _cafe.StartPrepaid(_staff, "PC2", _cust, 60);
         Assert.Throws<CafeException>(() => _cafe.Pay(_staff, s2, "wallet", 6000)); // only ₹40 left
         Assert.Throws<CafeException>(() => _cafe.TopUp(_staff, _cust, "wallet", 100)); // no moving wallet money around
+        Assert.Throws<CafeException>(() => _cafe.TopUp(_staff, _cust, "upi", 100, "ab12")); // UPI digits only, everywhere
         Assert.Throws<CafeException>(() => _cafe.TopUp(_staff, _cust, "cash", -4000)); // no cash-out
     }
 
