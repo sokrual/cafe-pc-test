@@ -141,7 +141,7 @@ static class Native
         finally { CloseHandle(h); }
     }
 
-    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(int access, bool inherit, int pid);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr OpenProcess(int access, bool inherit, int pid);
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool QueryFullProcessImageName(IntPtr h, int flags, StringBuilder name, ref int size);
     [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
 }

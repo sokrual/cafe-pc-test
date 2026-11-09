@@ -166,7 +166,7 @@ static class Wipe
 
     static string? Owner(Process p)
     {
-        var h = OpenProcess(0x1000 /*QUERY_LIMITED_INFORMATION*/, false, p.Id);
+        var h = Native.OpenProcess(0x1000 /*QUERY_LIMITED_INFORMATION*/, false, p.Id);
         if (h == IntPtr.Zero) return null;
         try
         {
@@ -183,7 +183,6 @@ static class Wipe
         finally { Native.CloseHandle(h); }
     }
 
-    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(int access, bool inherit, int pid);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetFileInformationByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle file, byte[] info);
     [DllImport("ntdll.dll")] static extern int NtQueryKey(Microsoft.Win32.SafeHandles.SafeRegistryHandle key, int cls, byte[] info, int length, out int result);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, int access, out IntPtr token);

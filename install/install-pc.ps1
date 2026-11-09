@@ -53,10 +53,6 @@ public static string Read(string key) {
 }
 '@
 
-function Customer-Profile { # folder of the Customer account, or $null before its first sign-in
-    $u = Get-LocalUser $user -ErrorAction SilentlyContinue
-    if ($u) { (Get-CimInstance Win32_UserProfile | Where-Object SID -eq $u.SID.Value).LocalPath }
-}
 function Close-Customer-Apps { Get-Process -IncludeUserName | Where-Object UserName -eq "$env:COMPUTERNAME\$user" | Stop-Process -Force -ErrorAction SilentlyContinue }
 function Restore-Dns {
     foreach ($a in Get-Content "$data\dns-before.json" -Raw | ConvertFrom-Json) {
@@ -113,12 +109,7 @@ foreach ($f in "Cafe.Agent.exe", "Cafe.Watchdog.exe", "keep-running.txt", "insta
 "`"$app\Cafe.Agent.exe`" --server https://${Server}:5443" | Set-Content "$app\watchdog.args" -Encoding ascii
 
 New-Item $data -ItemType Directory -Force | Out-Null
-$acl = New-Object Security.AccessControl.DirectorySecurity
-$acl.SetAccessRuleProtection($true, $false)
-foreach ($sid in "S-1-5-32-544", "S-1-5-18") {
-    $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]$sid, "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow"))
-}
-Set-Acl $data $acl
+icacls $data /inheritance:r /grant "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" | Out-Null   # admins and Windows only
 # the one place the lock screen (running as Customer) may write: a "please clean up" note for the watchdog
 New-Item "$data\wipe" -ItemType Directory -Force | Out-Null
 icacls "$data\wipe" /grant "*S-1-5-32-545:(OI)(CI)(W,RD)" | Out-Null
@@ -203,7 +194,7 @@ sc.exe failure $svc reset= 86400 actions= restart/2000/restart/2000/restart/2000
 foreach ($m in "Minimal", "Network") { New-Item "HKLM:\SYSTEM\CurrentControlSet\Control\SafeBoot\$m\$svc" -Value "Service" -Force | Out-Null }
 
 # --- which step is this? ---
-$profilePath = Customer-Profile
+$profilePath = (Get-CimInstance Win32_UserProfile | Where-Object SID -eq (Get-LocalUser $user).SID.Value).LocalPath   # empty before Customer's first sign-in
 if ($Setup -or (-not (Test-Path "$data\clean-profile") -and -not (Test-Path $flag))) {
     New-Item $flag -ItemType File -Force | Out-Null
     Start-Service $svc
