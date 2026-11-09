@@ -51,9 +51,16 @@ static class Wipe
         if (profile is null || !Directory.Exists(clean)) report += "; no clean copy, files not reset";
         else
         {
-            // same exclusions as the installer's copy: graphics driver caches stay (games load faster)
-            using var rc = Process.Start(new ProcessStartInfo("robocopy.exe", $"\"{clean}\" \"{profile}\" /MIR /XJ /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.* UsrClass.dat* /XD NVIDIA AMD D3DSCache") { UseShellExecute = false, CreateNoWindow = true })!;
+            // graphics driver caches stay between customers (games load faster). robocopy /MIR deletes them even with
+            // /XD (tested on CI), so they wait in an admin-only folder during the copy and come back after it
+            string[] caches = [@"AppData\Local\NVIDIA", @"AppData\LocalLow\NVIDIA", @"AppData\Local\AMD", @"AppData\Local\D3DSCache"];
+            var hold = Path.Combine(Data, "caches");
+            if (Directory.Exists(hold)) Directory.Delete(hold, true); // left over from a clean-up that was cut off
+            Directory.CreateDirectory(hold);
+            for (var i = 0; i < caches.Length; i++) Move(Path.Combine(profile, caches[i]), Path.Combine(hold, $"{i}"));
+            using var rc = Process.Start(new ProcessStartInfo("robocopy.exe", $"\"{clean}\" \"{profile}\" /MIR /XJ /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.* UsrClass.dat*") { UseShellExecute = false, CreateNoWindow = true })!;
             if (!rc.WaitForExit(300_000)) rc.Kill();
+            for (var i = 0; i < caches.Length; i++) Move(Path.Combine(hold, $"{i}"), Path.Combine(profile, caches[i]));
             report += $"; files reset (robocopy {(rc.HasExited ? rc.ExitCode : -1)})"; // 0-7 = fine; files Windows keeps open are skipped
         }
 
@@ -66,6 +73,19 @@ static class Wipe
             report += "; Steam logins cleared";
         }
         return report;
+    }
+
+    // a cache that cannot move (a file still open) is left where it is: worst case it is rebuilt, never an error
+    static void Move(string from, string to)
+    {
+        if (!Directory.Exists(from)) return;
+        try
+        {
+            if (Directory.Exists(to)) Directory.Delete(to, true);
+            Directory.CreateDirectory(Path.GetDirectoryName(to)!);
+            Directory.Move(from, to);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 
     static DateTime StartOf(Process p) { try { return p.StartTime; } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { return default; } }

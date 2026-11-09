@@ -39,6 +39,10 @@ try {
     $code = 0; $why = ""
     WaitFor 30 { $script:code = try { Invoke-WebRequest https://127.0.0.1:5443/pc/state -UseBasicParsing | Out-Null; 200 } catch { $script:why = $_.Exception.Message; [int]$_.Exception.Response.StatusCode }; $script:code -ne 0 } | Out-Null
     Check "B3.A2" "Server answers HTTPS and refuses a PC without its key" ($code -eq 401) "HTTP $code $why"
+    # second opinion from a different client: curl.exe uses Windows' TLS directly, no PowerShell callback involved
+    $curl = (curl.exe -sk -o NUL -w "%{http_code}" https://127.0.0.1:5443/pc/state) -join ""
+    Check "B3.A2b" "Server answers HTTPS (checked with curl.exe)" ($curl -eq "401") "HTTP $curl"
+    if ($curl -ne "401") { cmd.exe /c "curl.exe -vk https://127.0.0.1:5443/pc/state 2>&1" | Write-Host }
     if ($code -ne 401) { Get-WinEvent -FilterHashtable @{ LogName = "System"; ProviderName = "Schannel" } -MaxEvents 5 -ErrorAction SilentlyContinue | Format-List TimeCreated, Id, Message | Out-String | Write-Host }
     $rule = Get-NetFirewallRule -Group "Shinzx counter" | Where-Object DisplayName -like "*cafe server*" | Get-NetFirewallAddressFilter
     Check "B3.A3" "Firewall lets only the shop network reach the server" ("$($rule.RemoteAddress)" -eq "LocalSubnet") "remote: $($rule.RemoteAddress)"
