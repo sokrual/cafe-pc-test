@@ -187,7 +187,7 @@ try {
     CiTool.exe --update-policy (Join-Path $logs "levelA.cip") -json | Out-Null
     if ($LASTEXITCODE) { throw "CiTool exit $LASTEXITCODE" }
     Add-Result "T0.4a" "Level A watch-only check switched on (nothing blocked)" ([bool]((CiTool.exe --list-policies) -match [regex]::Escape($ciId.Trim('{}')))) "policy $ciId"
-} catch { Add-Result "T0.4a" "Level A watch-only check switched on (nothing blocked)" $false $_.Exception.Message }
+} catch { Add-Result "T0.4a" "Level A watch-only check switched on (nothing blocked)" $false "$($_.Exception.Message) (at: $($_.InvocationInfo.Line.Trim()))" }
 
 # --- Security scan: Microsoft Defender quick scan now; its unwanted-program check (PUA) set to log-only for the test ---
 try {
