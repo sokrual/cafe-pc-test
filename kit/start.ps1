@@ -177,16 +177,16 @@ Add-Result "T0.2e" "Day-long check switched on (audit only, nothing blocked)" $t
 #     Nothing is blocked; every program Windows would not trust is logged (event 3076), so FINISH-TEST can list
 #     them by maker for the owner to approve. ---
 try {
-    $ci = Join-Path $logs "levelA-audit.xml"
-    Copy-Item "$env:WINDIR\schemas\CodeIntegrity\ExamplePolicies\DefaultWindows_Audit.xml" $ci -Force
-    Set-CIPolicyIdInfo -FilePath $ci -PolicyName "Shinzx test (watch only)" -ResetPolicyID | Out-Null
-    Set-RuleOption -FilePath $ci -Option 3   # 3 = audit mode; set again so this can never block anything
-    $ciId = ([xml](Get-Content $ci -Raw)).SiPolicy.PolicyID
-    ConvertFrom-CIPolicy -XmlFilePath $ci -BinaryFilePath (Join-Path $logs "levelA.cip") | Out-Null
-    $ciId | Out-File (Join-Path $logs "levelA-policy-id.txt") -Append -Encoding utf8   # FINISH-TEST removes every id listed
+    $policy = Join-Path $logs "levelA-audit.xml"
+    Copy-Item "$env:WINDIR\schemas\CodeIntegrity\ExamplePolicies\DefaultWindows_Audit.xml" $policy -Force
+    Set-CIPolicyIdInfo -FilePath $policy -PolicyName "Shinzx test (watch only)" -ResetPolicyID | Out-Null
+    Set-RuleOption -FilePath $policy -Option 3   # 3 = audit mode; set again so this can never block anything
+    $policyId = ([xml](Get-Content $policy -Raw)).SiPolicy.PolicyID
+    ConvertFrom-CIPolicy -XmlFilePath $policy -BinaryFilePath (Join-Path $logs "levelA.cip") | Out-Null
+    $policyId | Out-File (Join-Path $logs "levelA-policy-id.txt") -Append -Encoding utf8   # FINISH-TEST removes every id listed
     CiTool.exe --update-policy (Join-Path $logs "levelA.cip") -json | Out-Null
     if ($LASTEXITCODE) { throw "CiTool exit $LASTEXITCODE" }
-    Add-Result "T0.4a" "Level A watch-only check switched on (nothing blocked)" ([bool]((CiTool.exe --list-policies) -match [regex]::Escape($ciId.Trim('{}')))) "policy $ciId"
+    Add-Result "T0.4a" "Level A watch-only check switched on (nothing blocked)" ([bool]((CiTool.exe --list-policies) -match [regex]::Escape($policyId.Trim('{}')))) "policy $policyId"
 } catch { Add-Result "T0.4a" "Level A watch-only check switched on (nothing blocked)" $false "$($_.Exception.Message) (at: $($_.InvocationInfo.Line.Trim()))" }
 
 # --- Security scan: Microsoft Defender quick scan now; its unwanted-program check (PUA) set to log-only for the test ---
