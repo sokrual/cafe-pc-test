@@ -49,12 +49,27 @@ public sealed class BillingTests : IDisposable
         Assert.Equal(6000, _cafe.BillFor(s).Due);
         Wait(65); // 5 min past the hour: inside the grace
         Assert.Equal(6000, _cafe.Stop(_staff, s).Charged);
+        Assert.Equal(0, _cafe.PlanMinutesLeft(_cust));
 
         var s2 = _cafe.StartPrepaid(_staff, "PC2", _cust, 60);
         Wait(75); // 15 min past: grace over, one more 30 min block
         var bill = _cafe.Stop(_staff, s2);
         Assert.Equal(TimeSpan.FromMinutes(75), bill.Used);
         Assert.Equal(9000, bill.Charged);
+    }
+
+    [Fact]
+    public void T2_3b_unused_prepaid_minutes_stay_for_another_day()
+    {
+        var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 30);
+        Wait(2); // only 2 min played: no grace on bought time, 28 min kept
+        _cafe.Stop(_staff, s);
+        Assert.Equal(28, _cafe.PlanMinutesLeft(_cust));
+        _clock = _clock.AddDays(3); // another day
+        var again = _cafe.StartOnPlan(_cust, "PC4", _cust);
+        Wait(20);
+        Assert.Equal(0, _cafe.Stop(_cust, again).Charged);
+        Assert.Equal(8, _cafe.PlanMinutesLeft(_cust));
     }
 
     [Fact]
@@ -121,16 +136,22 @@ public sealed class BillingTests : IDisposable
     [Fact]
     public void T2_6b_plan_time_uses_the_same_grace_and_blocks()
     {
-        var plan = _cafe.BuyPlan(_staff, _cust, 120, 7, 10000, "cash");
-        var s = _cafe.StartOnPlan(_cust, "PC1", _cust);
-        Wait(33); _cafe.Stop(_cust, s); // inside the grace after block 1: 30 min off
-        var s2 = _cafe.StartOnPlan(_cust, "PC1", _cust);
-        Wait(40); _cafe.Stop(_cust, s2); // past the grace: 60 min off, 30 left
-        var s3 = _cafe.StartOnPlan(_cust, "PC1", _cust);
-        Wait(50); // needs 60 min, only 30 left: 30 min billed in money
-        Assert.Equal(3000, _cafe.Stop(_cust, s3).Charged);
-        Assert.Throws<CafeException>(() => _cafe.StartOnPlan(_cust, "PC1", _cust)); // plan used up
-        Assert.True(plan > 0);
+        _cafe.BuyPlan(_staff, _cust, 120, 7, 10000, "cash");
+        foreach (var (play, left) in new[] { (2, 118), (33, 85), (40, 45) }) // exact minutes off, no grace while time is left
+        {
+            var s = _cafe.StartOnPlan(_cust, "PC1", _cust);
+            Wait(play);
+            Assert.Equal(0, _cafe.Stop(_cust, s).Charged);
+            Assert.Equal(left, _cafe.PlanMinutesLeft(_cust));
+        }
+        var over = _cafe.StartOnPlan(_cust, "PC1", _cust);
+        Wait(50); // 45 left: 5 min over is the grace
+        Assert.Equal(0, _cafe.Stop(_cust, over).Charged);
+        _cafe.BuyPlan(_staff, _cust, 30, 7, 3000, "cash");
+        var over2 = _cafe.StartOnPlan(_cust, "PC1", _cust);
+        Wait(36); // 30 left: 6 min over, grace gone, one 30 min block in money
+        Assert.Equal(3000, _cafe.Stop(_cust, over2).Charged);
+        Assert.Throws<CafeException>(() => _cafe.StartOnPlan(_cust, "PC1", _cust)); // nothing left
     }
 
     [Fact]
@@ -183,6 +204,23 @@ public sealed class BillingTests : IDisposable
         var (expected, difference) = _cafe.CloseShift(_staff, 6000); // ₹10 short in the drawer
         Assert.Equal(7000, expected);
         Assert.Equal(-1000, difference);
+    }
+
+    [Fact]
+    public void Owner_or_staff_can_lock_any_pc_and_locked_time_is_free()
+    {
+        var s = _cafe.StartPostpaid(_staff, "PC1", _cust);
+        Wait(20);
+        Assert.Throws<CafeException>(() => _cafe.Lock(_cust, "PC1"));
+        _cafe.Lock(_staff, "PC1", "Please come to the counter");
+        Wait(30); // locked: not charged
+        _cafe.Unlock(_owner, "PC1");
+        Wait(5);
+        Assert.Equal(TimeSpan.FromMinutes(25), _cafe.Stop(_staff, s).Used);
+        Assert.Equal(new[] { ("lock", (string?)"Please come to the counter"), ("unlock", (string?)null) }, _cafe.TakeCommands("PC1"));
+        Assert.Empty(_cafe.TakeCommands("PC1")); // handed out once
+        _cafe.Lock(_staff, "PC9"); // an idle PC can be locked too
+        Assert.Single(_cafe.TakeCommands("PC9"));
     }
 
     [Fact]

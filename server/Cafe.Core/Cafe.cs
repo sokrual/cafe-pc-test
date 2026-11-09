@@ -8,7 +8,8 @@ public enum Role { Owner, Staff, Customer }
 
 // Placeholder rate card until the real one arrives. Money is always whole paise (₹1 = 100).
 // GraceMin: free if the whole session is this short. BlockGraceMin: free minutes after each block or bought time ends.
-public record Rate(long PerHourPaise = 6000, int GraceMin = 2, int MinimumMin = 30, int BlockMin = 30, int BlockGraceMin = 5);
+// CarryOverDays: how long unused prepaid minutes stay usable (placeholder, owner to set).
+public record Rate(long PerHourPaise = 6000, int GraceMin = 2, int MinimumMin = 30, int BlockMin = 30, int BlockGraceMin = 5, int CarryOverDays = 30);
 
 public record Bill(long SessionId, TimeSpan Used, long Charged, long Adjusted, long Paid)
 {
@@ -44,6 +45,8 @@ public sealed class CafeCore : IDisposable
             -- kind: charge | adjust | pay | wallet. amount in paise, + or -.
             CREATE TABLE IF NOT EXISTS ledger(id INTEGER PRIMARY KEY, at TEXT NOT NULL, by_user INTEGER NOT NULL, kind TEXT NOT NULL,
                 amount INTEGER NOT NULL, session_id INTEGER, user_id INTEGER, method TEXT, ref TEXT, reason TEXT, shift_id INTEGER);
+            -- what the admin wants a PC to do (lock, unlock); the PC picks these up and marks them done
+            CREATE TABLE IF NOT EXISTS commands(id INTEGER PRIMARY KEY, pc TEXT NOT NULL, kind TEXT NOT NULL, text TEXT, at TEXT NOT NULL, done TEXT);
             CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, at TEXT NOT NULL, by_user INTEGER, action TEXT NOT NULL, detail TEXT);
             CREATE TRIGGER IF NOT EXISTS ledger_no_update BEFORE UPDATE ON ledger BEGIN SELECT RAISE(ABORT, 'ledger is append-only'); END;
             CREATE TRIGGER IF NOT EXISTS ledger_no_delete BEFORE DELETE ON ledger BEGIN SELECT RAISE(ABORT, 'ledger is append-only'); END;
@@ -103,7 +106,7 @@ public sealed class CafeCore : IDisposable
     /// Pay-at-end: a stopwatch from 0, billed at stop by the rate card.
     public long StartPostpaid(long by, string pc, long user) => Start(by, pc, user, null, null);
 
-    /// Prepaid countdown: the minutes are charged now; no refund once it starts.
+    /// Prepaid countdown: the minutes are charged now. No money back, but unused minutes stay with the customer (see Stop).
     public long StartPrepaid(long by, string pc, long user, int minutes) => Tx(() =>
     {
         var id = Start(by, pc, user, minutes, null);
@@ -111,13 +114,17 @@ public sealed class CafeCore : IDisposable
         return id;
     });
 
-    /// Time comes off the customer's plan; refused if the plan has expired or is used up.
+    /// Time comes off the customer's plans and carried-over minutes; refused if nothing valid is left.
     public long StartOnPlan(long by, string pc, long user) => Tx(() =>
     {
         var plan = Scalar<long?>("SELECT id FROM plans WHERE user_id = @p0 AND minutes_left > 0 AND expires > @p1 ORDER BY expires LIMIT 1", user, Iso(_now()))
             ?? throw new CafeException("no valid plan (expired or used up)");
         return Start(by, pc, user, null, plan);
     });
+
+    /// Minutes the customer can still play on plans and carried-over prepaid time (what the PC counts down from).
+    public long PlanMinutesLeft(long user) =>
+        Scalar<long>("SELECT coalesce(sum(minutes_left), 0) FROM plans WHERE user_id = @p0 AND minutes_left > 0 AND expires > @p1", user, Iso(_now()));
 
     long Start(long by, string pc, long user, int? prepaidMin, long? plan) => Tx(() =>
     {
@@ -181,23 +188,72 @@ public sealed class CafeCore : IDisposable
         if (Exec("UPDATE sessions SET ended = @p0 WHERE id = @p1 AND ended IS NULL", Iso(_now()), session) == 1)
         {
             var (used, prepaid, plan, user) = SessionUse(session);
+            var usedMin = (int)Math.Ceiling(used.TotalMinutes); // bought time counts real minutes from the start, no grace
             if (prepaid is int bought)
-            {   // kept playing past the bought time (PC offline, or owner let it run): grace, then 30-min blocks
-                var over = BillableMinutes(used - TimeSpan.FromMinutes(bought), startGrace: false);
-                if (over > 0) Ledger(by, "charge", Price(over), session: session, user: user, reference: $"{over} min past prepaid");
+            {
+                if (usedMin < bought) CarryOver(by, user, bought - usedMin);
+                else ChargeOvertime(by, session, user, used - TimeSpan.FromMinutes(bought), "past prepaid");
             }
-            else if (plan is long p)
-            {   // plans use the same rule: grace, then 30-min blocks; anything beyond the plan's balance is paid in money
-                var minutes = BillableMinutes(used);
-                var take = (int)Math.Min(minutes, Scalar<long>("SELECT minutes_left FROM plans WHERE id = @p0", p));
-                Exec("UPDATE plans SET minutes_left = minutes_left - @p0 WHERE id = @p1", take, p);
-                Audit(by, "plan_use", $"plan {p} -{take} min");
-                if (minutes > take) Ledger(by, "charge", Price(minutes - take), session: session, user: user, reference: "beyond plan");
+            else if (plan is not null)
+            {
+                var left = usedMin; // take from the plans that expire first
+                foreach (var (id, have) in Pairs("SELECT id, minutes_left FROM plans WHERE user_id = @p0 AND minutes_left > 0 AND expires > @p1 ORDER BY expires", user, Iso(_now())))
+                {
+                    var take = Math.Min(left, have);
+                    Exec("UPDATE plans SET minutes_left = minutes_left - @p0 WHERE id = @p1", take, id);
+                    Audit(by, "plan_use", $"plan {id} -{take} min");
+                    if ((left -= (int)take) == 0) break;
+                }
+                if (left > 0) ChargeOvertime(by, session, user, used - TimeSpan.FromMinutes(usedMin - left), "past plan");
             }
             else Ledger(by, "charge", Charge(used), session: session, user: user, reference: $"{BillableMinutes(used)} min");
             Audit(by, "stop", $"session {session} used {used}");
         }
         return BillFor(session);
+    });
+
+    // Over the bought time: 5 min grace, then 30-min blocks (minimum 30), paid in money.
+    void ChargeOvertime(long by, long session, long user, TimeSpan over, string what)
+    {
+        var minutes = BillableMinutes(over, startGrace: false);
+        if (minutes > 0) Ledger(by, "charge", Price(minutes), session: session, user: user, reference: $"{minutes} min {what}");
+    }
+
+    // Unused prepaid minutes become a time balance for another day (no money back).
+    void CarryOver(long by, long user, int minutes)
+    {
+        var id = Insert("INSERT INTO plans(user_id, minutes_left, expires) VALUES(@p0, @p1, @p2)", user, minutes, Iso(_now().AddDays(Rate.CarryOverDays)));
+        Audit(by, "carry_over", $"user {user} {minutes} min kept as plan {id}");
+    }
+
+    // ---------------- PC control ----------------
+
+    /// Owner or staff lock a PC at any time (stop play, come to the counter). A running session is paused,
+    /// so locked time is not charged; Unlock resumes it.
+    public void Lock(long by, string pc, string? message = null) => Tx(() =>
+    {
+        RequireStaff(by);
+        if (Scalar<long?>("SELECT id FROM sessions WHERE pc = @p0 AND ended IS NULL AND pause_from IS NULL", pc) is long s) Pause(by, s);
+        Insert("INSERT INTO commands(pc, kind, text, at) VALUES(@p0, 'lock', @p1, @p2)", pc, message, Iso(_now()));
+        Audit(by, "lock", $"{pc}: {message}");
+    });
+
+    public void Unlock(long by, string pc) => Tx(() =>
+    {
+        RequireStaff(by);
+        if (Scalar<long?>("SELECT id FROM sessions WHERE pc = @p0 AND ended IS NULL AND pause_from IS NOT NULL", pc) is long s) Resume(by, s);
+        Insert("INSERT INTO commands(pc, kind, at) VALUES(@p0, 'unlock', @p1)", pc, Iso(_now()));
+        Audit(by, "unlock", pc);
+    });
+
+    /// What a PC should do now, oldest first; each command is handed out once.
+    public List<(string kind, string? text)> TakeCommands(string pc) => Tx(() =>
+    {
+        var list = new List<(string, string?)>();
+        using (var r = Query("SELECT kind, text FROM commands WHERE pc = @p0 AND done IS NULL ORDER BY id", pc))
+            while (r.Read()) list.Add((r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1)));
+        Exec("UPDATE commands SET done = @p0 WHERE pc = @p1 AND done IS NULL", Iso(_now()), pc);
+        return list;
     });
 
     /// Pay-at-end bill: free inside the start grace; otherwise the minimum, then whole blocks,
@@ -377,6 +433,13 @@ public sealed class CafeCore : IDisposable
         using var c = Cmd(sql, args);
         var v = c.ExecuteScalar();
         return v is null or DBNull ? default! : (T)Convert.ChangeType(v, Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T), CultureInfo.InvariantCulture);
+    }
+    List<(long, long)> Pairs(string sql, params object?[] args)
+    {
+        using var r = Query(sql, args);
+        var list = new List<(long, long)>();
+        while (r.Read()) list.Add((r.GetInt64(0), r.GetInt64(1)));
+        return list;
     }
     List<T> Column<T>(string sql, params object?[] args)
     {
