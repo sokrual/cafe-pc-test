@@ -3,7 +3,7 @@ using Microsoft.Data.Sqlite;
 using Xunit;
 
 // One test per check in the Phase 2 test plan (T2.x), plus the security rules the money depends on.
-// Placeholder rate card: ₹60/hour, 2 min grace, 30 min minimum, 30 min blocks. All amounts in paise.
+// Placeholder rate card: ₹60/hour, 2 min start grace, 30 min minimum, 30 min blocks, 5 min grace after each block. Paise.
 public sealed class BillingTests : IDisposable
 {
     DateTime _clock = new(2026, 11, 9, 10, 0, 0, DateTimeKind.Utc);
@@ -31,23 +31,30 @@ public sealed class BillingTests : IDisposable
     [Fact] public void T2_1_inside_grace_is_free() => Assert.Equal(0, PlayFor(1));
 
     [Theory]
-    [InlineData(2, 0)]       // exactly at the grace limit: still free
-    [InlineData(3, 3000)]    // just past grace: the 30 min minimum, ₹30
+    [InlineData(2, 0)]       // exactly at the start grace: still free
+    [InlineData(3, 3000)]    // just past it: the 30 min minimum, ₹30
     [InlineData(29, 3000)]
     [InlineData(30, 3000)]
-    [InlineData(31, 6000)]   // grace is only at the start (as stated), so 31 min is two blocks: owner to confirm
-    [InlineData(61, 9000)]
+    [InlineData(35, 3000)]   // inside the 5 min grace after the first block
+    [InlineData(36, 6000)]   // grace over: another 30 min block
+    [InlineData(61, 6000)]
+    [InlineData(65, 6000)]
+    [InlineData(66, 9000)]
     public void T2_2_pay_at_end_follows_minimum_and_blocks(double minutes, long paise) => Assert.Equal(paise, PlayFor(minutes));
 
     [Fact]
-    public void T2_3_prepaid_charges_up_front_and_never_beyond_bought_time()
+    public void T2_3_prepaid_charges_up_front_then_grace_then_blocks()
     {
         var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 60);
         Assert.Equal(6000, _cafe.BillFor(s).Due);
-        Wait(75); // PC was offline and did not lock: still only the hour bought
-        var bill = _cafe.Stop(_staff, s);
-        Assert.Equal(TimeSpan.FromMinutes(60), bill.Used);
-        Assert.Equal(6000, bill.Charged);
+        Wait(65); // 5 min past the hour: inside the grace
+        Assert.Equal(6000, _cafe.Stop(_staff, s).Charged);
+
+        var s2 = _cafe.StartPrepaid(_staff, "PC2", _cust, 60);
+        Wait(75); // 15 min past: grace over, one more 30 min block
+        var bill = _cafe.Stop(_staff, s2);
+        Assert.Equal(TimeSpan.FromMinutes(75), bill.Used);
+        Assert.Equal(9000, bill.Charged);
     }
 
     [Fact]
@@ -109,6 +116,21 @@ public sealed class BillingTests : IDisposable
         var s2 = _cafe.StartOnPlan(_cust, "PC1", _cust);
         Wait(450); // 420 min left, uses 450: 30 min beyond the plan is billed
         Assert.Equal(3000, _cafe.Stop(_cust, s2).Charged);
+    }
+
+    [Fact]
+    public void T2_6b_plan_time_uses_the_same_grace_and_blocks()
+    {
+        var plan = _cafe.BuyPlan(_staff, _cust, 120, 7, 10000, "cash");
+        var s = _cafe.StartOnPlan(_cust, "PC1", _cust);
+        Wait(33); _cafe.Stop(_cust, s); // inside the grace after block 1: 30 min off
+        var s2 = _cafe.StartOnPlan(_cust, "PC1", _cust);
+        Wait(40); _cafe.Stop(_cust, s2); // past the grace: 60 min off, 30 left
+        var s3 = _cafe.StartOnPlan(_cust, "PC1", _cust);
+        Wait(50); // needs 60 min, only 30 left: 30 min billed in money
+        Assert.Equal(3000, _cafe.Stop(_cust, s3).Charged);
+        Assert.Throws<CafeException>(() => _cafe.StartOnPlan(_cust, "PC1", _cust)); // plan used up
+        Assert.True(plan > 0);
     }
 
     [Fact]

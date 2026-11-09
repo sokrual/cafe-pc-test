@@ -7,7 +7,8 @@ namespace Cafe;
 public enum Role { Owner, Staff, Customer }
 
 // Placeholder rate card until the real one arrives. Money is always whole paise (₹1 = 100).
-public record Rate(long PerHourPaise = 6000, int GraceMin = 2, int MinimumMin = 30, int BlockMin = 30);
+// GraceMin: free if the whole session is this short. BlockGraceMin: free minutes after each block or bought time ends.
+public record Rate(long PerHourPaise = 6000, int GraceMin = 2, int MinimumMin = 30, int BlockMin = 30, int BlockGraceMin = 5);
 
 public record Bill(long SessionId, TimeSpan Used, long Charged, long Adjusted, long Paid)
 {
@@ -180,30 +181,34 @@ public sealed class CafeCore : IDisposable
         if (Exec("UPDATE sessions SET ended = @p0 WHERE id = @p1 AND ended IS NULL", Iso(_now()), session) == 1)
         {
             var (used, prepaid, plan, user) = SessionUse(session);
-            if (prepaid is null)
-            {
-                var minutes = (int)Math.Ceiling(used.TotalMinutes);
-                if (plan is long p)
-                {
-                    var take = Math.Min(minutes, Scalar<long>("SELECT minutes_left FROM plans WHERE id = @p0", p));
-                    Exec("UPDATE plans SET minutes_left = minutes_left - @p0 WHERE id = @p1", take, p);
-                    Audit(by, "plan_use", $"plan {p} -{take} min");
-                    minutes -= (int)take; // shortcut: plan time is taken minute by minute, with no grace or minimum; confirm with the owner
-                    if (minutes > 0) Ledger(by, "charge", Charge(TimeSpan.FromMinutes(minutes)), session: session, user: user, reference: "beyond plan");
-                }
-                else Ledger(by, "charge", Charge(used), session: session, user: user, reference: $"{minutes} min");
+            if (prepaid is int bought)
+            {   // kept playing past the bought time (PC offline, or owner let it run): grace, then 30-min blocks
+                var over = BillableMinutes(used - TimeSpan.FromMinutes(bought), startGrace: false);
+                if (over > 0) Ledger(by, "charge", Price(over), session: session, user: user, reference: $"{over} min past prepaid");
             }
+            else if (plan is long p)
+            {   // plans use the same rule: grace, then 30-min blocks; anything beyond the plan's balance is paid in money
+                var minutes = BillableMinutes(used);
+                var take = (int)Math.Min(minutes, Scalar<long>("SELECT minutes_left FROM plans WHERE id = @p0", p));
+                Exec("UPDATE plans SET minutes_left = minutes_left - @p0 WHERE id = @p1", take, p);
+                Audit(by, "plan_use", $"plan {p} -{take} min");
+                if (minutes > take) Ledger(by, "charge", Price(minutes - take), session: session, user: user, reference: "beyond plan");
+            }
+            else Ledger(by, "charge", Charge(used), session: session, user: user, reference: $"{BillableMinutes(used)} min");
             Audit(by, "stop", $"session {session} used {used}");
         }
         return BillFor(session);
     });
 
-    /// What the rate card says for a pay-at-end session: free inside the grace period, then the minimum, then whole blocks.
-    public long Charge(TimeSpan used)
+    /// Pay-at-end bill: free inside the start grace; otherwise the minimum, then whole blocks,
+    /// with BlockGraceMin free after each block ends (e.g. 35 min = 1 block, 36 min = 2 blocks).
+    public long Charge(TimeSpan used) => Price(BillableMinutes(used));
+
+    int BillableMinutes(TimeSpan used, bool startGrace = true)
     {
-        if (used <= TimeSpan.FromMinutes(Rate.GraceMin)) return 0;
-        var minutes = Math.Max(Rate.MinimumMin, (int)Math.Ceiling(used.TotalMinutes / Rate.BlockMin) * Rate.BlockMin);
-        return Price(minutes);
+        if (used <= TimeSpan.FromMinutes(startGrace ? Rate.GraceMin : Rate.BlockGraceMin)) return 0;
+        var blocks = Math.Max(1, (int)Math.Ceiling((used.TotalMinutes - Rate.BlockGraceMin) / Rate.BlockMin));
+        return Math.Max(Rate.MinimumMin, blocks * Rate.BlockMin);
     }
 
     long Price(int minutes) => (minutes * Rate.PerHourPaise + 59) / 60; // round up to the paisa
@@ -315,7 +320,6 @@ public sealed class CafeCore : IDisposable
         var end = r.IsDBNull(6) ? Time(r.GetString(1)) : Time(r.GetString(6)); // a running pause doesn't count yet
         var used = end - Time(r.GetString(0)) - TimeSpan.FromSeconds(r.GetInt64(2));
         int? prepaid = r.IsDBNull(3) ? null : r.GetInt32(3);
-        if (prepaid is int p && used > TimeSpan.FromMinutes(p)) used = TimeSpan.FromMinutes(p); // the PC locks at 0
         return (used < TimeSpan.Zero ? TimeSpan.Zero : used, prepaid, r.IsDBNull(4) ? null : r.GetInt64(4), r.GetInt64(5));
     }
 
