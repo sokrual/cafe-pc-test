@@ -22,7 +22,15 @@ if ($Uninstall) {
     if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force; sc.exe delete $svc | Out-Null }
     if (Test-Path "$agh\AdGuardHome.exe") { Start-Process "$agh\AdGuardHome.exe" "-s uninstall" -Wait -WindowStyle Hidden }
     Remove-NetFirewallRule -Group "Shinzx counter" -ErrorAction SilentlyContinue
-    Remove-Item $app, $agh -Recurse -Force -ErrorAction SilentlyContinue
+    $keep = "$env:ProgramData\ShinzxCafe\before.json"
+    if (Test-Path $keep) { # clock settings back as they were
+        foreach ($p in (Get-Content $keep -Raw | ConvertFrom-Json).PSObject.Properties) {
+            $key, $name = $p.Name -split '\|'
+            if ($null -eq $p.Value) { Remove-ItemProperty $key $name -ErrorAction SilentlyContinue } else { Set-ItemProperty $key $name $p.Value }
+        }
+        Restart-Service w32time -ErrorAction SilentlyContinue
+    }
+    Remove-Item $app, $agh, "$env:ProgramData\ShinzxCafe" -Recurse -Force -ErrorAction SilentlyContinue
     Say "The cafe server and the internet filter are off this PC. The cafe data in C:\ProgramData\Cafe is kept."
     exit 0
 }
@@ -37,6 +45,18 @@ if (-not (Get-Service $svc -ErrorAction SilentlyContinue)) {
 }
 sc.exe failure $svc reset= 86400 actions= restart/2000/restart/2000/restart/2000 | Out-Null
 Start-Service $svc
+
+# what this install changes outside its own folders, kept once so uninstall can put it back (admins and Windows only)
+$keep = "$env:ProgramData\ShinzxCafe"
+New-Item $keep -ItemType Directory -Force | Out-Null
+icacls $keep /inheritance:r /grant "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" | Out-Null
+$timeKeys = @("HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters|NtpServer", "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters|Type",
+    "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpClient|SpecialPollInterval")
+if (-not (Test-Path "$keep\before.json")) {
+    $before = [ordered]@{}
+    foreach ($t in $timeKeys) { $k, $n = $t -split '\|'; $before[$t] = (Get-ItemProperty $k -Name $n -ErrorAction SilentlyContinue).$n }
+    $before | ConvertTo-Json | Set-Content "$keep\before.json" -Encoding utf8
+}
 
 # --- clock: synced every hour with India's official time servers (NIC and NPL), as CERT-In asks; logs need the right time ---
 $w32 = "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time"
@@ -60,12 +80,15 @@ foreach ($proto in "UDP", "TCP") {
 $ver = "v0.107.79"
 $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "amd64" }
 $sha = @{ amd64 = "e42294dc26b2c0d8f4576a91f09aa5129ffdfb7b647026fac77f0abac9acffce"; arm64 = "b7c1c16c4b3cb7a97d7a58f01d649b03244cc847fb9045a2d719cff6e7b57ccd" }[$arch]
+$local = "$src\AdGuardHome_windows_$arch.zip"   # the zip can come with this folder (no internet needed); same fingerprint check
 if (-not (Test-Path "$agh\AdGuardHome.exe")) {
     $zip = Join-Path $env:TEMP "AdGuardHome.zip"
+    Remove-Item $zip -ErrorAction SilentlyContinue   # never a half download from an earlier try
+    if (Test-Path $local) { Copy-Item $local $zip -Force }
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    for ($i = 1; ; $i++) { # GitHub's download servers sometimes time out: six tries over about 2 minutes
-        try { Invoke-WebRequest "https://github.com/AdguardTeam/AdGuardHome/releases/download/$ver/AdGuardHome_windows_$arch.zip" -OutFile $zip -UseBasicParsing; break }
-        catch { if ($i -ge 6) { throw "Could not download the internet filter. Check that this PC has internet, then run INSTALL-ADMIN again. ($_)" }; Start-Sleep -Seconds 20 }
+    for ($i = 1; -not (Test-Path $zip); $i++) { # GitHub's download servers sometimes time out: six tries over about 2 minutes
+        try { Invoke-WebRequest "https://github.com/AdguardTeam/AdGuardHome/releases/download/$ver/AdGuardHome_windows_$arch.zip" -OutFile $zip -UseBasicParsing }
+        catch { Remove-Item $zip -ErrorAction SilentlyContinue; if ($i -ge 6) { throw "Could not download the internet filter. Check that this PC has internet, then run INSTALL-ADMIN again. ($_)" }; Start-Sleep -Seconds 20 }
     }
     if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $sha) { Remove-Item $zip; throw "The internet filter download was damaged or changed. Nothing was installed." }
     Expand-Archive $zip $env:ProgramFiles -Force   # the zip holds one AdGuardHome folder

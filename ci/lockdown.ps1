@@ -31,6 +31,10 @@ $data = "$env:ProgramData\ShinzxCafe"
 $winlogon = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
 $autoBefore = (Get-ItemProperty $winlogon).AutoAdminLogon
 $ntpKey = "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters"
+$ntpOriginal = (Get-ItemProperty $ntpKey).NtpServer
+$dohOriginal = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -ErrorAction SilentlyContinue).DnsOverHttpsMode
+# control for C6: other DNS servers must answer BEFORE the install, or "blocked" afterwards proves nothing
+$googleBefore = try { Resolve-DnsName example.com -Server 8.8.8.8 -DnsOnly -QuickTimeout -ErrorAction Stop | Out-Null; "answered" } catch { "blocked" }
 $dnsBefore = @(Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | ForEach-Object { "$($_.InterfaceIndex)=$((Get-DnsClientServerAddress -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4).ServerAddresses -join ',')" })
 $runnerDns = ((Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | Select-Object -First 1).DNSServer | Where-Object AddressFamily -eq 2).ServerAddresses[0]
 
@@ -46,6 +50,14 @@ try {
     # first HTTPS call here ("unexpected error on a send") while curl.exe got the right answer (runs 42633874084)
     $curl = (curl.exe -sk -o NUL -w "%{http_code}" https://127.0.0.1:5443/pc/state) -join ""
     Check "B3.A2" "Server answers HTTPS and refuses a PC without its key" ($curl -eq "401") "HTTP $curl"
+    # the certificate the server shows must be the one whose fingerprint the gaming PCs pin (server.pin)
+    $tcp = [Net.Sockets.TcpClient]::new("127.0.0.1", 5443)
+    $ssl = [Net.Security.SslStream]::new($tcp.GetStream(), $false, { $true })   # accept it here only to read it
+    $ssl.AuthenticateAsClient("cafe-admin")
+    $served = ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($ssl.RemoteCertificate.GetRawCertData())) -replace '-', '')
+    $ssl.Dispose(); $tcp.Dispose()
+    $pinned = (Get-Content "$env:ProgramData\Cafe\server.pin" -Raw).Trim()
+    Check "B3.A2b" "Server shows the certificate the gaming PCs pin" ($served -eq $pinned) "served $($served.Substring(0, 12))..., pinned $($pinned.Substring(0, 12))..."
     if ($curl -ne "401") { cmd.exe /c "curl.exe -vk https://127.0.0.1:5443/pc/state 2>&1" | Write-Host }
     $rule = Get-NetFirewallRule -Group "Shinzx counter" | Where-Object DisplayName -like "*cafe server*" | Get-NetFirewallAddressFilter
     Check "B3.A3" "Firewall lets only the shop network reach the server" ("$($rule.RemoteAddress)" -eq "LocalSubnet") "remote: $($rule.RemoteAddress)"
@@ -81,7 +93,7 @@ try {
     Check "B3.C5" "Setup mode: no lock screen yet" ((Test-Path "$app\setup.flag") -and -not (Get-Process Cafe.Agent -ErrorAction SilentlyContinue)) "setup.flag present"
     $other = try { Resolve-DnsName example.com -Server 8.8.8.8 -DnsOnly -QuickTimeout -ErrorAction Stop | Out-Null; "answered" } catch { "blocked" }
     $own = try { Resolve-DnsName example.com -DnsOnly -ErrorAction Stop | Out-Null; "works" } catch { "$_" }
-    Check "B3.C6" "Other DNS servers blocked, the filter's one works" ($other -eq "blocked" -and $own -eq "works") "8.8.8.8 $other; normal lookups $own"
+    Check "B3.C6" "Other DNS servers blocked, the filter's one works" ($googleBefore -eq "answered" -and $other -eq "blocked" -and $own -eq "works") "8.8.8.8 before install $googleBefore, after $other; normal lookups $own"
     $poll = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpClient").SpecialPollInterval
     Check "B3.C8" "Clock synced hourly with India's official time servers (NIC, NPL)" ((Get-ItemProperty $ntpKey).NtpServer -match "samay1.nic.in" -and $poll -eq 3600 -and (Get-Service w32time).Status -eq "Running") "time source now: $((w32tm.exe /query /source) -join ' ')"
     Check "B3.C7" "Browsers' own secure DNS switched off" ((Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge").DnsOverHttpsMode -eq "off") "Edge, Chrome, Firefox policies"
@@ -187,14 +199,17 @@ try {
 
     # ===== I. uninstall =====
     Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+    Copy-Item "$data\logs\*" $wd -ErrorAction SilentlyContinue   # the watchdog's log goes with the uninstall; keep it for the artifacts
     & "$app\install-pc.ps1" -Uninstall -Ci
     $dnsAfter = @(Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | ForEach-Object { "$($_.InterfaceIndex)=$((Get-DnsClientServerAddress -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4).ServerAddresses -join ',')" })
     Check "B3.I1" "PC uninstall: service, account, files and rules gone" (-not (Get-Service CafeWatchdog -ErrorAction SilentlyContinue) -and -not (Get-LocalUser Customer -ErrorAction SilentlyContinue) -and -not (Test-Path $app) -and -not (Get-NetFirewallRule -Group "Shinzx PC" -ErrorAction SilentlyContinue)) ""
     Check "B3.I2" "PC uninstall: DNS and automatic sign-in back as before" (("$dnsAfter" -eq "$dnsBefore") -and (Get-ItemProperty $winlogon).AutoAdminLogon -eq $autoBefore) "DNS before $dnsBefore, after $dnsAfter"
     Check "B3.I2b" "PC uninstall: clock settings back as before" ((Get-ItemProperty $ntpKey).NtpServer -eq $ntpBefore) "$ntpBefore"
+    Check "B3.I2c" "PC uninstall: browsers' secure DNS setting back as before" ((Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -ErrorAction SilentlyContinue).DnsOverHttpsMode -eq $dohOriginal) "before: '$dohOriginal'"
     Check "B3.I3" "PC uninstall: Level A off" (-not ((CiTool.exe --list-policies) -match "Shinzx Level A")) ""
     & "$stageA\install-admin.ps1" -Uninstall -Ci
     Check "B3.I4" "Counter PC uninstall: server and filter gone" (-not (Get-Service CafeServer, AdGuardHome -ErrorAction SilentlyContinue)) ""
+    Check "B3.I4b" "Counter PC uninstall: clock settings back as before" ((Get-ItemProperty $ntpKey).NtpServer -eq $ntpOriginal) "$ntpOriginal"
 }
 catch { Check "B3.X" "script error" $false "$_ (line $($_.InvocationInfo.ScriptLineNumber))" }
 finally {

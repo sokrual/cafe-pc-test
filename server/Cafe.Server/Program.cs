@@ -35,6 +35,11 @@ var app = builder.Build();
 app.UseRateLimiter();
 var staffTokens = new ConcurrentDictionary<string, (long user, DateTime until)>();
 
+app.Use(async (ctx, next) => // second wall behind the firewall rule: nothing from outside the shop network gets an answer
+{
+    if (ShopNetwork.Allows(ctx.Connection.RemoteIpAddress)) { await next(ctx); return; }
+    ctx.Response.StatusCode = 403; Log($"refused {ctx.Connection.RemoteIpAddress}: not on the shop network");
+});
 app.Use(async (ctx, next) => // rule breaks become a 400 with a plain message, bad tokens a 401; never a stack trace
 {
     try { await next(ctx); }

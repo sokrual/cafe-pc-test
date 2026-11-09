@@ -1,0 +1,9 @@
+THIRD-PARTY SOFTWARE
+
+AdGuard Home v0.107.79 (the internet filter on the counter PC)
+  Made by AdGuard. Licence: GNU General Public License version 3 (GPL-3.0).
+  The licence text is inside the AdGuard Home zip (AdGuardHome/LICENSE.txt).
+  Source code: https://github.com/AdguardTeam/AdGuardHome/tree/v0.107.79
+  We use it unchanged. If the zip AdGuardHome_windows_amd64.zip or AdGuardHome_windows_arm64.zip is in this
+  folder, INSTALL-ADMIN uses it; otherwise it downloads the same file from AdGuard's GitHub release page.
+  Either way it checks the file's SHA-256 fingerprint before installing it.

@@ -102,6 +102,31 @@ public sealed class BillingTests : IDisposable
     }
 
     [Fact]
+    public void Server_answers_the_shop_network_only()
+    {
+        foreach (var ok in new[] { "127.0.0.1", "::1", "10.1.2.3", "172.16.0.9", "172.31.255.1", "192.168.1.10", "169.254.3.4", "100.64.0.1", "100.127.9.9", "fe80::1", "fd7a:115c:a1e0::1", "::ffff:192.168.1.5" })
+            Assert.True(ShopNetwork.Allows(System.Net.IPAddress.Parse(ok)), ok);
+        foreach (var no in new[] { "8.8.8.8", "172.32.0.1", "192.169.0.1", "100.128.0.1", "11.0.0.1", "2001:4860::8888", "::ffff:8.8.8.8" })
+            Assert.False(ShopNetwork.Allows(System.Net.IPAddress.Parse(no)), no);
+        Assert.False(ShopNetwork.Allows(null));
+    }
+
+    [Fact]
+    public void T2_5b_group_members_leaving_at_different_times_add_up()
+    {
+        var lead = _cafe.StartPostpaid(_staff, "PC1", _cust);
+        var a = _cafe.StartPostpaid(_staff, "PC2", _cust);
+        var b = _cafe.StartPostpaid(_staff, "PC3", _cust);
+        _cafe.JoinGroup(_staff, a, lead); _cafe.JoinGroup(_staff, b, lead);
+        Wait(25); _cafe.Stop(_staff, a);    // 1 block
+        Wait(20); _cafe.Stop(_staff, b);    // 45 min: 2 blocks
+        Wait(40); _cafe.Stop(_staff, lead); // 85 min: 3 blocks
+        var bill = _cafe.BillFor(lead);
+        Assert.Equal((1 + 2 + 3) * 3000, bill.Due);
+        Assert.Equal(TimeSpan.FromMinutes(25 + 45 + 85), bill.Used);
+    }
+
+    [Fact]
     public void T2_5_group_bill_across_four_pcs_is_one_total()
     {
         var lead = _cafe.StartPostpaid(_staff, "PC1", _cust);

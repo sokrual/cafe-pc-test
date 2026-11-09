@@ -38,5 +38,6 @@ BUILD
 THIRD-PARTY
 
 AdGuard Home (GPL-3.0) is the web filter on the counter PC. It is not stored in this repo; install-admin.ps1
-downloads a fixed version from AdGuard's own GitHub release and checks its SHA-256 before installing it.
+uses the zip if it sits next to it, or downloads the same fixed version from AdGuard's GitHub release, and checks
+its SHA-256 before installing it. See install/THIRD-PARTY.txt.
 NuGet packages: see the .csproj files.

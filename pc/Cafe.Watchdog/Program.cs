@@ -19,7 +19,8 @@ sealed class WatchdogService : ServiceBase
 
 static class Watchdog
 {
-    static readonly string Logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Cafe", "logs");
+    // admin-only on an installed PC; not ProgramData\Cafe, where the lock screen (as Customer) writes and could plant files
+    static readonly string Logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ShinzxCafe", "logs");
 
     public static void Run(CancellationToken stop)
     {

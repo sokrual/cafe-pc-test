@@ -9,6 +9,21 @@ public enum Role { Owner, Staff, Customer }
 // Placeholder rate card until the real one arrives. Money is always whole paise (₹1 = 100).
 // GraceMin: free if the whole session is this short. BlockGraceMin: free minutes after each block or bought time ends.
 // CarryOverDays: how long unused prepaid minutes stay usable (placeholder, owner to set).
+/// Addresses the counter server answers: this PC, the shop network (private ranges) and Tailscale; never the internet.
+public static class ShopNetwork
+{
+    public static bool Allows(System.Net.IPAddress? ip)
+    {
+        if (ip is null) return false;
+        if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
+        if (System.Net.IPAddress.IsLoopback(ip)) return true;
+        var b = ip.GetAddressBytes();
+        return ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+            ? b[0] == 10 || (b[0] == 172 && b[1] is >= 16 and <= 31) || (b[0] == 192 && b[1] == 168) || (b[0] == 169 && b[1] == 254) || (b[0] == 100 && b[1] is >= 64 and <= 127)
+            : ip.IsIPv6LinkLocal || (b[0] & 0xFE) == 0xFC; // link-local, unique local (Tailscale uses fd7a:...)
+    }
+}
+
 public record Rate(long PerHourPaise = 6000, int GraceMin = 2, int MinimumMin = 30, int BlockMin = 30, int BlockGraceMin = 5, int CarryOverDays = 30);
 
 public record Bill(long SessionId, TimeSpan Used, long Charged, long Adjusted, long Paid)
