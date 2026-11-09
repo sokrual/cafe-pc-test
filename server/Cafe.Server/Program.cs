@@ -1,22 +1,32 @@
 using System.Collections.Concurrent;
+using System.Net;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using Cafe;
 
-// Admin PC server. Gaming PCs call /pc/* with their own token; staff call /staff/* after a PIN login.
-// Usage: Cafe.Server --data <folder> [--urls http://0.0.0.0:5080] [--seed-test]  (seed = test users + PC1, for CI only)
+// Admin PC server, HTTPS only. Gaming PCs call /pc/* with their own token and accept only this server's
+// certificate (its fingerprint is in server.pin); staff call /staff/* after a PIN login.
+// Usage: Cafe.Server [--data <folder>] [--port 5443] [--seed-test]   (seed = test users + PC1, for automated tests only)
 var data = Arg("--data") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Cafe");
-Directory.CreateDirectory(data);
+Directory.CreateDirectory(Path.Combine(data, "logs"));
+void Log(string line) { lock (data) File.AppendAllText(Path.Combine(data, "logs", $"server-{DateTime.Now:yyyyMMdd}.log"), $"{DateTime.Now:HH:mm:ss} {line}{Environment.NewLine}"); }
+
 using var cafe = new CafeCore(Path.Combine(data, "cafe.db"), DbKey(data));
 if (args.Contains("--seed-test")) Seed(cafe, data);
+var cert = Cert(data);
 
-var app = WebApplication.CreateSlimBuilder(Arg("--urls") is string u ? ["--urls", u] : []).Build(); // our own flags are not web settings
+var builder = WebApplication.CreateBuilder();
+builder.WebHost.ConfigureKestrel(k => k.Listen(IPAddress.Any, int.Parse(Arg("--port") ?? "5443"), l => l.UseHttps(cert)));
+builder.Logging.ClearProviders(); // our own log file below; never the request bodies (they carry PINs)
+var app = builder.Build();
 var staffTokens = new ConcurrentDictionary<string, (long user, DateTime until)>();
 
 app.Use(async (ctx, next) => // rule breaks become a 400 with a plain message, bad tokens a 401; never a stack trace
 {
     try { await next(ctx); }
     catch (CafeException e) { ctx.Response.StatusCode = 400; await ctx.Response.WriteAsJsonAsync(new { error = e.Message }); }
-    catch (UnauthorizedAccessException) { ctx.Response.StatusCode = 401; }
+    catch (UnauthorizedAccessException) { ctx.Response.StatusCode = 401; Log($"refused {ctx.Request.Path} from {ctx.Connection.RemoteIpAddress}"); }
+    catch (Exception e) { ctx.Response.StatusCode = 500; Log($"ERROR {ctx.Request.Path}: {e}"); }
 });
 
 string Pc(HttpContext c) => cafe.PcByToken(c.Request.Headers["X-Pc-Token"].ToString()) ?? throw new UnauthorizedAccessException();
@@ -26,9 +36,10 @@ long Staff(HttpContext c)
     return staffTokens.TryGetValue(t, out var s) && s.until > DateTime.UtcNow ? s.user : throw new UnauthorizedAccessException();
 }
 
-app.MapGet("/pc/state", (HttpContext c) => cafe.StateOf(Pc(c)));
-app.MapPost("/pc/login", (HttpContext c, LoginBody b) => cafe.PcLogin(Pc(c), b.Phone, b.Pin));
-app.MapPost("/pc/logout", (HttpContext c) => cafe.PcLogout(Pc(c)));
+app.MapGet("/pc/state", (HttpContext c) => { var pc = Pc(c); var st = cafe.StateOf(pc); cafe.PcSeen(pc); return st; });
+app.MapPost("/pc/login", (HttpContext c, LoginBody b) => { var pc = Pc(c); var st = cafe.PcLogin(pc, b.Phone, b.Pin); Log($"{pc} login session {st.Session}"); return st; });
+app.MapPost("/pc/selflock", (HttpContext c) => cafe.PcSelfLock(Pc(c)));
+app.MapPost("/pc/logout", (HttpContext c, long? ago) => { var pc = Pc(c); var bill = cafe.PcLogout(pc, ago ?? 0); Log($"{pc} logout session {bill.SessionId} used {bill.Used} (sent {ago ?? 0}s late)"); return bill; });
 
 app.MapPost("/staff/login", (LoginBody b) =>
 {
@@ -40,7 +51,9 @@ app.MapPost("/staff/login", (LoginBody b) =>
 app.MapPost("/staff/lock", (HttpContext c, PcBody b) => { cafe.Lock(Staff(c), b.Pc, b.Message); return cafe.StateOf(b.Pc); });
 app.MapPost("/staff/unlock", (HttpContext c, PcBody b) => { cafe.Unlock(Staff(c), b.Pc); return cafe.StateOf(b.Pc); });
 app.MapGet("/staff/state/{pc}", (HttpContext c, string pc) => { Staff(c); return cafe.StateOf(pc); });
+app.MapGet("/staff/bill/{session:long}", (HttpContext c, long session) => { Staff(c); return cafe.BillFor(session); });
 
+Log($"started, certificate {cert.Thumbprint}");
 app.Run();
 
 string? Arg(string name) => Array.IndexOf(args, name) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
@@ -51,6 +64,22 @@ static string DbKey(string data)
     var file = Path.Combine(data, "db.key");
     if (!File.Exists(file)) File.WriteAllBytes(file, ProtectedData.Protect(RandomNumberGenerator.GetBytes(32), null, DataProtectionScope.LocalMachine));
     return Convert.ToHexString(ProtectedData.Unprotect(File.ReadAllBytes(file), null, DataProtectionScope.LocalMachine));
+}
+
+// Our own certificate, made once (10 years), stored DPAPI-encrypted. PCs pin its SHA-256, so no outside CA is involved.
+static X509Certificate2 Cert(string data)
+{
+    var file = Path.Combine(data, "server.pfx.dpapi");
+    if (!File.Exists(file))
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var req = new CertificateRequest("CN=cafe-admin", key, HashAlgorithmName.SHA256);
+        using var made = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(10));
+        File.WriteAllBytes(file, ProtectedData.Protect(made.Export(X509ContentType.Pfx), null, DataProtectionScope.LocalMachine));
+    }
+    var cert = X509CertificateLoader.LoadPkcs12(ProtectedData.Unprotect(File.ReadAllBytes(file), null, DataProtectionScope.LocalMachine), null);
+    File.WriteAllText(Path.Combine(data, "server.pin"), Convert.ToHexString(SHA256.HashData(cert.RawData))); // goes into each PC's settings
+    return cert;
 }
 
 static void Seed(CafeCore cafe, string data)

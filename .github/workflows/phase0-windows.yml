@@ -46,20 +46,22 @@ jobs:
         run: |
           dotnet publish server/Cafe.Server -c Release -o out/server
           dotnet publish pc/Cafe.Agent -c Release -o out/agent
+          dotnet publish pc/Cafe.Watchdog -c Release -o out/watchdog
       - name: Close Windows first-time setup if the test machine never finished it (a set-up cafe PC never shows it)
         shell: powershell
         run: Get-Process WWAHost -ErrorAction SilentlyContinue | Stop-Process -Force
-      - name: Lock screen escape tests, login, admin lock, logout (Phase 1, T1.1)
+      - name: Phase 1 on real Windows - escape keys, login, locks, admin PC offline, watchdog restart
         shell: pwsh
         run: |
           $env:CAFE_SERVER_EXE = "$PWD\out\server\Cafe.Server.exe"
           $env:CAFE_AGENT_EXE = "$PWD\out\agent\Cafe.Agent.exe"
-          dotnet test --project pc/Cafe.UiTests
+          $env:CAFE_WATCHDOG_EXE = "$PWD\out\watchdog\Cafe.Watchdog.exe"
+          dotnet test --project pc/Cafe.UiTests --output Detailed
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: ui-failure-${{ matrix.os }}
-          path: screen.png
+          path: screen-*.png
 
   kit:
     strategy:

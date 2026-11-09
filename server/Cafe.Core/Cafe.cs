@@ -17,7 +17,8 @@ public record Bill(long SessionId, TimeSpan Used, long Charged, long Adjusted, l
 }
 
 /// What a PC should show right now. Locked = lock screen (no session, or the admin locked it).
-public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec);
+/// SelfLocked: the customer locked it (time keeps running; their PIN or staff unlocks it).
+public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec, bool SelfLocked = false);
 
 public class CafeException(string message) : Exception(message);
 
@@ -49,7 +50,8 @@ public sealed class CafeCore : IDisposable
             CREATE TABLE IF NOT EXISTS ledger(id INTEGER PRIMARY KEY, at TEXT NOT NULL, by_user INTEGER NOT NULL, kind TEXT NOT NULL,
                 amount INTEGER NOT NULL, session_id INTEGER, user_id INTEGER, method TEXT, ref TEXT, reason TEXT, shift_id INTEGER);
             -- each gaming PC: a secret token (only its SHA-256 is stored) and whether the admin has locked it
-            CREATE TABLE IF NOT EXISTS pcs(name TEXT PRIMARY KEY, token BLOB NOT NULL UNIQUE, locked INTEGER NOT NULL DEFAULT 0, message TEXT);
+            CREATE TABLE IF NOT EXISTS pcs(name TEXT PRIMARY KEY, token BLOB NOT NULL UNIQUE, locked INTEGER NOT NULL DEFAULT 0, message TEXT,
+                self_locked INTEGER NOT NULL DEFAULT 0, last_seen TEXT);
             CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, at TEXT NOT NULL, by_user INTEGER, action TEXT NOT NULL, detail TEXT);
             CREATE TRIGGER IF NOT EXISTS ledger_no_update BEFORE UPDATE ON ledger BEGIN SELECT RAISE(ABORT, 'ledger is append-only'); END;
             CREATE TRIGGER IF NOT EXISTS ledger_no_delete BEFORE DELETE ON ledger BEGIN SELECT RAISE(ABORT, 'ledger is append-only'); END;
@@ -183,13 +185,16 @@ public sealed class CafeCore : IDisposable
     });
 
     /// Safe to call twice or at the same moment as the countdown's own stop: only the first call bills.
-    public Bill Stop(long by, long session) => Tx(() =>
+    /// at: when it really ended (a logout the PC queued while the admin PC was unreachable); default now.
+    public Bill Stop(long by, long session, DateTime? at = null) => Tx(() =>
     {
         RequireStaffOrSelf(by, Scalar<long?>("SELECT user_id FROM sessions WHERE id = @p0", session) ?? throw new CafeException("no such session"));
+        var now = at ?? _now();
         if (Scalar<string?>("SELECT pause_from FROM sessions WHERE id = @p0 AND ended IS NULL", session) is string from) // stopping while paused ends the pause, uncharged
-            Exec("UPDATE sessions SET paused_sec = paused_sec + @p0, pause_from = NULL WHERE id = @p1", (long)(_now() - Time(from)).TotalSeconds, session);
-        if (Exec("UPDATE sessions SET ended = @p0 WHERE id = @p1 AND ended IS NULL", Iso(_now()), session) == 1)
+            Exec("UPDATE sessions SET paused_sec = paused_sec + @p0, pause_from = NULL WHERE id = @p1", Math.Max(0, (long)(now - Time(from)).TotalSeconds), session);
+        if (Exec("UPDATE sessions SET ended = @p0 WHERE id = @p1 AND ended IS NULL", Iso(now), session) == 1)
         {
+            Exec("UPDATE pcs SET self_locked = 0 WHERE name = (SELECT pc FROM sessions WHERE id = @p0)", session);
             var (used, prepaid, plan, user) = SessionUse(session);
             var usedMin = (int)Math.Ceiling(used.TotalMinutes); // bought time counts real minutes from the start, no grace
             if (prepaid is int bought)
@@ -258,40 +263,68 @@ public sealed class CafeCore : IDisposable
     public void Unlock(long by, string pc) => Tx(() =>
     {
         RequireStaff(by);
-        if (Exec("UPDATE pcs SET locked = 0, message = NULL WHERE name = @p0", pc) == 0) throw new CafeException($"no PC called {pc}");
+        if (Exec("UPDATE pcs SET locked = 0, self_locked = 0, message = NULL WHERE name = @p0", pc) == 0) throw new CafeException($"no PC called {pc}");
         if (Scalar<long?>("SELECT id FROM sessions WHERE pc = @p0 AND ended IS NULL AND pause_from IS NOT NULL", pc) is long s) Resume(by, s);
         Audit(by, "unlock", pc);
     });
 
     public PcState StateOf(string pc) => Tx(() =>
     {
-        using var r = Query("SELECT locked, message FROM pcs WHERE name = @p0", pc);
+        using var r = Query("SELECT locked, message, self_locked FROM pcs WHERE name = @p0", pc);
         if (!r.Read()) throw new CafeException($"no PC called {pc}");
-        var (adminLocked, message) = (r.GetInt64(0) == 1, r.IsDBNull(1) ? null : r.GetString(1));
+        var (adminLocked, message, selfLocked) = (r.GetInt64(0) == 1, r.IsDBNull(1) ? null : r.GetString(1), r.GetInt64(2) == 1);
         r.Close();
         if (Scalar<long?>("SELECT id FROM sessions WHERE pc = @p0 AND ended IS NULL", pc) is not long s) return new PcState(true, message, null, null, 0, null);
         var (used, prepaid, plan, user) = SessionUse(s);
         var mode = prepaid is not null ? "prepaid" : plan is not null ? "plan" : "postpaid";
         long? left = prepaid is int b ? b * 60 - (long)used.TotalSeconds
                    : plan is not null ? PlanMinutesLeft(user) * 60 - (long)used.TotalSeconds : null;
-        return new PcState(adminLocked, message, s, mode, (long)used.TotalSeconds, left);
+        if (selfLocked && !adminLocked) message = "Locked by the customer. Their time is still running.";
+        return new PcState(adminLocked || selfLocked, message, s, mode, (long)used.TotalSeconds, left, selfLocked && !adminLocked);
     });
 
     /// Customer logs in at a PC: plays on plan or carried-over time if there is any, otherwise pay-at-end.
+    /// If the customer locked the PC themselves, only their own phone + PIN unlocks it.
     public PcState PcLogin(string pc, string phone, string pin) => Tx(() =>
     {
-        if (StateOf(pc).Session is not null) throw new CafeException("this PC is already in use");
+        var now = StateOf(pc);
+        if (now.SelfLocked)
+        {
+            if (Login(phone, pin) != Scalar<long>("SELECT user_id FROM sessions WHERE id = @p0", now.Session)) throw new CafeException("only the customer who locked this PC can unlock it");
+            Exec("UPDATE pcs SET self_locked = 0 WHERE name = @p0", pc);
+            Audit(Scalar<long>("SELECT user_id FROM sessions WHERE id = @p0", now.Session), "self_unlock", pc);
+            return StateOf(pc);
+        }
+        if (now.Session is not null) throw new CafeException("this PC is already in use");
         if (Scalar<long>("SELECT locked FROM pcs WHERE name = @p0", pc) == 1) throw new CafeException("this PC is locked by the counter");
         var user = Login(phone, pin);
         if (PlanMinutesLeft(user) > 0) StartOnPlan(user, pc, user); else StartPostpaid(user, pc, user);
         return StateOf(pc);
     });
 
-    public Bill PcLogout(string pc) => Tx(() =>
+    /// Customer steps away: the PC locks but their time keeps running (an admin lock pauses it instead).
+    public PcState PcSelfLock(string pc) => Tx(() =>
+    {
+        var now = StateOf(pc);
+        if (now.Session is not long s || now.Locked) throw new CafeException("only a PC in use can be locked by its customer");
+        Exec("UPDATE pcs SET self_locked = 1 WHERE name = @p0", pc);
+        Audit(Scalar<long>("SELECT user_id FROM sessions WHERE id = @p0", s), "self_lock", pc);
+        return StateOf(pc);
+    });
+
+    /// secondsAgo: the PC was offline and queued the logout. The PC's own clock is never trusted: it sends
+    /// "this happened N seconds ago" from a stopwatch, and the time can't go back before the PC was last heard from.
+    public Bill PcLogout(string pc, long secondsAgo = 0) => Tx(() =>
     {
         var s = StateOf(pc).Session ?? throw new CafeException("nobody is logged in");
-        return Stop(Scalar<long>("SELECT user_id FROM sessions WHERE id = @p0", s), s);
+        var floor = new[] { Scalar<string?>("SELECT last_seen FROM pcs WHERE name = @p0", pc), Scalar<string>("SELECT started FROM sessions WHERE id = @p0", s) }
+            .Where(x => x is not null).Max(x => Time(x!));
+        var at = new[] { _now().AddSeconds(-Math.Max(0, secondsAgo)), floor }.Max();
+        return Stop(Scalar<long>("SELECT user_id FROM sessions WHERE id = @p0", s), s, at);
     });
+
+    /// Called on every status check, so a queued logout knows when the PC was last online.
+    public void PcSeen(string pc) => Exec("UPDATE pcs SET last_seen = @p0 WHERE name = @p1", Iso(_now()), pc);
 
     /// Pay-at-end bill: free inside the start grace; otherwise the minimum, then whole blocks,
     /// with BlockGraceMin free after each block ends (e.g. 35 min = 1 block, 36 min = 2 blocks).
@@ -366,6 +399,7 @@ public sealed class CafeCore : IDisposable
         return plan;
     });
 
+    /// Owner changes how long a plan or carried-over time stays valid (more days, or fewer with a negative number).
     public void ExtendPlan(long by, long plan, int days, string reason) => Tx(() =>
     {
         RequireOwner(by); RequireReason(reason);

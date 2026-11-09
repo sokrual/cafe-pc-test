@@ -246,6 +246,59 @@ public sealed class BillingTests : IDisposable
     }
 
     [Fact]
+    public void Customer_self_lock_keeps_time_running_and_only_they_or_staff_unlock()
+    {
+        _cafe.AddPc(_owner, "PC1");
+        _cafe.AddUser(_staff, Role.Customer, "Other", "9000000004", "3333");
+        _cafe.PcLogin("PC1", "9000000003", "2222");
+        Wait(10);
+        var st = _cafe.PcSelfLock("PC1");
+        Assert.Equal((true, true), (st.Locked, st.SelfLocked));
+        Wait(20); // stepped away: still charged
+        Assert.Throws<CafeException>(() => _cafe.PcLogin("PC1", "9000000004", "3333")); // someone else
+        Assert.Throws<CafeException>(() => _cafe.PcLogin("PC1", "9000000003", "9999")); // wrong PIN
+        Assert.False(_cafe.PcLogin("PC1", "9000000003", "2222").Locked);
+        Assert.Equal(1800, _cafe.StateOf("PC1").ElapsedSec);
+        _cafe.PcSelfLock("PC1");
+        _cafe.Unlock(_staff, "PC1"); // staff can always open it
+        Assert.False(_cafe.StateOf("PC1").Locked);
+        Assert.Equal(TimeSpan.FromMinutes(30), _cafe.PcLogout("PC1").Used);
+        Assert.Throws<CafeException>(() => _cafe.PcSelfLock("PC1")); // nobody logged in
+    }
+
+    [Fact]
+    public void Carry_over_lasts_30_days_by_default_and_the_owner_can_change_it()
+    {
+        var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 60);
+        Wait(10); _cafe.Stop(_staff, s);
+        Assert.Equal(50, _cafe.PlanMinutesLeft(_cust));
+        _clock = _clock.AddDays(31);
+        Assert.Equal(0, _cafe.PlanMinutesLeft(_cust)); // expired after the default 30 days
+        _cafe.Rate = _cafe.Rate with { CarryOverDays = 90 }; // owner's own default
+        var s2 = _cafe.StartPrepaid(_staff, "PC1", _cust, 60);
+        Wait(30); _cafe.Stop(_staff, s2);
+        _clock = _clock.AddDays(60);
+        Assert.Equal(30, _cafe.PlanMinutesLeft(_cust));
+    }
+
+    [Fact]
+    public void T1_4_logout_queued_offline_bills_to_when_it_happened_not_when_the_network_came_back()
+    {
+        _cafe.AddPc(_owner, "PC1");
+        _cafe.PcLogin("PC1", "9000000003", "2222");
+        Wait(20); _cafe.PcSeen("PC1"); // last contact at 20 min
+        Wait(15);                      // network down; customer logs out at 35 min
+        Wait(60);                      // network back an hour later; PC sends "logout, 3600 s ago"
+        Assert.Equal(TimeSpan.FromMinutes(35), _cafe.PcLogout("PC1", 3600).Used);
+
+        _cafe.PcLogin("PC1", "9000000003", "2222");
+        Wait(10); _cafe.PcSeen("PC1");
+        Wait(5);
+        // a tampered PC claims the logout was 5 hours ago: never earlier than the last contact
+        Assert.Equal(TimeSpan.FromMinutes(10), _cafe.PcLogout("PC1", 5 * 3600).Used);
+    }
+
+    [Fact]
     public void Money_rows_cannot_be_edited_or_deleted_even_directly()
     {
         var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 60);

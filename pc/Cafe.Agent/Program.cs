@@ -1,26 +1,39 @@
+using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 
 namespace Cafe.Agent;
 
 // The gaming PC program: a lock screen until a customer logs in, then a small timer that hides during games.
 // It asks the admin PC every 2 s what to show; the admin PC is always right about time and money.
-// Usage: Cafe.Agent --server http://ADMIN-PC:5080 --token-file pc.token [--name "Shinzx Gaming Hub"]
+// Usage: Cafe.Agent --server https://ADMIN-PC:5443 [--token-file pc.token] [--pin-file server.pin] [--name "Shinzx Gaming Hub"] [--logs dir]
 static class Program
 {
+    static string _logDir = "";
+
     [STAThread]
     static void Main(string[] args)
     {
         string? Arg(string n) => Array.IndexOf(args, n) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
-        var token = File.ReadAllText(Arg("--token-file") ?? Path.Combine(AppContext.BaseDirectory, "pc.token")).Trim();
+        string Read(string flag, string file) => File.ReadAllText(Arg(flag) ?? Path.Combine(AppContext.BaseDirectory, file)).Trim();
+        _logDir = Arg("--logs") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Cafe", "logs");
+        Log("started");
         ApplicationConfiguration.Initialize();
-        Application.Run(new Agent(new Uri(Arg("--server") ?? "http://127.0.0.1:5080"), token, Arg("--name") ?? "Shinzx Gaming Hub"));
+        Application.Run(new Agent(new Uri(Arg("--server") ?? "https://127.0.0.1:5443"), Read("--token-file", "pc.token"), Read("--pin-file", "server.pin"), Arg("--name") ?? "Shinzx Gaming Hub"));
+    }
+
+    // never logs PINs or tokens; a log that can't be written must not stop the PC program
+    public static void Log(string line)
+    {
+        try { Directory.CreateDirectory(_logDir); File.AppendAllText(Path.Combine(_logDir, $"agent-{DateTime.Now:yyyyMMdd}.log"), $"{DateTime.Now:HH:mm:ss} {line}{Environment.NewLine}"); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 
     public static string Fmt(long sec) => sec >= 3600 ? $"{sec / 3600}:{sec / 60 % 60:00}:{sec % 60:00}" : $"{sec / 60:00}:{sec % 60:00}";
 }
 
-public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec);
+public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec, bool SelfLocked = false);
 record ErrorBody(string Error);
 
 sealed class Agent : ApplicationContext
@@ -30,13 +43,17 @@ sealed class Agent : ApplicationContext
     readonly TimerWidget _timer;
     PcState _state = new(true, null, null, null, 0, null); // locked until the admin PC says otherwise
     DateTime _stateAt = DateTime.UtcNow;
+    readonly List<(string path, Stopwatch since)> _queue = []; // actions made while the admin PC was unreachable
+    bool _online = true;
 
-    public Agent(Uri server, string token, string name)
+    public Agent(Uri server, string token, string pin, string name)
     {
-        _http = new HttpClient { BaseAddress = server, Timeout = TimeSpan.FromSeconds(3) };
+        // only the admin PC's own certificate is accepted (pinned SHA-256), so nobody can pretend to be the counter
+        var tls = new HttpClientHandler { ServerCertificateCustomValidationCallback = (_, cert, _, _) => cert is not null && Convert.ToHexString(SHA256.HashData(cert.RawData)) == pin };
+        _http = new HttpClient(tls) { BaseAddress = server, Timeout = TimeSpan.FromSeconds(3) };
         _http.DefaultRequestHeaders.Add("X-Pc-Token", token);
         _lock = new LockScreen(name, Login);
-        _timer = new TimerWidget(Now, Logout);
+        _timer = new TimerWidget(Now, () => Send("/pc/logout", lockNow: true), () => Send("/pc/selflock", lockNow: true));
         KeyBlocker.Install(() => _lock.Visible);
         var poll = new System.Windows.Forms.Timer { Interval = 2000 };
         poll.Tick += async (_, _) => await Refresh();
@@ -54,12 +71,29 @@ sealed class Agent : ApplicationContext
 
     async Task Refresh()
     {
-        try { if (await _http.GetFromJsonAsync<PcState>("/pc/state") is { } s) Apply(s); }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { } // shortcut: offline keeps the last state; B2.2 adds the offline queue
+        try
+        {
+            while (_queue.Count > 0) // replay in order; the admin PC is told how long ago each one happened
+            {
+                var (path, since) = _queue[0];
+                using var r = await _http.PostAsync(path == "/pc/logout" ? $"{path}?ago={(long)since.Elapsed.TotalSeconds}" : path, null);
+                Program.Log($"sent queued {path} ({(long)since.Elapsed.TotalSeconds}s late): {(int)r.StatusCode}");
+                _queue.RemoveAt(0); // a 400 (e.g. already logged out at the counter) is final too
+            }
+            if (await _http.GetFromJsonAsync<PcState>("/pc/state") is { } s) Apply(s);
+            if (!_online) Program.Log("admin PC reachable again");
+            _online = true;
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
+        {
+            if (_online) Program.Log($"admin PC unreachable, timing goes on here: {e.Message}");
+            _online = false; // the session keeps running on the admin PC; this screen keeps counting from the last state
+        }
     }
 
     void Apply(PcState s)
     {
+        if (s.Locked != _state.Locked) Program.Log(s.Locked ? $"locked: {s.Message}" : $"unlocked, session {s.Session} ({s.Mode})");
         (_state, _stateAt) = (s, DateTime.UtcNow);
         if (s.Locked) { _timer.Hide(); _lock.ShowLocked(s.Message); }
         else { _lock.Hide(); _timer.ShowSession(); }
@@ -77,9 +111,11 @@ sealed class Agent : ApplicationContext
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { return "Cannot reach the counter PC. Please ask staff."; }
     }
 
-    async void Logout()
+    // logout and customer lock: done now if the admin PC answers, otherwise queued and the screen locks anyway
+    async void Send(string path, bool lockNow)
     {
-        try { (await _http.PostAsync("/pc/logout", null)).Dispose(); } catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { }
+        _queue.Add((path, Stopwatch.StartNew())); // shortcut: the queue lives in memory; if this program is killed while offline the logout is lost and staff close the session
+        if (lockNow) Apply(_state with { Locked = true, Message = path == "/pc/logout" ? "Logged out. Please pay at the counter." : "Locked. Your time is still running." });
         await Refresh();
     }
 }
@@ -118,6 +154,7 @@ sealed class LockScreen : Form
     public void ShowLocked(string? message)
     {
         _message.Text = message ?? "Log in with your phone number and PIN";
+        _go.Text = message?.StartsWith("Locked by the customer") == true ? "Unlock" : "Log in";
         Bounds = SystemInformation.VirtualScreen; // every monitor
         if (!Visible) { _error.Text = ""; _phone.Text = ""; Show(); }
         Native.TakeForeground(Handle);
@@ -135,7 +172,7 @@ sealed class TimerWidget : Form
     readonly HashSet<int> _warned = [];
     DateTime _peekUntil;
 
-    public TimerWidget(Func<(PcState, long, long?)> now, Action logout)
+    public TimerWidget(Func<(PcState, long, long?)> now, Action logout, Action selfLock)
     {
         _now = now;
         Name = "TimerWidget"; Text = "Cafe timer";
@@ -143,9 +180,14 @@ sealed class TimerWidget : Form
         BackColor = Color.FromArgb(20, 20, 28); Opacity = 0.9; Size = new Size(190, 84); StartPosition = FormStartPosition.Manual;
         var wa = Screen.PrimaryScreen!.WorkingArea;
         Location = new Point(wa.Right - Width - 12, wa.Bottom - Height - 12);
-        var bye = new Button { Name = "Logout", Text = "Log out", Dock = DockStyle.Bottom, Height = 28, FlatStyle = FlatStyle.Flat, ForeColor = Color.White };
+        var buttons = new TableLayoutPanel { Dock = DockStyle.Bottom, Height = 28, ColumnCount = 2 };
+        buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        var away = new Button { Name = "SelfLock", Text = "Lock", Dock = DockStyle.Fill, FlatStyle = FlatStyle.Flat, ForeColor = Color.White, Margin = Padding.Empty };
+        var bye = new Button { Name = "Logout", Text = "Log out", Dock = DockStyle.Fill, FlatStyle = FlatStyle.Flat, ForeColor = Color.White, Margin = Padding.Empty };
+        away.Click += (_, _) => selfLock();
         bye.Click += (_, _) => logout();
-        Controls.Add(_text); Controls.Add(bye);
+        buttons.Controls.Add(away, 0, 0); buttons.Controls.Add(bye, 1, 0);
+        Controls.Add(_text); Controls.Add(buttons);
         _tray.MouseClick += (_, _) => { _peekUntil = DateTime.UtcNow.AddSeconds(5); if (Active) Visible = true; };
         var tick = new System.Windows.Forms.Timer { Interval = 1000 };
         tick.Tick += (_, _) => Tick();

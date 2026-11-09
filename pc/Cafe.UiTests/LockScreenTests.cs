@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Input;
@@ -8,174 +9,232 @@ using FlaUI.Core.WindowsAPI;
 using FlaUI.UIA3;
 using Xunit;
 
-// Phase 1 (T1.1) on a real Windows desktop: FlaUI plays the customer. Starts the real server and the real
-// PC program (paths in CAFE_SERVER_EXE / CAFE_AGENT_EXE), so this tests what ships, not a mock.
+[assembly: CollectionBehavior(DisableTestParallelization = true)] // one server port, one desktop
+
+// Phase 1 on a real Windows desktop: FlaUI plays the customer against the real server and the real PC program
+// (CAFE_SERVER_EXE, CAFE_AGENT_EXE, CAFE_WATCHDOG_EXE), so this tests what ships, not a mock.
 public sealed class LockScreenTests : IDisposable
 {
-    const string Url = "http://127.0.0.1:5080";
-    readonly string _data = Path.Combine(Path.GetTempPath(), $"cafe-ui-{Guid.NewGuid():N}");
-    readonly Process _server, _agent;
-    readonly UIA3Automation _ui = new();
-    readonly HttpClient _http = new() { BaseAddress = new Uri(Url) };
-    readonly Application _app;
-    readonly System.Text.StringBuilder _serverLog = new();
+    readonly Rig _rig = new();
+    Process _agent = null!;
+    Application _app = null!;
 
-    public LockScreenTests()
-    {
-        _server = new Process { StartInfo = new(Env("CAFE_SERVER_EXE"), $"--data \"{_data}\" --seed-test --urls {Url}") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true } };
-        _server.OutputDataReceived += (_, e) => { lock (_serverLog) _serverLog.AppendLine(e.Data); };
-        _server.ErrorDataReceived += (_, e) => { lock (_serverLog) _serverLog.AppendLine(e.Data); };
-        _server.Start(); _server.BeginOutputReadLine(); _server.BeginErrorReadLine();
-        WaitFor(() => File.Exists(Path.Combine(_data, "pc1.token")) && Ping(), 60, "server did not start", () => _serverLog.ToString());
-        _agent = Process.Start(new ProcessStartInfo(Env("CAFE_AGENT_EXE"), $"--server {Url} --token-file \"{Path.Combine(_data, "pc1.token")}\" --name \"Test Cafe\"") { UseShellExecute = false })!;
-        _app = Application.Attach(_agent.Id);
-    }
-
-    public void Dispose()
-    {
-        foreach (var p in new[] { _agent, _server }) { try { p.Kill(true); p.WaitForExit(5000); } catch (InvalidOperationException) { } }
-        _ui.Dispose(); _http.Dispose();
-        try { Directory.Delete(_data, true); } catch (IOException) { }
-    }
+    public void Dispose() { Rig.Kill(_agent); _rig.Dispose(); }
 
     [Fact]
-    public async Task T1_1_lock_screen_cannot_be_escaped_and_login_lock_logout_work()
+    public async Task T1_1_to_T1_6_escape_login_locks_offline_logout()
     {
         try { await Scenario(); }
-        catch { FlaUI.Core.Capturing.Capture.Screen().ToFile(Path.Combine(Environment.GetEnvironmentVariable("GITHUB_WORKSPACE") ?? ".", "screen.png")); throw; } // what the screen looked like at the failure
+        catch { Rig.Screenshot(); throw; }
     }
 
     async Task Scenario()
     {
+        _agent = Process.Start(new ProcessStartInfo(Rig.Env("CAFE_AGENT_EXE"), _rig.AgentArgs) { UseShellExecute = false })!;
+        _app = Application.Attach(_agent.Id);
         var lockWin = Window("LockScreen");
-        var desk = _ui.GetDesktop().BoundingRectangle;
+        var desk = _rig.Ui.GetDesktop().BoundingRectangle;
         Assert.True(lockWin.BoundingRectangle.Contains(desk) || lockWin.BoundingRectangle == desk, $"lock screen {lockWin.BoundingRectangle} does not cover the screen {desk}");
 
-        // escape attempts while locked
-        var combos = new (string name, VirtualKeyShort[] keys)[]
+        // T1.1 escape attempts while locked
+        foreach (var (name, keys) in new (string, VirtualKeyShort[])[]
         {
-            ("Alt+Tab", [VirtualKeyShort.ALT, VirtualKeyShort.TAB]),
-            ("Win", [VirtualKeyShort.LWIN]),
-            ("Win+R", [VirtualKeyShort.LWIN, VirtualKeyShort.KEY_R]),
-            ("Win+D", [VirtualKeyShort.LWIN, VirtualKeyShort.KEY_D]),
-            ("Alt+F4", [VirtualKeyShort.ALT, VirtualKeyShort.F4]),
-            ("Ctrl+Esc", [VirtualKeyShort.CONTROL, VirtualKeyShort.ESCAPE]),
+            ("Alt+Tab", [VirtualKeyShort.ALT, VirtualKeyShort.TAB]), ("Win", [VirtualKeyShort.LWIN]),
+            ("Win+R", [VirtualKeyShort.LWIN, VirtualKeyShort.KEY_R]), ("Win+D", [VirtualKeyShort.LWIN, VirtualKeyShort.KEY_D]),
+            ("Alt+F4", [VirtualKeyShort.ALT, VirtualKeyShort.F4]), ("Ctrl+Esc", [VirtualKeyShort.CONTROL, VirtualKeyShort.ESCAPE]),
             ("Alt+Esc", [VirtualKeyShort.ALT, VirtualKeyShort.ESCAPE]),
-        };
-        foreach (var (name, keys) in combos)
+        })
         {
             Keyboard.TypeSimultaneously(keys);
             Thread.Sleep(1200);
             Assert.False(_agent.HasExited, $"{name} closed the PC program");
-            Assert.True(IsOnTop(lockWin), $"{name} got past the lock screen (foreground is now '{ForegroundTitle()}')");
+            Assert.True(OnTop("LockScreen"), $"{name} got past the lock screen (foreground is now '{Rig.ForegroundTitle()}')");
         }
-
-        // a program that opens on its own must not stay in front of the lock screen
         using (var other = Process.Start(new ProcessStartInfo("cmd.exe", "/k title Escape-attempt") { UseShellExecute = true }))
         {
             Thread.Sleep(2500);
-            Assert.True(IsOnTop(lockWin), $"another window stayed in front of the lock screen ('{ForegroundTitle()}')");
-            try { other?.Kill(true); } catch (InvalidOperationException) { }
+            Assert.True(OnTop("LockScreen"), $"another window stayed in front of the lock screen ('{Rig.ForegroundTitle()}')");
+            Rig.Kill(other);
         }
 
-        // wrong PIN: stays locked and says so
-        LogIn(lockWin, "9000000003", "0000");
-        WaitFor(() => Text(lockWin, "Error").Length > 0, 10, "no error shown for a wrong PIN");
-        Assert.True(IsOnTop(lockWin));
+        // wrong PIN, then the right one
+        LogIn("9000000003", "0000");
+        Rig.WaitFor(() => Text(Window("LockScreen"), "Error").Length > 0, 10, "no error shown for a wrong PIN");
+        LogIn("9000000003", "2222");
+        var staff = await _rig.StaffToken();
+        Rig.WaitFor(() => _rig.State(staff)["session"] is not null, 10, "no session on the admin PC after login");
+        var session = long.Parse(_rig.State(staff)["session"]!.ToString()!);
+        var played = Stopwatch.StartNew();
+        Rig.WaitFor(() => Hidden("LockScreen"), 10, "lock screen did not go away after login");
+        Rig.WaitFor(() => System.Text.RegularExpressions.Regex.IsMatch(Text(Window("TimerWidget"), "TimerText"), @"^\d\d:\d\d$"), 10, "timer is not counting");
 
-        // right PIN: session starts on the admin PC, lock screen goes, timer appears and counts
-        LogIn(lockWin, "9000000003", "2222");
-        var staff = await StaffToken();
-        WaitFor(() => State(staff)["session"] is not null, 10, "no session on the admin PC after login");
-        WaitFor(() => Find("LockScreen") is null or { IsOffscreen: true }, 10, "lock screen did not go away after login");
-        // the timer hides while something full-screen is in front (as in a game); check it only when nothing is
-        var fullScreenInFront = FullScreenInFront();
-        if (!fullScreenInFront)
-        {
-            var timer = Window("TimerWidget");
-            WaitFor(() => System.Text.RegularExpressions.Regex.IsMatch(Text(timer, "TimerText"), @"^\d\d:\d\d$"), 10, $"timer shows '{Text(timer, "TimerText")}'");
-        }
-        else Console.WriteLine($"timer widget check skipped: full-screen '{ForegroundTitle()}' is in front, so the timer is correctly hidden");
+        // admin lock pauses and shows the message; unlock
+        await _rig.Post("/staff/lock", new { pc = "PC1", message = "Please come to the counter" }, staff);
+        Rig.WaitFor(() => !Hidden("LockScreen") && Text(Window("LockScreen"), "Message") == "Please come to the counter", 10, "admin lock did not show the lock screen");
+        await _rig.Post("/staff/unlock", new { pc = "PC1", message = (string?)null }, staff);
+        Rig.WaitFor(() => Hidden("LockScreen"), 10, "admin unlock did not hide the lock screen");
 
-        // owner locks the PC from the counter: lock screen comes back with the message, and unlock removes it
-        await Post("/staff/lock", new { pc = "PC1", message = "Please come to the counter" }, staff);
-        WaitFor(() => Find("LockScreen") is { IsOffscreen: false } w && Text(w, "Message") == "Please come to the counter", 10, "admin lock did not show the lock screen");
-        await Post("/staff/unlock", new { pc = "PC1", message = (string?)null }, staff);
-        WaitFor(() => Find("LockScreen") is null or { IsOffscreen: true }, 10, "admin unlock did not hide the lock screen");
+        // customer's own lock: time keeps running; another customer cannot open it; their own PIN can
+        Click("TimerWidget", "SelfLock");
+        Rig.WaitFor(() => !Hidden("LockScreen") && _rig.State(staff)["selfLocked"] is System.Text.Json.JsonElement { ValueKind: System.Text.Json.JsonValueKind.True }, 10, "customer lock did not lock");
+        var before = _rig.ElapsedSec(staff);
+        Thread.Sleep(4000);
+        Assert.True(_rig.ElapsedSec(staff) >= before + 3, "time stopped during the customer's own lock");
+        LogIn("9000000002", "1111");
+        Rig.WaitFor(() => Text(Window("LockScreen"), "Error").Length > 0, 10, "someone else could open a customer's lock");
+        LogIn("9000000003", "2222");
+        Rig.WaitFor(() => Hidden("LockScreen"), 10, "the customer's own PIN did not unlock");
 
-        // customer logs out: session ends on the admin PC and the lock screen is back
-        if (!fullScreenInFront) Part(Window("TimerWidget"), "Logout").AsButton().Invoke();
-        else (await PcPost("/pc/logout")).EnsureSuccessStatusCode();
-        WaitFor(() => Find("LockScreen") is { IsOffscreen: false }, 10, "lock screen did not come back after logout");
-        Assert.Null(State(staff)["session"]);
+        // T1.4/T1.6 admin PC goes down: the PC keeps going; a logout made offline is billed to when it happened
+        _rig.StopServer();
+        Thread.Sleep(6000);
+        Assert.True(Hidden("LockScreen") && !_agent.HasExited, "PC locked or crashed when the admin PC went away");
+        Click("TimerWidget", "Logout");
+        var loggedOutAt = played.Elapsed;
+        Rig.WaitFor(() => !Hidden("LockScreen"), 10, "logout while offline did not lock the screen");
+        Thread.Sleep(20000); // 20 s more offline
+        _rig.StartServer();
+        staff = await _rig.StaffToken();
+        Rig.WaitFor(() => _rig.State(staff)["session"] is null, 20, "queued logout never reached the admin PC");
+        var used = TimeSpan.Parse(_rig.Bill(staff, session)["used"]!.ToString()!);
+        Assert.True(used <= loggedOutAt + TimeSpan.FromSeconds(5), $"billed {used}, but the customer logged out after {loggedOutAt} (offline time was charged)");
     }
 
     // ---------------- helpers ----------------
 
-    static string Env(string name) => Environment.GetEnvironmentVariable(name) ?? throw new InvalidOperationException($"set {name}");
+    Window? Find(string id) => _app.GetAllTopLevelWindows(_rig.Ui).FirstOrDefault(w => w.Properties.AutomationId.ValueOrDefault == id);
+    Window Window(string id) { Window? w = null; Rig.WaitFor(() => (w = Find(id)) is { IsOffscreen: false }, 20, $"window {id} never appeared"); return w!; }
+    bool Hidden(string id) => Find(id) is null or { IsOffscreen: true };
+    bool OnTop(string id) => Find(id) is { IsOffscreen: false } w && Rig.GetForegroundWindow() == w.Properties.NativeWindowHandle.Value;
+    static AutomationElement Part(AutomationElement root, string id) => root.FindFirstDescendant(c => c.ByAutomationId(id)) ?? throw new InvalidOperationException($"no {id} on screen");
+    static string Text(AutomationElement root, string id) => root.FindFirstDescendant(c => c.ByAutomationId(id))?.Name ?? "";
+    void Click(string window, string button) => Part(Window(window), button).AsButton().Invoke();
+
+    void LogIn(string phone, string pin)
+    {
+        var w = Window("LockScreen");
+        Part(w, "Phone").AsTextBox().Text = phone;
+        Part(w, "Pin").AsTextBox().Text = pin;
+        Part(w, "Login").AsButton().Invoke();
+    }
+}
+
+// T1.2: a customer kills the PC program; the SYSTEM watchdog service brings it back.
+public sealed class WatchdogTests : IDisposable
+{
+    readonly Rig _rig = new();
+    readonly string _exe = Rig.Env("CAFE_WATCHDOG_EXE");
+
+    public void Dispose()
+    {
+        Sc("stop CafeWatchdog"); Thread.Sleep(1500); Sc("delete CafeWatchdog");
+        foreach (var p in Process.GetProcessesByName("Cafe.Agent")) Rig.Kill(p);
+        _rig.Dispose();
+    }
+
+    [Fact]
+    public void T1_2_killed_pc_program_is_back_within_5_seconds_and_locked()
+    {
+        try
+        {
+            File.WriteAllText(Path.Combine(Path.GetDirectoryName(_exe)!, "watchdog.args"), $"\"{Rig.Env("CAFE_AGENT_EXE")}\" {_rig.AgentArgs}");
+            Assert.Equal(0, Sc($"create CafeWatchdog binPath= \"{_exe}\" start= demand"));
+            Assert.Equal(0, Sc("start CafeWatchdog"));
+            Process? first = null;
+            Rig.WaitFor(() => (first = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault()) is not null, 20, "watchdog never started the PC program");
+            Thread.Sleep(3000);
+            first!.Kill(); // what a customer would do with Task Manager
+            var gone = Stopwatch.StartNew();
+            Process? back = null;
+            Rig.WaitFor(() => (back = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault(p => p.Id != first.Id)) is not null, 10, "PC program was not restarted");
+            Assert.True(gone.Elapsed < TimeSpan.FromSeconds(5), $"restart took {gone.Elapsed.TotalSeconds:F1} s (limit 5 s)");
+            var app = Application.Attach(back!.Id);
+            Rig.WaitFor(() => app.GetAllTopLevelWindows(_rig.Ui).Any(w => w.Properties.AutomationId.ValueOrDefault == "LockScreen" && !w.IsOffscreen), 15, "restarted PC program does not show the lock screen");
+        }
+        catch { Rig.Screenshot(); throw; }
+    }
+
+    static int Sc(string args)
+    {
+        using var p = Process.Start(new ProcessStartInfo("sc.exe", args) { UseShellExecute = false, RedirectStandardOutput = true })!;
+        p.WaitForExit(15000);
+        return p.ExitCode;
+    }
+}
+
+// Starts the real admin server on a temp data folder; HTTPS with the server's pinned certificate, like a gaming PC.
+sealed class Rig : IDisposable
+{
+    const string Url = "https://127.0.0.1:5443";
+    public readonly string Data = Path.Combine(Path.GetTempPath(), $"cafe-ui-{Guid.NewGuid():N}");
+    public readonly UIA3Automation Ui = new();
+    readonly System.Text.StringBuilder _serverLog = new();
+    Process? _server;
+    HttpClient _http = null!;
+
+    public Rig() => StartServer();
+    public string AgentArgs => $"--server {Url} --token-file \"{Path.Combine(Data, "pc1.token")}\" --pin-file \"{Path.Combine(Data, "server.pin")}\" --name \"Test Cafe\" --logs \"{Path.Combine(Data, "logs")}\"";
+
+    public void StartServer()
+    {
+        _server = new Process { StartInfo = new(Env("CAFE_SERVER_EXE"), $"--data \"{Data}\" --seed-test --port 5443") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true } };
+        _server.OutputDataReceived += (_, e) => { lock (_serverLog) _serverLog.AppendLine(e.Data); };
+        _server.ErrorDataReceived += (_, e) => { lock (_serverLog) _serverLog.AppendLine(e.Data); };
+        _server.Start(); _server.BeginOutputReadLine(); _server.BeginErrorReadLine();
+        WaitFor(() => File.Exists(Path.Combine(Data, "server.pin")) && Ping(), 60, "server did not start", () => _serverLog.ToString());
+    }
+    public void StopServer() => Kill(_server);
+
+    public void Dispose()
+    {
+        Kill(_server); Ui.Dispose(); _http.Dispose();
+        foreach (var f in Directory.GetFiles(Path.Combine(Data, "logs"))) Console.WriteLine($"--- {Path.GetFileName(f)}\n{File.ReadAllText(f)}"); // logs end up in the test output
+        try { Directory.Delete(Data, true); } catch (IOException) { }
+    }
 
     bool Ping()
     {
+        var pin = File.ReadAllText(Path.Combine(Data, "server.pin")).Trim();
+        _http?.Dispose();
+        _http = new HttpClient(new HttpClientHandler { ServerCertificateCustomValidationCallback = (_, c, _, _) => c is not null && Convert.ToHexString(SHA256.HashData(c.RawData)) == pin }) { BaseAddress = new Uri(Url) };
         try { return _http.GetAsync("/pc/state").Result.StatusCode == System.Net.HttpStatusCode.Unauthorized; } // up, and refusing a missing token
-        catch (Exception e) when (e is HttpRequestException or AggregateException) { return false; }
+        catch (AggregateException) { return false; }
     }
 
-    static void WaitFor(Func<bool> ok, int seconds, string why, Func<string>? more = null)
+    public async Task<string> StaffToken()
+    {
+        var r = await _http.PostAsJsonAsync("/staff/login", new { phone = "9000000002", pin = "1111" });
+        r.EnsureSuccessStatusCode();
+        return (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["token"];
+    }
+    public async Task Post(string path, object body, string token)
+    {
+        using var m = new HttpRequestMessage(HttpMethod.Post, path) { Content = JsonContent.Create(body) };
+        m.Headers.Authorization = new("Bearer", token);
+        (await _http.SendAsync(m)).EnsureSuccessStatusCode();
+    }
+    Dictionary<string, object?> Get(string path, string token)
+    {
+        using var m = new HttpRequestMessage(HttpMethod.Get, path);
+        m.Headers.Authorization = new("Bearer", token);
+        return _http.Send(m).Content.ReadFromJsonAsync<Dictionary<string, object?>>().Result!;
+    }
+    public Dictionary<string, object?> State(string token) => Get("/staff/state/PC1", token);
+    public Dictionary<string, object?> Bill(string token, long session) => Get($"/staff/bill/{session}", token);
+    public long ElapsedSec(string token) => long.Parse(State(token)["elapsedSec"]!.ToString()!);
+
+    public static string Env(string name) => Environment.GetEnvironmentVariable(name) ?? throw new InvalidOperationException($"set {name}");
+    public static void Kill(Process? p) { try { if (p is { HasExited: false }) { p.Kill(true); p.WaitForExit(5000); } } catch (InvalidOperationException) { } }
+
+    public static void WaitFor(Func<bool> ok, int seconds, string why, Func<string>? more = null)
     {
         var until = DateTime.UtcNow.AddSeconds(seconds);
         while (DateTime.UtcNow < until) { try { if (ok()) return; } catch (Exception) { } Thread.Sleep(300); } // UI elements vanish mid-check; retry
         Assert.Fail(more is null ? why : $"{why}\n{more()}");
     }
 
-    Window? Find(string id) => _app.GetAllTopLevelWindows(_ui).FirstOrDefault(w => w.Properties.AutomationId.ValueOrDefault == id);
-    Window Window(string id) { Window? w = null; WaitFor(() => (w = Find(id)) is not null, 20, $"window {id} never appeared"); return w!; }
-    static AutomationElement Part(AutomationElement root, string id) => root.FindFirstDescendant(c => c.ByAutomationId(id)) ?? throw new InvalidOperationException($"no {id} on screen");
-    static string Text(AutomationElement root, string id) => root.FindFirstDescendant(c => c.ByAutomationId(id))?.Name ?? "";
-
-    static void LogIn(Window lockWin, string phone, string pin)
-    {
-        Part(lockWin, "Phone").AsTextBox().Text = phone;
-        Part(lockWin, "Pin").AsTextBox().Text = pin;
-        Part(lockWin, "Login").AsButton().Invoke();
-    }
-
-    bool IsOnTop(Window w) => !w.IsOffscreen && GetForegroundWindow() == w.Properties.NativeWindowHandle.Value;
-    static string ForegroundTitle() { var sb = new System.Text.StringBuilder(256); GetWindowText(GetForegroundWindow(), sb, 256); return sb.ToString(); }
-
-    async Task<string> StaffToken()
-    {
-        var r = await _http.PostAsJsonAsync("/staff/login", new { phone = "9000000002", pin = "1111" });
-        r.EnsureSuccessStatusCode();
-        return (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["token"];
-    }
-    async Task Post(string path, object body, string token)
-    {
-        using var m = new HttpRequestMessage(HttpMethod.Post, path) { Content = JsonContent.Create(body) };
-        m.Headers.Authorization = new("Bearer", token);
-        (await _http.SendAsync(m)).EnsureSuccessStatusCode();
-    }
-    Dictionary<string, object?> State(string token)
-    {
-        using var m = new HttpRequestMessage(HttpMethod.Get, "/staff/state/PC1");
-        m.Headers.Authorization = new("Bearer", token);
-        return _http.Send(m).Content.ReadFromJsonAsync<Dictionary<string, object?>>().Result!;
-    }
-    async Task<HttpResponseMessage> PcPost(string path)
-    {
-        using var m = new HttpRequestMessage(HttpMethod.Post, path);
-        m.Headers.Add("X-Pc-Token", File.ReadAllText(Path.Combine(_data, "pc1.token")).Trim());
-        return await _http.SendAsync(m);
-    }
-
-    static bool FullScreenInFront()
-    {
-        var h = GetForegroundWindow();
-        return GetWindowRect(h, out var r) && r.L <= 0 && r.T <= 0 && r.R >= GetSystemMetrics(0) && r.B >= GetSystemMetrics(1);
-    }
-    [StructLayout(LayoutKind.Sequential)] struct Rect { public int L, T, R, B; }
-    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out Rect r);
-    [DllImport("user32.dll")] static extern int GetSystemMetrics(int i);
-
-    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    public static void Screenshot() => FlaUI.Core.Capturing.Capture.Screen().ToFile(Path.Combine(Environment.GetEnvironmentVariable("GITHUB_WORKSPACE") ?? ".", $"screen-{DateTime.Now:HHmmss}.png"));
+    public static string ForegroundTitle() { var sb = new System.Text.StringBuilder(256); GetWindowText(GetForegroundWindow(), sb, 256); return sb.ToString(); }
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int max);
 }
