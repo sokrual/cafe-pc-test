@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <!-- one version for every program; shown in logs so a report says which build produced it -->
+    <Version>0.2.0</Version>
+  </PropertyGroup>
+</Project>

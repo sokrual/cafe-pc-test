@@ -80,7 +80,7 @@ public sealed class LockScreenTests : IDisposable
         var before = _rig.ElapsedSec(staff);
         Thread.Sleep(4000);
         Assert.True(_rig.ElapsedSec(staff) >= before + 3, "time stopped during the customer's own lock");
-        LogIn("9000000002", "1111");
+        LogIn("9000000002", "111111");
         Rig.WaitFor(() => Text(Window("LockScreen"), "Error").Length > 0, 10, "someone else could open a customer's lock");
         LogIn("9000000003", "2222");
         Rig.WaitFor(() => Hidden("LockScreen"), 10, "the customer's own PIN did not unlock");
@@ -163,6 +163,23 @@ public sealed class WatchdogTests : IDisposable
     }
 }
 
+// PIN guessing from the network: after 10 tries in a minute from one address, the server stops answering logins.
+[Collection("desktop")]
+public sealed class ServerApiTests : IDisposable
+{
+    readonly Rig _rig = new();
+    public void Dispose() => _rig.Dispose();
+
+    [Fact]
+    public async Task Login_guessing_is_cut_off_after_10_tries_a_minute()
+    {
+        var codes = new List<int>();
+        for (var i = 0; i < 12; i++) codes.Add(await _rig.TryStaffLogin("9000000009", $"{i:000000}"));
+        Assert.All(codes.Take(10), c => Assert.Equal(400, c)); // wrong phone or PIN
+        Assert.All(codes.Skip(10), c => Assert.Equal(429, c)); // too many requests
+    }
+}
+
 // Starts the real admin server on a temp data folder; HTTPS with the server's pinned certificate, like a gaming PC.
 sealed class Rig : IDisposable
 {
@@ -204,10 +221,11 @@ sealed class Rig : IDisposable
 
     public async Task<string> StaffToken()
     {
-        var r = await _http.PostAsJsonAsync("/staff/login", new { phone = "9000000002", pin = "1111" });
+        var r = await _http.PostAsJsonAsync("/staff/login", new { phone = "9000000002", pin = "111111" });
         r.EnsureSuccessStatusCode();
         return (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["token"];
     }
+    public async Task<int> TryStaffLogin(string phone, string pin) => (int)(await _http.PostAsJsonAsync("/staff/login", new { phone, pin })).StatusCode;
     public async Task Post(string path, object body, string token)
     {
         using var m = new HttpRequestMessage(HttpMethod.Post, path) { Content = JsonContent.Create(body) };

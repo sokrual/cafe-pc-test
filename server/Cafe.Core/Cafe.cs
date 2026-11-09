@@ -36,6 +36,9 @@ public sealed class CafeCore : IDisposable
         // Password makes Microsoft.Data.Sqlite send PRAGMA key; SQLite3 Multiple Ciphers encrypts the whole file
         _db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Password = key, Pooling = false }.ToString());
         _db.Open();
+        // schema version: a newer program adds its changes as version 2, 3... and never reads a newer database by mistake
+        const int SchemaVersion = 1;
+        if (Scalar<long>("PRAGMA user_version") > SchemaVersion) { _db.Dispose(); throw new CafeException("this database is from a newer version of the program"); }
         Exec("""
             PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, role INTEGER NOT NULL, name TEXT NOT NULL,
@@ -61,6 +64,7 @@ public sealed class CafeCore : IDisposable
             CREATE INDEX IF NOT EXISTS ledger_user ON ledger(user_id, kind);
             CREATE INDEX IF NOT EXISTS sessions_open ON sessions(pc) WHERE ended IS NULL;
             """);
+        Exec($"PRAGMA user_version = {SchemaVersion}");
         _ready = true;
     }
 
@@ -70,7 +74,11 @@ public sealed class CafeCore : IDisposable
 
     public long AddUser(long? by, Role role, string name, string phone, string pin)
     {
-        if (pin.Length < 4 || !pin.All(char.IsAsciiDigit)) throw new CafeException("PIN must be at least 4 digits");
+        // staff and owner logins work from any PC on the network, so their PINs must be much harder to guess
+        var minPin = role == Role.Customer ? 4 : 6;
+        if (pin.Length < minPin || pin.Length > 12 || !pin.All(char.IsAsciiDigit)) throw new CafeException($"PIN must be {minPin} to 12 digits");
+        if (phone.Length is < 10 or > 13 || !phone.All(char.IsAsciiDigit)) throw new CafeException("phone must be 10 to 13 digits");
+        if (string.IsNullOrWhiteSpace(name) || name.Length > 60) throw new CafeException("name must be 1 to 60 characters");
         return Tx(() =>
         {
             // the very first user is the owner; after that only the owner adds staff, staff add customers
@@ -256,6 +264,7 @@ public sealed class CafeCore : IDisposable
     public void Lock(long by, string pc, string? message = null) => Tx(() =>
     {
         RequireStaff(by);
+        if (message?.Length > 200) throw new CafeException("message must be at most 200 characters");
         if (Exec("UPDATE pcs SET locked = 1, message = @p0 WHERE name = @p1", message, pc) == 0) throw new CafeException($"no PC called {pc}");
         if (Scalar<long?>("SELECT id FROM sessions WHERE pc = @p0 AND ended IS NULL AND pause_from IS NULL", pc) is long s) Pause(by, s);
         Audit(by, "lock", $"{pc}: {message}");

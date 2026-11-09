@@ -18,7 +18,7 @@ static class Program
         string? Arg(string n) => Array.IndexOf(args, n) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
         string Read(string flag, string file) => File.ReadAllText(Arg(flag) ?? Path.Combine(AppContext.BaseDirectory, file)).Trim();
         _logDir = Arg("--logs") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Cafe", "logs");
-        Log("started");
+        Log($"started v{typeof(Program).Assembly.GetName().Version}");
         ApplicationConfiguration.Initialize();
         Application.Run(new Agent(new Uri(Arg("--server") ?? "https://127.0.0.1:5443"), Read("--token-file", "pc.token"), Read("--pin-file", "server.pin"), Arg("--name") ?? "Shinzx Gaming Hub"));
     }

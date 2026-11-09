@@ -25,7 +25,7 @@ static class Watchdog
     {
         var line = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "watchdog.args")).Trim();
         var exe = Path.GetFileNameWithoutExtension(line.Split('"')[1]);
-        Log($"watching {exe}");
+        Log($"v{typeof(Watchdog).Assembly.GetName().Version} watching {exe}");
         while (!stop.IsCancellationRequested)
         {
             try

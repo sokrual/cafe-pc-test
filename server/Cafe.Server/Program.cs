@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Threading.RateLimiting;
 using Cafe;
 
 // Admin PC server, HTTPS only. Gaming PCs call /pc/* with their own token and accept only this server's
@@ -16,9 +17,20 @@ if (args.Contains("--seed-test")) Seed(cafe, data);
 var cert = Cert(data);
 
 var builder = WebApplication.CreateBuilder();
-builder.WebHost.ConfigureKestrel(k => k.Listen(IPAddress.Any, int.Parse(Arg("--port") ?? "5443"), l => l.UseHttps(cert)));
+builder.WebHost.ConfigureKestrel(k =>
+{
+    k.Listen(IPAddress.Any, int.Parse(Arg("--port") ?? "5443"), l => l.UseHttps(cert));
+    k.Limits.MaxRequestBodySize = 16 * 1024; // every request here is tiny
+});
+// PIN guessing: besides the per-account lockout, each network address gets 10 login tries a minute
+builder.Services.AddRateLimiter(o =>
+{
+    o.RejectionStatusCode = 429;
+    o.AddPolicy("login", c => RateLimitPartition.GetFixedWindowLimiter(c.Connection.RemoteIpAddress?.ToString() ?? "?", _ => new() { PermitLimit = 10, Window = TimeSpan.FromMinutes(1) }));
+});
 builder.Logging.ClearProviders(); // our own log file below; never the request bodies (they carry PINs)
 var app = builder.Build();
+app.UseRateLimiter();
 var staffTokens = new ConcurrentDictionary<string, (long user, DateTime until)>();
 
 app.Use(async (ctx, next) => // rule breaks become a 400 with a plain message, bad tokens a 401; never a stack trace
@@ -37,7 +49,7 @@ long Staff(HttpContext c)
 }
 
 app.MapGet("/pc/state", (HttpContext c) => { var pc = Pc(c); var st = cafe.StateOf(pc); cafe.PcSeen(pc); return st; });
-app.MapPost("/pc/login", (HttpContext c, LoginBody b) => { var pc = Pc(c); var st = cafe.PcLogin(pc, b.Phone, b.Pin); Log($"{pc} login session {st.Session}"); return st; });
+app.MapPost("/pc/login", (HttpContext c, LoginBody b) => { var pc = Pc(c); var st = cafe.PcLogin(pc, b.Phone, b.Pin); Log($"{pc} login session {st.Session}"); return st; }).RequireRateLimiting("login");
 app.MapPost("/pc/selflock", (HttpContext c) => cafe.PcSelfLock(Pc(c)));
 app.MapPost("/pc/logout", (HttpContext c, long? ago) => { var pc = Pc(c); var bill = cafe.PcLogout(pc, ago ?? 0); Log($"{pc} logout session {bill.SessionId} used {bill.Used} (sent {ago ?? 0}s late)"); return bill; });
 
@@ -47,13 +59,13 @@ app.MapPost("/staff/login", (LoginBody b) =>
     var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
     staffTokens[token] = (user, DateTime.UtcNow.AddHours(12)); // shortcut: in memory, so a server restart logs staff out
     return new { token };
-});
+}).RequireRateLimiting("login");
 app.MapPost("/staff/lock", (HttpContext c, PcBody b) => { cafe.Lock(Staff(c), b.Pc, b.Message); return cafe.StateOf(b.Pc); });
 app.MapPost("/staff/unlock", (HttpContext c, PcBody b) => { cafe.Unlock(Staff(c), b.Pc); return cafe.StateOf(b.Pc); });
 app.MapGet("/staff/state/{pc}", (HttpContext c, string pc) => { Staff(c); return cafe.StateOf(pc); });
 app.MapGet("/staff/bill/{session:long}", (HttpContext c, long session) => { Staff(c); return cafe.BillFor(session); });
 
-Log($"started, certificate {cert.Thumbprint}");
+Log($"started v{System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version}, certificate {cert.Thumbprint}");
 app.Run();
 
 string? Arg(string name) => Array.IndexOf(args, name) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
@@ -85,8 +97,8 @@ static X509Certificate2 Cert(string data)
 static void Seed(CafeCore cafe, string data)
 {
     if (File.Exists(Path.Combine(data, "pc1.token"))) return; // already seeded
-    var owner = cafe.AddUser(null, Role.Owner, "Owner", "9000000001", "4321");
-    var staff = cafe.AddUser(owner, Role.Staff, "Staff", "9000000002", "1111");
+    var owner = cafe.AddUser(null, Role.Owner, "Owner", "9000000001", "432100");
+    var staff = cafe.AddUser(owner, Role.Staff, "Staff", "9000000002", "111111");
     cafe.AddUser(staff, Role.Customer, "Test Customer", "9000000003", "2222");
     File.WriteAllText(Path.Combine(data, "pc1.token"), cafe.AddPc(owner, "PC1"));
 }

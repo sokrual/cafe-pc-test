@@ -14,8 +14,8 @@ public sealed class BillingTests : IDisposable
     public BillingTests()
     {
         _cafe = new CafeCore(_file, "test-key-123", () => _clock);
-        _owner = _cafe.AddUser(null, Role.Owner, "Owner", "9000000001", "4321");
-        _staff = _cafe.AddUser(_owner, Role.Staff, "Staff", "9000000002", "1111");
+        _owner = _cafe.AddUser(null, Role.Owner, "Owner", "9000000001", "432100");
+        _staff = _cafe.AddUser(_owner, Role.Staff, "Staff", "9000000002", "111111");
         _cust = _cafe.AddUser(_staff, Role.Customer, "Ravi", "9000000003", "2222");
     }
     public void Dispose() { _cafe.Dispose(); SqliteConnection.ClearAllPools(); File.Delete(_file); }
@@ -233,7 +233,7 @@ public sealed class BillingTests : IDisposable
         Assert.Throws<CafeException>(() => _cafe.PcLogin("PC1", "9000000003", "0000"));
         var st = _cafe.PcLogin("PC1", "9000000003", "2222");
         Assert.Equal(("postpaid", false, (long?)null), (st.Mode, st.Locked, st.LeftSec));
-        Assert.Throws<CafeException>(() => _cafe.PcLogin("PC1", "9000000002", "1111")); // in use
+        Assert.Throws<CafeException>(() => _cafe.PcLogin("PC1", "9000000002", "111111")); // in use
         Wait(40);
         Assert.Equal(6000, _cafe.PcLogout("PC1").Charged);
         _cafe.BuyPlan(_staff, _cust, 60, 7, 5000, "cash");
@@ -320,6 +320,18 @@ public sealed class BillingTests : IDisposable
     }
 
     [Fact]
+    public void A_database_from_a_newer_version_is_refused()
+    {
+        _cafe.Dispose();
+        using (var db = new SqliteConnection($"Data Source={_file};Password=test-key-123;Pooling=False"))
+        {
+            db.Open();
+            using var c = db.CreateCommand(); c.CommandText = "PRAGMA user_version = 99"; c.ExecuteNonQuery();
+        }
+        Assert.Throws<CafeException>(() => new CafeCore(_file, "test-key-123"));
+    }
+
+    [Fact]
     public void Money_rows_cannot_be_edited_or_deleted_even_directly()
     {
         var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 60);
@@ -361,6 +373,12 @@ public sealed class BillingTests : IDisposable
     [Fact]
     public void Roles_who_can_add_whom()
     {
+        Assert.Throws<CafeException>(() => _cafe.AddUser(_owner, Role.Staff, "Short PIN", "9000000010", "1234")); // staff need 6+ digits
+        Assert.Throws<CafeException>(() => _cafe.AddUser(_staff, Role.Customer, "Bad phone", "12345", "1234"));
+        Assert.Throws<CafeException>(() => _cafe.AddUser(_staff, Role.Customer, new string('x', 61), "9000000011", "1234"));
+        Assert.Throws<CafeException>(() => _cafe.AddUser(_staff, Role.Customer, "Long PIN", "9000000012", "1234567890123"));
+        _cafe.AddPc(_owner, "PC1");
+        Assert.Throws<CafeException>(() => _cafe.Lock(_staff, "PC1", new string('x', 201)));
         Assert.Throws<CafeException>(() => _cafe.AddUser(_staff, Role.Staff, "X", "9000000009", "1234"));
         Assert.Throws<CafeException>(() => _cafe.AddUser(_cust, Role.Customer, "X", "9000000009", "1234"));
         Assert.Throws<CafeException>(() => _cafe.AddUser(_staff, Role.Customer, "X", "9000000009", "12a4"));
