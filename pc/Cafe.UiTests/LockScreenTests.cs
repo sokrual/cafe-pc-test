@@ -9,10 +9,10 @@ using FlaUI.Core.WindowsAPI;
 using FlaUI.UIA3;
 using Xunit;
 
-[assembly: CollectionBehavior(DisableTestParallelization = true)] // one server port, one desktop
 
 // Phase 1 on a real Windows desktop: FlaUI plays the customer against the real server and the real PC program
 // (CAFE_SERVER_EXE, CAFE_AGENT_EXE, CAFE_WATCHDOG_EXE), so this tests what ships, not a mock.
+[Collection("desktop")] // one server port, one desktop: never two tests at once
 public sealed class LockScreenTests : IDisposable
 {
     readonly Rig _rig = new();
@@ -120,6 +120,7 @@ public sealed class LockScreenTests : IDisposable
 }
 
 // T1.2: a customer kills the PC program; the SYSTEM watchdog service brings it back.
+[Collection("desktop")]
 public sealed class WatchdogTests : IDisposable
 {
     readonly Rig _rig = new();
