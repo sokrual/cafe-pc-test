@@ -18,11 +18,15 @@ public sealed class LockScreenTests : IDisposable
     readonly UIA3Automation _ui = new();
     readonly HttpClient _http = new() { BaseAddress = new Uri(Url) };
     readonly Application _app;
+    readonly System.Text.StringBuilder _serverLog = new();
 
     public LockScreenTests()
     {
-        _server = Process.Start(new ProcessStartInfo(Env("CAFE_SERVER_EXE"), $"--data \"{_data}\" --seed-test --urls {Url}") { UseShellExecute = false })!;
-        WaitFor(() => File.Exists(Path.Combine(_data, "pc1.token")) && Ping(), 60, "server did not start");
+        _server = new Process { StartInfo = new(Env("CAFE_SERVER_EXE"), $"--data \"{_data}\" --seed-test --urls {Url}") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true } };
+        _server.OutputDataReceived += (_, e) => { lock (_serverLog) _serverLog.AppendLine(e.Data); };
+        _server.ErrorDataReceived += (_, e) => { lock (_serverLog) _serverLog.AppendLine(e.Data); };
+        _server.Start(); _server.BeginOutputReadLine(); _server.BeginErrorReadLine();
+        WaitFor(() => File.Exists(Path.Combine(_data, "pc1.token")) && Ping(), 60, "server did not start", () => _serverLog.ToString());
         _agent = Process.Start(new ProcessStartInfo(Env("CAFE_AGENT_EXE"), $"--server {Url} --token-file \"{Path.Combine(_data, "pc1.token")}\" --name \"Test Cafe\"") { UseShellExecute = false })!;
         _app = Application.Attach(_agent.Id);
     }
@@ -110,11 +114,11 @@ public sealed class LockScreenTests : IDisposable
         catch (Exception e) when (e is HttpRequestException or AggregateException) { return false; }
     }
 
-    static void WaitFor(Func<bool> ok, int seconds, string why)
+    static void WaitFor(Func<bool> ok, int seconds, string why, Func<string>? more = null)
     {
         var until = DateTime.UtcNow.AddSeconds(seconds);
         while (DateTime.UtcNow < until) { try { if (ok()) return; } catch (Exception) { } Thread.Sleep(300); } // UI elements vanish mid-check; retry
-        Assert.Fail(why);
+        Assert.Fail(more is null ? why : $"{why}\n{more()}");
     }
 
     Window? Find(string id) => _app.GetAllTopLevelWindows(_ui).FirstOrDefault(w => w.Properties.AutomationId.ValueOrDefault == id);

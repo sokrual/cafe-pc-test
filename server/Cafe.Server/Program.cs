@@ -9,7 +9,7 @@ Directory.CreateDirectory(data);
 using var cafe = new CafeCore(Path.Combine(data, "cafe.db"), DbKey(data));
 if (args.Contains("--seed-test")) Seed(cafe, data);
 
-var app = WebApplication.CreateSlimBuilder(args).Build();
+var app = WebApplication.CreateSlimBuilder(Arg("--urls") is string u ? ["--urls", u] : []).Build(); // our own flags are not web settings
 var staffTokens = new ConcurrentDictionary<string, (long user, DateTime until)>();
 
 app.Use(async (ctx, next) => // rule breaks become a 400 with a plain message, bad tokens a 401; never a stack trace
