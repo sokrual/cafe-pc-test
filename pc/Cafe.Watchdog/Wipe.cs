@@ -59,11 +59,12 @@ static class Wipe
             var hold = Path.Combine(Data, "caches");
             if (Directory.Exists(hold)) Directory.Delete(hold, true); // left over from a clean-up that was cut off
             Directory.CreateDirectory(hold);
+            var links = RemoveLinks(profile, profile, clean); // before any copy or delete here (no customer program runs any more)
             for (var i = 0; i < caches.Length; i++) Move(Path.Combine(profile, caches[i]), Path.Combine(hold, $"{i}"));
             using var rc = Process.Start(new ProcessStartInfo("robocopy.exe", $"\"{clean}\" \"{profile}\" /MIR /XJ /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.* UsrClass.dat*") { UseShellExecute = false, CreateNoWindow = true })!;
             if (!rc.WaitForExit(300_000)) rc.Kill();
             for (var i = 0; i < caches.Length; i++) Move(Path.Combine(hold, $"{i}"), Path.Combine(profile, caches[i]));
-            report += $"; files reset (robocopy {(rc.HasExited ? rc.ExitCode : -1)})"; // 0-7 = fine; files Windows keeps open are skipped
+            report += $"; {links} links removed; files reset (robocopy {(rc.HasExited ? rc.ExitCode : -1)})"; // 0-7 = fine; files Windows keeps open are skipped
         }
 
         if (Registry.LocalMachine.OpenSubKey(@"SOFTWARE\WOW6432Node\Valve\Steam")?.GetValue("InstallPath") is string steam)
@@ -88,7 +89,8 @@ static class Wipe
             var saved = File.ReadAllLines(runs).Select(l => l.Split('\t', 3)).Where(p => p.Length == 3).ToList();
             foreach (var k in new[] { "Run", "RunOnce" })
             {
-                using var key = hive.CreateSubKey($@"Software\Microsoft\Windows\CurrentVersion\{k}");
+                using var key = hive.OpenSubKey($@"Software\Microsoft\Windows\CurrentVersion\{k}", true);
+                if (key is null || !RealName(key).StartsWith($@"\REGISTRY\USER\{sid}\", StringComparison.OrdinalIgnoreCase)) continue; // a registry link out of the account
                 foreach (var n in key.GetValueNames()) key.DeleteValue(n);
                 foreach (var p in saved.Where(p => p[0] == k)) key.SetValue(p[1], p[2], p[2].Contains('%') ? RegistryValueKind.ExpandString : RegistryValueKind.String);
             }
@@ -106,6 +108,45 @@ static class Wipe
             removed++;
         }
         return report + $"; {removed} customer tasks removed";
+    }
+
+    // A customer can leave links in the account: folder links (junctions) and hard links to files they cannot change
+    // themselves. This SYSTEM clean-up must never copy over or delete through them, so they go first: a link pointing
+    // outside the account is removed (only the link, never its target); links Windows makes inside the account stay.
+    static int RemoveLinks(string dir, string profile, string clean)
+    {
+        var n = 0;
+        foreach (var e in new DirectoryInfo(dir).EnumerateFileSystemInfos("*", new EnumerationOptions { IgnoreInaccessible = true, AttributesToSkip = 0 }))
+        {
+            if (e.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                var target = e.LinkTarget is string t ? Path.GetFullPath(t, Path.GetDirectoryName(e.FullName)!) : null;
+                if (target is not null && target.StartsWith(profile + "\\", StringComparison.OrdinalIgnoreCase)) continue;
+                try { if (e is DirectoryInfo d) d.Delete(); else e.Delete(); n++; } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+            else if (e is DirectoryInfo d) n += RemoveLinks(d.FullName, profile, clean);
+            // only files the copy will write over matter: deleting an extra file removes just that name
+            else if (File.Exists(Path.Combine(clean, Path.GetRelativePath(profile, e.FullName))) && LinkCount(e.FullName) > 1) { e.Delete(); n++; }
+        }
+        return n;
+    }
+
+    static int LinkCount(string file)
+    {
+        try
+        {
+            using var h = File.OpenHandle(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            var info = new byte[52]; // BY_HANDLE_FILE_INFORMATION: nNumberOfLinks at byte 40
+            return GetFileInformationByHandle(h, info) ? BitConverter.ToInt32(info, 40) : 1;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return 1; } // held open by Windows: not a customer's
+    }
+
+    // the key's real path after any registry links; .NET only shows the name it was opened with
+    static string RealName(RegistryKey key)
+    {
+        var buf = new byte[2048];
+        return NtQueryKey(key.Handle, 3 /*KeyNameInformation*/, buf, buf.Length, out _) == 0 ? System.Text.Encoding.Unicode.GetString(buf, 4, BitConverter.ToInt32(buf, 0)) : "";
     }
 
     // a cache that cannot move (a file still open) is left where it is: worst case it is rebuilt, never an error
@@ -143,6 +184,8 @@ static class Wipe
     }
 
     [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(int access, bool inherit, int pid);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetFileInformationByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle file, byte[] info);
+    [DllImport("ntdll.dll")] static extern int NtQueryKey(Microsoft.Win32.SafeHandles.SafeRegistryHandle key, int cls, byte[] info, int length, out int result);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, int access, out IntPtr token);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int cls, IntPtr info, int length, out int returned);
 }

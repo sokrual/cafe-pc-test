@@ -127,6 +127,8 @@ try {
     $taskMade = CustomerPs "schtasks.exe /create /tn ShinzxCustomerTask /tr 'C:\Windows\System32\PING.EXE 127.0.0.1' /sc minute /mo 30 /f; exit `$LASTEXITCODE"
     $runMade = CustomerPs "Set-ItemProperty HKCU:\$runKey Evil 'C:\evil.exe'"
     New-Item "C:\ShinzxCanary" -ItemType Directory -Force | Out-Null; "must stay" | Set-Content "C:\ShinzxCanary\keep.txt"
+    icacls.exe "C:\ShinzxCanary" /inheritance:r /grant "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX" /T | Out-Null   # the customer alone cannot delete it
+    $hard = CustomerPs "New-Item -ItemType HardLink -Path '$prof\Desktop\Game.txt' -Target 'C:\ShinzxCanary\keep.txt' -Force | Out-Null"   # a trap where the owner's shortcut was
     $linkMade = CustomerPs "New-Item -ItemType Junction -Path '$prof\Downloads\link' -Target 'C:\ShinzxCanary' | Out-Null"
     New-Item "$env:ProgramFiles\OpenFolder" -ItemType Directory -Force | Out-Null
     icacls.exe "$env:ProgramFiles\OpenFolder" /grant "*S-1-5-32-545:(OI)(CI)M" | Out-Null   # like Steam's folder: any user can write
@@ -147,7 +149,8 @@ try {
     $cfg = Get-Content "C:\FakeSteam\config\config.vdf" -Raw
     Check "B3.F6" "Steam saved logins cleared, other Steam settings kept" (-not (Test-Path "C:\FakeSteam\config\loginusers.vdf") -and $cfg -notmatch "ConnectCache" -and $cfg -match "Software") ""
     Check "B3.F7" "Lock screen still running after the clean-up" ([bool](Get-Process Cafe.Agent -ErrorAction SilentlyContinue)) ""
-    Check "B3.F8" "A customer's link cannot make the clean-up delete files elsewhere" ($linkMade -eq 0 -and (Test-Path "C:\ShinzxCanary\keep.txt")) "link made: exit $linkMade"
+    Check "B3.F8" "A customer's folder link cannot make the clean-up delete files elsewhere" ($linkMade -eq 0 -and (Test-Path "C:\ShinzxCanary\keep.txt")) "link made: exit $linkMade"
+    Check "B3.F8b" "A customer's hard link cannot make the clean-up write over files elsewhere" ((Get-Content "C:\ShinzxCanary\keep.txt" -Raw) -eq "must stay`r`n") "hard link made: exit $hard (a refusal by Windows is a pass too)"
     Check "B3.F9" "A program named like a mouse app in a folder anyone can write is closed" ($p4.HasExited) "lghub.exe in an open folder"
     $run = Get-ItemProperty "Registry::HKEY_USERS\$($u.SID.Value)\$runKey" -ErrorAction SilentlyContinue
     Check "B3.F10" "Customer's autostart entry removed, the owner's kept" ($runMade -eq 0 -and $ownerRun -eq 0 -and -not $run.Evil -and $run.OwnerApp -eq "C:\owner.exe") "made: customer exit $runMade, owner exit $ownerRun"
