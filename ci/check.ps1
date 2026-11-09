@@ -15,7 +15,7 @@ $lines = Get-Content (Join-Path $done.FullName "REPORT.txt")
 $res = foreach ($l in $lines) { if ($l -match '^\[(PASS|FAIL|NOT TESTED)\] (\S+) (.*)$') { [pscustomobject]@{ r = $Matches[1]; id = $Matches[2]; text = $Matches[3] } } }
 
 # must PASS on every Windows machine
-$mustPass = "T0.1a", "T0.2g", "T0.2c", "T0.2h", "T0.2e", "T0.1b", "T0.1f", "T0.1h", "T0.9a", "T0.9b", "T0.4a", "T0.4b", "T0.9c"
+$mustPass = "T0.1a", "T0.2g", "T0.2c", "T0.2h", "T0.2e", "T0.1b", "T0.1f", "T0.1h", "T0.9a", "T0.9b", "T0.4a", "T0.4b", "T0.9c", "T0.9e"
 if ($env:PROCESSOR_ARCHITECTURE -ne "ARM64") { $mustPass += "T0.1g" } # on Arm our x64 timer runs emulated and uses more memory
 foreach ($id in $mustPass) {
     $hit = @($res | Where-Object id -eq $id)

@@ -92,6 +92,19 @@ jobs:
         shell: pwsh
         run: dotnet publish timer -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -o out
 
+      - name: Make the owner kit zip (only kept from a run where every job passed)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item kitzip -ItemType Directory | Out-Null
+          Copy-Item kit\*, out\ShinzxTimerTest.exe kitzip
+          Compress-Archive kitzip\* ShinzxPhase0.zip
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'windows-latest'
+        with:
+          name: ShinzxPhase0
+          path: ShinzxPhase0.zip
+
       - name: Put the kit where the owner puts it
         shell: powershell
         run: |

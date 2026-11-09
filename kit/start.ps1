@@ -177,6 +177,10 @@ Add-Result "T0.2e" "Day-long check switched on (audit only, nothing blocked)" $t
 #     Nothing is blocked; every program Windows would not trust is logged (event 3076), so FINISH-TEST can list
 #     them by maker for the owner to approve. ---
 try {
+    # the log that records findings is small by default and a gaming PC fills it fast: 64 MB for the test, put back at FINISH
+    $sizeFile = Join-Path $logs "levelA-logsize.txt"
+    if (-not (Test-Path $sizeFile)) { (Get-WinEvent -ListLog "Microsoft-Windows-CodeIntegrity/Operational").MaximumSizeInBytes | Out-File $sizeFile -Encoding utf8 }
+    wevtutil.exe sl "Microsoft-Windows-CodeIntegrity/Operational" /ms:67108864
     $policy = Join-Path $logs "levelA-audit.xml"
     Copy-Item "$env:WINDIR\schemas\CodeIntegrity\ExamplePolicies\DefaultWindows_Audit.xml" $policy -Force
     Set-CIPolicyIdInfo -FilePath $policy -PolicyName "Shinzx test (watch only)" -ResetPolicyID | Out-Null

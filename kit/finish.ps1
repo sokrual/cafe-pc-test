@@ -131,6 +131,8 @@ if (-not $ReportOnly) {
         try { # remove the Level A watch-only policy (every id START-TEST added)
             foreach ($id in @(Get-Content (Join-Path $logs "levelA-policy-id.txt") -ErrorAction Stop | Where-Object { $_.Trim() })) { CiTool.exe --remove-policy $id.Trim() -json | Out-Null }
         } catch { Write-Host "Removing the Level A check failed: $_" -ForegroundColor Red }
+        try { wevtutil.exe sl "Microsoft-Windows-CodeIntegrity/Operational" /ms:$((Get-Content (Join-Path $logs "levelA-logsize.txt") -Raw -ErrorAction Stop).Trim()) }
+        catch { Write-Host "Putting the log size back failed: $_" -ForegroundColor Red }
         try {
             $old = (Get-Content (Join-Path $logs "pua-before.txt") -Raw -ErrorAction Stop).Trim()
             Set-MpPreference -PUAProtection (@{ "0" = "Disabled"; "1" = "Enabled"; "2" = "AuditMode" }[$old])
@@ -145,6 +147,10 @@ if (-not $ReportOnly) {
     $ids = @(Get-Content (Join-Path $logs "levelA-policy-id.txt") -ErrorAction SilentlyContinue | Where-Object { $_.Trim() } | ForEach-Object { $_.Trim().Trim('{}') })
     $still = @($ids | Where-Object { (CiTool.exe --list-policies) -match [regex]::Escape($_) })
     Add-Result "T0.9c" "Level A watch-only check removed" ($still.Count -eq 0) "$($still.Count) of $($ids.Count) still on"
+    if (Test-Path (Join-Path $logs "levelA-logsize.txt")) {
+        $want = [long](Get-Content (Join-Path $logs "levelA-logsize.txt") -Raw).Trim(); $size = (Get-WinEvent -ListLog "Microsoft-Windows-CodeIntegrity/Operational").MaximumSizeInBytes
+        Add-Result "T0.9e" "Windows log size put back" ($size -eq $want) "now $size bytes, before $want"
+    }
     if (Test-Path (Join-Path $logs "pua-before.txt")) {
         $want = (Get-Content (Join-Path $logs "pua-before.txt") -Raw).Trim(); $now = "$((Get-MpPreference).PUAProtection)"
         Add-Result "T0.9d" "Defender setting put back" ($now -eq $want) "now $now, before $want"
