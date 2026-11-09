@@ -39,6 +39,7 @@ try {
     $code = 0; $why = ""
     WaitFor 30 { $script:code = try { Invoke-WebRequest https://127.0.0.1:5443/pc/state -UseBasicParsing | Out-Null; 200 } catch { $script:why = $_.Exception.Message; [int]$_.Exception.Response.StatusCode }; $script:code -ne 0 } | Out-Null
     Check "B3.A2" "Server answers HTTPS and refuses a PC without its key" ($code -eq 401) "HTTP $code $why"
+    if ($code -ne 401) { Get-WinEvent -FilterHashtable @{ LogName = "System"; ProviderName = "Schannel" } -MaxEvents 5 -ErrorAction SilentlyContinue | Format-List TimeCreated, Id, Message | Out-String | Write-Host }
     $rule = Get-NetFirewallRule -Group "Shinzx counter" | Where-Object DisplayName -like "*cafe server*" | Get-NetFirewallAddressFilter
     Check "B3.A3" "Firewall lets only the shop network reach the server" ("$($rule.RemoteAddress)" -eq "LocalSubnet") "remote: $($rule.RemoteAddress)"
     Check "B3.A4" "Internet filter (AdGuard Home) installed, checked and running" ((Get-Service AdGuardHome -ErrorAction SilentlyContinue).Status -eq "Running") "version pinned, SHA-256 checked"
@@ -119,7 +120,9 @@ try {
     Check "B3.F2" "Customer's programs closed (a Windows one and a game)" ($p1.HasExited -and $p2.HasExited) "ping $($p1.HasExited), game $($p2.HasExited)"
     Check "B3.F3" "Mouse app on the keep list stays running" (-not $p3.HasExited) "lghub.exe"
     Check "B3.F4" "Customer's files and app logins gone" (-not (Test-Path "$prof\Downloads\secret.txt") -and -not (Test-Path "$prof\AppData\Roaming\discord")) "Downloads, Discord login"
-    Check "B3.F5" "Owner's set-up back, graphics cache kept" ((Test-Path "$prof\Desktop\Game.txt") -and (Test-Path "$prof\AppData\Local\Discord\Update.txt") -and (Test-Path "$prof\AppData\Local\NVIDIA\DXCache\x.bin")) ""
+    Check "B3.F5a" "Owner's desktop shortcut back" (Test-Path "$prof\Desktop\Game.txt") ""
+    Check "B3.F5b" "Owner's Discord install kept" (Test-Path "$prof\AppData\Local\Discord\Update.txt") ""
+    Check "B3.F5c" "Graphics card cache kept" (Test-Path "$prof\AppData\Local\NVIDIA\DXCache\x.bin") ""
     $cfg = Get-Content "C:\FakeSteam\config\config.vdf" -Raw
     Check "B3.F6" "Steam saved logins cleared, other Steam settings kept" (-not (Test-Path "C:\FakeSteam\config\loginusers.vdf") -and $cfg -notmatch "ConnectCache" -and $cfg -match "Software") ""
     Check "B3.F7" "Lock screen still running after the clean-up" ([bool](Get-Process Cafe.Agent -ErrorAction SilentlyContinue)) ""

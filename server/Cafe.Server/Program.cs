@@ -105,7 +105,8 @@ static X509Certificate2 Cert(string data)
         using var made = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(10));
         File.WriteAllBytes(file, ProtectedData.Protect(made.Export(X509ContentType.Pfx), null, DataProtectionScope.LocalMachine));
     }
-    var cert = X509CertificateLoader.LoadPkcs12(ProtectedData.Unprotect(File.ReadAllBytes(file), null, DataProtectionScope.LocalMachine), null);
+    // MachineKeySet: as a SYSTEM service the key must sit in the machine key store, or Windows' TLS cannot use it
+    var cert = X509CertificateLoader.LoadPkcs12(ProtectedData.Unprotect(File.ReadAllBytes(file), null, DataProtectionScope.LocalMachine), null, X509KeyStorageFlags.MachineKeySet);
     File.WriteAllText(Path.Combine(data, "server.pin"), Convert.ToHexString(SHA256.HashData(cert.RawData))); // goes into each PC's settings
     return cert;
 }
