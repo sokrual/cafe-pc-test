@@ -219,7 +219,8 @@ static class Native
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int max);
     [StructLayout(LayoutKind.Sequential)] struct Rect { public int L, T, R, B; }
 
-    // Windows refuses SetForegroundWindow from a background program unless it joins the foreground thread's input
+    // Windows refuses SetForegroundWindow from a background program unless it joins the foreground thread's input.
+    // The Windows 11 Start and Search panels sit above every normal window, so if one is open, Escape closes it first.
     public static void TakeForeground(IntPtr h)
     {
         var fg = GetWindowThreadProcessId(GetForegroundWindow(), IntPtr.Zero);
@@ -227,7 +228,9 @@ static class Native
         if (fg != me) AttachThreadInput(me, fg, true);
         SetForegroundWindow(h);
         if (fg != me) AttachThreadInput(me, fg, false);
+        if (GetForegroundWindow() != h) { keybd_event(0x1B, 0, 0, 0); keybd_event(0x1B, 0, 2, 0); SetForegroundWindow(h); } // Escape down, up
     }
+    [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, nuint extra);
 
     public static bool GameInFront(IntPtr self)
     {
