@@ -1,0 +1,12 @@
+# Programs that keep running when a customer logs out (mouse, keyboard, headset and sound apps).
+# One program name per line. Only programs inside C:\Program Files or C:\Program Files (x86) count.
+# Everything else the customer opened is closed, so the next customer starts clean.
+lghub.exe
+lghub_agent.exe
+lghub_system_tray.exe
+RazerAppEngine.exe
+Razer Synapse 3.exe
+iCUE.exe
+SteelSeriesGG.exe
+SteelSeriesEngine.exe
+NGenuity2.exe

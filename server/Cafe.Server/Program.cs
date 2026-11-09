@@ -18,6 +18,7 @@ if (args.Contains("--seed-test")) Seed(cafe, data);
 var cert = Cert(data);
 
 var builder = WebApplication.CreateBuilder();
+builder.Host.UseWindowsService(o => o.ServiceName = "CafeServer"); // a Windows service at the cafe; a normal program in tests
 builder.WebHost.ConfigureKestrel(k =>
 {
     k.Listen(IPAddress.Any, int.Parse(Arg("--port") ?? "5443"), l => l.UseHttps(cert));

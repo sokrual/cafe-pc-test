@@ -1,0 +1,35 @@
+SHINZX CAFE SOFTWARE - HOW TO INSTALL
+
+You need: the admin password of each PC. Do the counter PC first.
+
+A. THE COUNTER PC (once)
+1. Ask the router to always give this PC the same address
+   (in the router settings this is called "address reservation" or "static IP").
+2. Double-click INSTALL-ADMIN. Click "Yes" when Windows asks for permission.
+3. It shows this PC's address. Write it down.
+4. Open http://127.0.0.1:3000 in the browser and finish the internet filter setup.
+   For "DNS server" choose "All interfaces" and port 53. Write down the password you choose.
+5. A folder "for-gaming-PCs" is made next to INSTALL-ADMIN. Copy what is inside it,
+   and the key file for each PC, into the install folder for the gaming PCs.
+
+B. EACH GAMING PC (two short visits)
+1. Double-click INSTALL-PC. Type the counter PC's address when it asks.
+   The PC restarts and signs in to the "Customer" account by itself. There is no lock screen yet.
+2. In the Customer account: install Discord, add the game shortcuts to the desktop,
+   and open the mouse, keyboard and headset apps once.
+   Do NOT sign in to Discord, Steam or any other app.
+3. Double-click INSTALL-PC again. It asks for the admin password.
+   It saves a clean copy of the Customer account and restarts. Now the lock screen is on.
+
+After a customer logs out, the PC closes everything they opened, removes their files and all
+app logins (Discord, Steam, browsers, Epic, Riot), and puts the clean copy back. This takes a few seconds.
+
+To change the Customer account later (a new game shortcut, a Discord update):
+log in on the lock screen with your own phone number, open C:\Program Files\ShinzxCafe,
+double-click SETUP-MODE, then do steps B2 and B3 again.
+
+To take the software off: double-click UNINSTALL-PC on a gaming PC, or UNINSTALL-ADMIN on the counter PC.
+
+Also do this on every PC: set a BIOS password and turn off "boot from USB" in the BIOS.
+A new game: right-click it, choose "Run as administrator" and type the admin password, once.
+That lets its anti-cheat set itself up. After that customers play it normally.

@@ -27,16 +27,28 @@ static class Watchdog
         var path = Path.GetFullPath(line.Split('"')[1]);
         var exe = Path.GetFileNameWithoutExtension(path);
         // SYSTEM starts whatever these name: if ordinary accounts can change either, a customer could swap in their own program
-        foreach (var f in new[] { Path.Combine(AppContext.BaseDirectory, "watchdog.args"), path })
+        foreach (var f in new[] { AppContext.BaseDirectory, Path.Combine(AppContext.BaseDirectory, "watchdog.args"), path })
             if (WritableByNonAdmins(f)) { Log($"REFUSED: {f} can be changed by non-admin accounts; install into Program Files"); return; }
         Log($"v{typeof(Watchdog).Assembly.GetName().Version} watching {exe}");
+        var setup = Path.Combine(AppContext.BaseDirectory, "setup.flag"); // the installer's setup mode: no lock screen while the owner sets up
+        var sid = Wipe.CustomerSid();
+        uint? watched = null;
+        HashSet<(int, DateTime)> trusted = [];
         while (!stop.IsCancellationRequested)
         {
             try
             {
+                if (File.Exists(Wipe.Request))
+                {
+                    Log(sid is null ? "wipe asked for, but there is no Customer account" : $"wipe: {Wipe.Run(sid, path, trusted)}");
+                    File.Delete(Wipe.Request); // the lock screen lets the next customer log in once this is gone
+                }
                 // match the full path, not just the name: a customer's renamed copy of some other program must not count
-                if (ActiveSession() is uint s && !Process.GetProcessesByName(exe).Any(p => p.SessionId == s && PathOf(p) == path))
+                if (!File.Exists(setup) && ActiveSession() is uint s && !Process.GetProcessesByName(exe).Any(p => p.SessionId == s && Native.PathOf(p) == path))
+                {
+                    if (s != watched) { (watched, trusted) = (s, sid is null ? [] : Wipe.Trusted(sid)); Log($"session {s}: {trusted.Count} Windows programs kept at logout"); }
                     Log(Start(s, line) is int pid ? $"started {exe} in session {s} (pid {pid})" : $"could not start {exe} in session {s}: error {Marshal.GetLastWin32Error()}");
+                }
             }
             catch (Exception e) { Log($"ERROR {e.Message}"); } // the loop must never die
             stop.WaitHandle.WaitOne(1000);
@@ -46,19 +58,14 @@ static class Watchdog
 
     static bool WritableByNonAdmins(string file)
     {
+        var acl = Directory.Exists(file) ? (System.Security.AccessControl.FileSystemSecurity)new DirectoryInfo(file).GetAccessControl() : new FileInfo(file).GetAccessControl();
         var anyone = new[] { "S-1-1-0", "S-1-5-11", "S-1-5-32-545", "S-1-5-4" }; // Everyone, Authenticated Users, Users, Interactive
         // Write = write data/append/attributes only; "Modify" is not used because it also contains read and run
         const System.Security.AccessControl.FileSystemRights write = System.Security.AccessControl.FileSystemRights.Write
             | System.Security.AccessControl.FileSystemRights.Delete | System.Security.AccessControl.FileSystemRights.ChangePermissions | System.Security.AccessControl.FileSystemRights.TakeOwnership;
-        return new FileInfo(file).GetAccessControl().GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier))
+        return acl.GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier))
             .Cast<System.Security.AccessControl.FileSystemAccessRule>()
             .Any(r => r.AccessControlType == System.Security.AccessControl.AccessControlType.Allow && anyone.Contains(r.IdentityReference.Value) && (r.FileSystemRights & write) != 0);
-    }
-
-    static string? PathOf(Process p)
-    {
-        try { return p.MainModule?.FileName is string f ? Path.GetFullPath(f) : null; }
-        catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException) { return null; } // exited, or not readable
     }
 
     static void Log(string line)
@@ -92,14 +99,14 @@ static class Watchdog
             CreateEnvironmentBlock(out env, primary, false);
             var si = new StartupInfo { cb = Marshal.SizeOf<StartupInfo>(), lpDesktop = @"winsta0\default" };
             if (!CreateProcessAsUser(primary, null, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero, false, 0x400 /*UNICODE_ENVIRONMENT*/, env, null, ref si, out var pi)) return null;
-            CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+            Native.CloseHandle(pi.hThread); Native.CloseHandle(pi.hProcess);
             return pi.dwProcessId;
         }
         finally
         {
             if (env != IntPtr.Zero) DestroyEnvironmentBlock(env);
-            if (primary != IntPtr.Zero) CloseHandle(primary);
-            CloseHandle(user);
+            if (primary != IntPtr.Zero) Native.CloseHandle(primary);
+            Native.CloseHandle(user);
         }
     }
 
@@ -121,5 +128,20 @@ static class Watchdog
     [DllImport("userenv.dll")] static extern bool DestroyEnvironmentBlock(IntPtr env);
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     static extern bool CreateProcessAsUser(IntPtr token, string? app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string? dir, ref StartupInfo si, out ProcessInfo pi);
-    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+}
+
+static class Native
+{
+    // full path of a running program; works for 32-bit, 64-bit and emulated programs, null if it exited or is protected
+    public static string? PathOf(Process p)
+    {
+        var h = OpenProcess(0x1000 /*QUERY_LIMITED_INFORMATION*/, false, p.Id);
+        if (h == IntPtr.Zero) return null;
+        try { var sb = new StringBuilder(1024); var n = sb.Capacity; return QueryFullProcessImageName(h, 0, sb, ref n) ? Path.GetFullPath(sb.ToString()) : null; }
+        finally { CloseHandle(h); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(int access, bool inherit, int pid);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool QueryFullProcessImageName(IntPtr h, int flags, StringBuilder name, ref int size);
+    [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
 }

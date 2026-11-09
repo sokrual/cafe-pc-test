@@ -45,6 +45,8 @@ sealed class Agent : ApplicationContext
     DateTime _stateAt = DateTime.UtcNow;
     readonly List<(string path, Stopwatch since)> _queue = []; // actions made while the admin PC was unreachable
     bool _online = true;
+    // installed cafe PCs only: the SYSTEM watchdog cleans the Customer account when this note appears, then deletes it
+    static readonly string WipeNote = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ShinzxCafe", "wipe", "request");
 
     public Agent(Uri server, string token, string pin, string name)
     {
@@ -56,7 +58,7 @@ sealed class Agent : ApplicationContext
         _timer = new TimerWidget(Now, () => Send("/pc/logout", lockNow: true), () => Send("/pc/selflock", lockNow: true));
         KeyBlocker.Install(() => _lock.Visible);
         var poll = new System.Windows.Forms.Timer { Interval = 2000 };
-        poll.Tick += async (_, _) => await Refresh();
+        poll.Tick += async (_, _) => { _lock.SetBusy(File.Exists(WipeNote)); await Refresh(); };
         poll.Start();
         Apply(_state);
         _ = Refresh();
@@ -93,6 +95,7 @@ sealed class Agent : ApplicationContext
 
     void Apply(PcState s)
     {
+        if (_state.Session is not null && s.Session is null) AskForWipe(); // logged out, here or at the counter
         if (s.Locked != _state.Locked) Program.Log(s.Locked ? $"locked: {s.Message}" : $"unlocked, session {s.Session} ({s.Mode})");
         (_state, _stateAt) = (s, DateTime.UtcNow);
         if (s.Locked) { _timer.Hide(); _lock.ShowLocked(s.Message); }
@@ -111,9 +114,17 @@ sealed class Agent : ApplicationContext
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { return "Cannot reach the counter PC. Please ask staff."; }
     }
 
+    static void AskForWipe()
+    {
+        if (!Directory.Exists(Path.GetDirectoryName(WipeNote))) return; // not an installed cafe PC (tests, development)
+        try { File.WriteAllText(WipeNote, ""); Program.Log("asked for the logout clean-up"); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Program.Log($"could not ask for the logout clean-up: {e.Message}"); }
+    }
+
     // logout and customer lock: done now if the admin PC answers, otherwise queued and the screen locks anyway
     async void Send(string path, bool lockNow)
     {
+        if (path == "/pc/logout") AskForWipe(); // also when the admin PC is offline
         _queue.Add((path, Stopwatch.StartNew())); // shortcut: the queue lives in memory; if this program is killed while offline the logout is lost and staff close the session
         if (lockNow) Apply(_state with { Locked = true, Message = path == "/pc/logout" ? "Logged out. Please pay at the counter." : "Locked. Your time is still running." });
         await Refresh();
@@ -159,6 +170,14 @@ sealed class LockScreen : Form
         if (!Visible) { _error.Text = ""; _phone.Text = ""; Show(); }
         Native.TakeForeground(Handle);
         _phone.Focus();
+    }
+
+    const string Cleaning = "Getting this PC ready for the next customer. Please wait.";
+    // nobody logs in while the last customer's apps and logins are being cleared
+    public void SetBusy(bool busy)
+    {
+        if (busy == (_error.Text == Cleaning)) return;
+        _go.Enabled = !busy; _error.Text = busy ? Cleaning : "";
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e) { if (e.CloseReason == CloseReason.UserClosing) e.Cancel = true; base.OnFormClosing(e); }

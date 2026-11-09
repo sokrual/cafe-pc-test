@@ -63,6 +63,49 @@ jobs:
           name: ui-failure-${{ matrix.os }}
           path: screen-*.png
 
+  lockdown:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Lint the install scripts (PowerShell 5.1 rules)
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $bad = "install", "ci" | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Severity Error -Settings @{ Rules = @{ PSUseCompatibleSyntax = @{ Enable = $true; TargetVersions = @("5.1") } } } }
+          $bad | Format-Table -AutoSize
+          if ($bad) { exit 1 }
+      - name: Build what the cafe PCs get (one x64 file each; no files unpacked to a temp folder, so Level A can allow them)
+        shell: pwsh
+        run: |
+          $f = "-c", "Release", "-r", "win-x64", "--self-contained", "true", "-p:PublishSingleFile=true", "-p:DebugType=none"
+          dotnet publish pc/Cafe.Agent @f -o out/agent
+          dotnet publish pc/Cafe.Watchdog @f -o out/watchdog
+          dotnet publish timer @f -o out/timer
+          dotnet publish server/Cafe.Server @f -p:IncludeNativeLibrariesForSelfExtract=true -o out/server
+          foreach ($d in "agent", "watchdog", "timer") { if (@(Get-ChildItem out/$d).Count -ne 1) { Get-ChildItem out/$d; throw "$d is more than one file" } }
+      - name: Close Windows first-time setup if the test machine never finished it
+        shell: powershell
+        run: Get-Process WWAHost -ErrorAction SilentlyContinue | Stop-Process -Force
+      - name: B3 lockdown - install, logout wipe, customer limits, Level A, uninstall
+        shell: powershell
+        run: .\ci\lockdown.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lockdown-${{ matrix.os }}
+          path: |
+            lockdown-results.csv
+            C:\ProgramData\Cafe\logs\**
+          if-no-files-found: warn
+
   kit:
     strategy:
       fail-fast: false
