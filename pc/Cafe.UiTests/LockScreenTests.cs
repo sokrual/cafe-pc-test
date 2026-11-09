@@ -41,6 +41,12 @@ public sealed class LockScreenTests : IDisposable
     [Fact]
     public async Task T1_1_lock_screen_cannot_be_escaped_and_login_lock_logout_work()
     {
+        try { await Scenario(); }
+        catch { FlaUI.Core.Capturing.Capture.Screen().ToFile(Path.Combine(Environment.GetEnvironmentVariable("GITHUB_WORKSPACE") ?? ".", "screen.png")); throw; } // what the screen looked like at the failure
+    }
+
+    async Task Scenario()
+    {
         var lockWin = Window("LockScreen");
         var desk = _ui.GetDesktop().BoundingRectangle;
         Assert.True(lockWin.BoundingRectangle.Contains(desk) || lockWin.BoundingRectangle == desk, $"lock screen {lockWin.BoundingRectangle} does not cover the screen {desk}");
@@ -77,11 +83,11 @@ public sealed class LockScreenTests : IDisposable
         WaitFor(() => Text(lockWin, "Error").Length > 0, 10, "no error shown for a wrong PIN");
         Assert.True(IsOnTop(lockWin));
 
-        // right PIN: lock screen goes, timer appears and counts
+        // right PIN: session starts on the admin PC, lock screen goes, timer appears and counts
         LogIn(lockWin, "9000000003", "2222");
-        WaitFor(() => lockWin.IsOffscreen || !lockWin.IsAvailable, 10, "lock screen did not go away after login");
         var staff = await StaffToken();
         WaitFor(() => State(staff)["session"] is not null, 10, "no session on the admin PC after login");
+        WaitFor(() => Find("LockScreen") is null or { IsOffscreen: true }, 10, "lock screen did not go away after login");
         // the timer hides while something full-screen is in front (as in a game); check it only when nothing is
         var fullScreenInFront = FullScreenInFront();
         if (!fullScreenInFront)

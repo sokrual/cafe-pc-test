@@ -46,21 +46,15 @@ jobs:
         run: |
           dotnet publish server/Cafe.Server -c Release -o out/server
           dotnet publish pc/Cafe.Agent -c Release -o out/agent
+      - name: Close Windows first-time setup if the test machine never finished it (a set-up cafe PC never shows it)
+        shell: powershell
+        run: Get-Process WWAHost -ErrorAction SilentlyContinue | Stop-Process -Force
       - name: Lock screen escape tests, login, admin lock, logout (Phase 1, T1.1)
         shell: pwsh
         run: |
           $env:CAFE_SERVER_EXE = "$PWD\out\server\Cafe.Server.exe"
           $env:CAFE_AGENT_EXE = "$PWD\out\agent\Cafe.Agent.exe"
           dotnet test --project pc/Cafe.UiTests
-      - name: On failure, screenshot the desktop
-        if: failure()
-        shell: powershell
-        run: |
-          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-          $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
-          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
-          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
-          $bmp.Save("$PWD\screen.png")
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
