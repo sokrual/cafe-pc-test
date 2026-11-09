@@ -363,6 +363,17 @@ public sealed class BillingTests : IDisposable
     }
 
     [Fact]
+    public void Customers_cannot_use_the_staff_login_and_silly_numbers_do_not_crash()
+    {
+        Assert.Throws<CafeException>(() => _cafe.StaffLogin("9000000003", "2222"));
+        Assert.Equal(_staff, _cafe.StaffLogin("9000000002", "111111"));
+        _cafe.AddPc(_owner, "PC1");
+        _cafe.PcLogin("PC1", "9000000003", "2222");
+        Wait(30); _cafe.PcSeen("PC1");
+        Assert.Equal(TimeSpan.FromMinutes(30), _cafe.PcLogout("PC1", long.MaxValue).Used); // floored at the last contact
+    }
+
+    [Fact]
     public void Money_rows_cannot_be_edited_or_deleted_even_directly()
     {
         var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 60);

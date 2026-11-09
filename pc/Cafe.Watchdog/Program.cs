@@ -26,6 +26,9 @@ static class Watchdog
         var line = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "watchdog.args")).Trim();
         var path = Path.GetFullPath(line.Split('"')[1]);
         var exe = Path.GetFileNameWithoutExtension(path);
+        // SYSTEM starts whatever these name: if ordinary accounts can change either, a customer could swap in their own program
+        foreach (var f in new[] { Path.Combine(AppContext.BaseDirectory, "watchdog.args"), path })
+            if (WritableByNonAdmins(f)) { Log($"REFUSED: {f} can be changed by non-admin accounts; install into Program Files"); return; }
         Log($"v{typeof(Watchdog).Assembly.GetName().Version} watching {exe}");
         while (!stop.IsCancellationRequested)
         {
@@ -39,6 +42,16 @@ static class Watchdog
             stop.WaitHandle.WaitOne(1000);
         }
         Log("stopped");
+    }
+
+    static bool WritableByNonAdmins(string file)
+    {
+        var anyone = new[] { "S-1-1-0", "S-1-5-11", "S-1-5-32-545", "S-1-5-4" }; // Everyone, Authenticated Users, Users, Interactive
+        const System.Security.AccessControl.FileSystemRights write = System.Security.AccessControl.FileSystemRights.Write | System.Security.AccessControl.FileSystemRights.Modify
+            | System.Security.AccessControl.FileSystemRights.Delete | System.Security.AccessControl.FileSystemRights.ChangePermissions | System.Security.AccessControl.FileSystemRights.TakeOwnership;
+        return new FileInfo(file).GetAccessControl().GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier))
+            .Cast<System.Security.AccessControl.FileSystemAccessRule>()
+            .Any(r => r.AccessControlType == System.Security.AccessControl.AccessControlType.Allow && anyone.Contains(r.IdentityReference.Value) && (r.FileSystemRights & write) != 0);
     }
 
     static string? PathOf(Process p)

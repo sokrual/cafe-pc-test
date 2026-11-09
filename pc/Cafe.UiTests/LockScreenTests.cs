@@ -138,8 +138,21 @@ public sealed class WatchdogTests : IDisposable
     {
         try
         {
-            File.WriteAllText(Path.Combine(Path.GetDirectoryName(_exe)!, "watchdog.args"), $"\"{Rig.Env("CAFE_AGENT_EXE")}\" {_rig.AgentArgs}");
+            var args = Path.Combine(Path.GetDirectoryName(_exe)!, "watchdog.args");
+            File.WriteAllText(args, $"\"{Rig.Env("CAFE_AGENT_EXE")}\" {_rig.AgentArgs}");
             Assert.Equal(0, Sc($"create CafeWatchdog binPath= \"{_exe}\" start= demand"));
+            // a careless install (settings file writable by customers): the watchdog must refuse to run anything
+            Grant(args, "*S-1-5-32-545:(M)");
+            Assert.Equal(0, Sc("start CafeWatchdog"));
+            Thread.Sleep(4000);
+            Assert.Empty(Process.GetProcessesByName("Cafe.Agent"));
+            Sc("stop CafeWatchdog"); Thread.Sleep(2000);
+            // a proper install: admins change, everyone else may only read and run
+            foreach (var dir in new[] { Path.GetDirectoryName(_exe)!, Path.GetDirectoryName(Rig.Env("CAFE_AGENT_EXE"))! })
+            {
+                Grant(dir, "/inheritance:r", "/grant:r", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX");
+                Grant(Path.Combine(dir, "*"), "/reset", "/T"); // files take the folder's permissions (a /T grant strips their access)
+            }
             Assert.Equal(0, Sc("start CafeWatchdog"));
             Process? first = null;
             Rig.WaitFor(() => (first = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault()) is not null, 20, "watchdog never started the PC program");
@@ -165,6 +178,14 @@ public sealed class WatchdogTests : IDisposable
         catch { Rig.Screenshot(); throw; }
     }
 
+    static void Grant(string target, params string[] args)
+    {
+        var all = args.Length == 1 ? new[] { "/grant", args[0] } : args;
+        using var p = Process.Start(new ProcessStartInfo("icacls.exe", $"\"{target}\" {string.Join(' ', all)}") { UseShellExecute = false, RedirectStandardOutput = true })!;
+        p.WaitForExit(30000);
+        Assert.Equal(0, p.ExitCode);
+    }
+
     static int Sc(string args)
     {
         using var p = Process.Start(new ProcessStartInfo("sc.exe", args) { UseShellExecute = false, RedirectStandardOutput = true })!;
@@ -179,6 +200,13 @@ public sealed class ServerApiTests : IDisposable
 {
     readonly Rig _rig = new();
     public void Dispose() => _rig.Dispose();
+
+    [Fact]
+    public async Task A_customer_PIN_does_not_open_the_counter_pages()
+    {
+        Assert.Equal(400, await _rig.TryStaffLogin("9000000003", "2222"));
+        Assert.Equal(200, await _rig.TryStaffLogin("9000000002", "111111"));
+    }
 
     [Fact]
     public async Task Login_guessing_is_cut_off_after_10_tries_a_minute()

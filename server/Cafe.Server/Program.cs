@@ -56,7 +56,7 @@ app.MapPost("/pc/logout", (HttpContext c, long? ago) => { var pc = Pc(c); var bi
 
 app.MapPost("/staff/login", (LoginBody b) =>
 {
-    var user = cafe.Login(b.Phone, b.Pin);
+    var user = cafe.StaffLogin(b.Phone, b.Pin);
     var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
     staffTokens[token] = (user, DateTime.UtcNow.AddHours(12)); // shortcut: in memory, so a server restart logs staff out
     return new { token };

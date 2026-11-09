@@ -115,6 +115,14 @@ public sealed class CafeCore : IDisposable
         return id ?? throw new CafeException("wrong phone or PIN"); // same message for unknown phone and wrong PIN
     }
 
+    /// Staff and owner only: a customer's PIN must never open the counter pages (other customers' bills).
+    public long StaffLogin(string phone, string pin)
+    {
+        var user = Login(phone, pin);
+        Tx(() => RequireStaff(user));
+        return user;
+    }
+
     // ---------------- sessions ----------------
 
     /// Pay-at-end: a stopwatch from 0, billed at stop by the rate card.
@@ -330,7 +338,7 @@ public sealed class CafeCore : IDisposable
         var s = StateOf(pc).Session ?? throw new CafeException("nobody is logged in");
         var floor = new[] { Scalar<string?>("SELECT last_seen FROM pcs WHERE name = @p0", pc), Scalar<string>("SELECT started FROM sessions WHERE id = @p0", s) }
             .Where(x => x is not null).Max(x => Time(x!));
-        var at = new[] { _now().AddSeconds(-Math.Max(0, secondsAgo)), floor }.Max();
+        var at = new[] { _now().AddSeconds(-Math.Clamp(secondsAgo, 0, 7 * 24 * 3600)), floor }.Max(); // a silly number must not crash the server
         var user = UserOf(s);
         // an honest outage and a pulled network cable look the same from here, so the owner gets to look at long ones
         if (_now() - at > TimeSpan.FromMinutes(2)) Audit(user, "review_late_logout", $"session {s} on {pc} ended {(int)(_now() - at).TotalMinutes} min before the PC reported it");
