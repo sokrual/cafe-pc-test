@@ -21,7 +21,7 @@ function Say($text) {
     Add-Type -AssemblyName System.Windows.Forms
     [System.Windows.Forms.MessageBox]::Show($text, "Shinzx setup") | Out-Null
 }
-trap { Say "Setup stopped:`n$_`n`nRun it again. If it stops again, take a photo of this window and send it on Discord to the person who gave you this software."; break }
+trap { Say "Setup stopped:`n$_`n`nRun it again. If it stops again, take a photo of this window. Send the photo and the file install-log.txt (in this folder) on Discord to the person who gave you this software."; break }
 if (-not $Uninstall) { Start-Transcript "$src\install-log.txt" -Append | Out-Null }   # what happened, step by step: send this file on Discord if setup stops
 
 # The Windows sign-in password is kept where Windows keeps it for automatic sign-in (an LSA secret), never in a file.
@@ -175,7 +175,7 @@ if ($dnsOk) {
     Key $firefox; Set-ItemProperty $firefox Enabled 0 -Type DWord; Set-ItemProperty $firefox Locked 1 -Type DWord
     Clear-DnsClientCache
 } elseif (-not (Get-NetFirewallRule -Group "Shinzx PC" -ErrorAction SilentlyContinue)) {   # an existing lock stays as it is
-    Say "Note: the internet filter on the counter PC ($DnsServer) did not answer, so web filtering is NOT on for this PC yet.`nFinish the filter setup on the counter PC, then run INSTALL-PC again. Everything else works."
+    Say "Note: the internet filter on the counter PC ($DnsServer) did not answer. Website filtering is NOT on for this PC yet.`nFinish the filter setup on the counter PC, then run INSTALL-PC again. Everything else works."
 }
 
 # --- clock: synced every hour with India's official time servers (NIC and NPL), as CERT-In asks; logs need the right time ---
@@ -209,14 +209,14 @@ if (Test-Path $flag) {
     Start-Sleep -Seconds 2
     # caches the graphics card driver builds stay between customers (games load faster); everything else is copied
     robocopy $profilePath "$data\clean-profile" /MIR /XJ /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.* UsrClass.dat* /XD NVIDIA AMD D3DSCache | Out-Null
-    if ($LASTEXITCODE -ge 8) { throw "Could not save the clean copy of the Customer account (robocopy $LASTEXITCODE)" }
+    if ($LASTEXITCODE -ge 8) { throw "Could not save the clean copy of the Customer account (error $LASTEXITCODE). Restart the PC and run INSTALL-PC again." }
 
     $sid = (Get-LocalUser $user).SID.Value
     $hive = "Registry::HKEY_USERS\$sid"
     $loaded = Test-Path $hive
     if (-not $loaded) { # Windows may still be closing the account's settings file just after a sign-out: try for 20 s
         for ($i = 0; $i -lt 10; $i++) { cmd.exe /c "reg load HKU\ShinzxCustomer `"$profilePath\NTUSER.DAT`" >nul 2>&1"; if (-not $LASTEXITCODE) { break }; Start-Sleep -Seconds 2 }
-        if ($LASTEXITCODE) { throw "Could not open the Customer settings (reg load $LASTEXITCODE). Restart the PC and run INSTALL-PC again." }
+        if ($LASTEXITCODE) { throw "Could not open the Customer account's settings (error $LASTEXITCODE). Restart the PC and run INSTALL-PC again." }
         $hive = "Registry::HKEY_USERS\ShinzxCustomer"
     }
     try {

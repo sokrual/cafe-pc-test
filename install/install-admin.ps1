@@ -15,7 +15,7 @@ function Say($text) {
     Add-Type -AssemblyName System.Windows.Forms
     [System.Windows.Forms.MessageBox]::Show($text, "Shinzx setup") | Out-Null
 }
-trap { Say "Setup stopped:`n$_`n`nRun it again. If it stops again, take a photo of this window and send it on Discord to the person who gave you this software."; break }
+trap { Say "Setup stopped:`n$_`n`nRun it again. If it stops again, take a photo of this window. Send the photo and the file install-log.txt (in this folder) on Discord to the person who gave you this software."; break }
 Start-Transcript "$src\install-log.txt" -Append | Out-Null   # what happened, step by step: send this file on Discord if setup stops
 
 if ($Uninstall) {
@@ -65,14 +65,14 @@ if (-not (Test-Path "$agh\AdGuardHome.exe")) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     for ($i = 1; ; $i++) { # GitHub's download servers sometimes time out: six tries over about 2 minutes
         try { Invoke-WebRequest "https://github.com/AdguardTeam/AdGuardHome/releases/download/$ver/AdGuardHome_windows_$arch.zip" -OutFile $zip -UseBasicParsing; break }
-        catch { if ($i -ge 6) { throw "Could not download the internet filter (is the internet on?): $_" }; Start-Sleep -Seconds 20 }
+        catch { if ($i -ge 6) { throw "Could not download the internet filter. Check that this PC has internet, then run INSTALL-ADMIN again. ($_)" }; Start-Sleep -Seconds 20 }
     }
     if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $sha) { Remove-Item $zip; throw "The internet filter download was damaged or changed. Nothing was installed." }
     Expand-Archive $zip $env:ProgramFiles -Force   # the zip holds one AdGuardHome folder
     Remove-Item $zip
     # Start-Process: AdGuard Home writes its progress to the error stream, which Windows PowerShell would treat as a failure
     $p = Start-Process "$agh\AdGuardHome.exe" "-s install" -Wait -PassThru -WindowStyle Hidden
-    if ($p.ExitCode) { throw "The internet filter did not install (exit $($p.ExitCode))" }
+    if ($p.ExitCode) { throw "The internet filter did not install (error $($p.ExitCode)). Run INSTALL-ADMIN again." }
 }
 
 sc.exe failure AdGuardHome reset= 86400 actions= restart/2000/restart/2000/restart/2000 | Out-Null   # restarts if it stops: without it no PC finds any website
@@ -80,7 +80,7 @@ sc.exe failure AdGuardHome reset= 86400 actions= restart/2000/restart/2000/resta
 # --- what the gaming PCs need from here ---
 $pin = "$env:ProgramData\Cafe\server.pin"
 for ($i = 0; $i -lt 30 -and -not (Test-Path $pin); $i++) { Start-Sleep -Seconds 1 }
-if (-not (Test-Path $pin)) { throw "The cafe server did not start. Its log is in C:\ProgramData\Cafe\logs." }
+if (-not (Test-Path $pin)) { throw "The cafe server did not start. Restart the PC and run INSTALL-ADMIN again. Its log is in C:\ProgramData\Cafe\logs." }
 $out = Join-Path $src "for-gaming-PCs"
 New-Item $out -ItemType Directory -Force | Out-Null
 Copy-Item $pin $out -Force

@@ -107,11 +107,11 @@ sealed class Agent : ApplicationContext
         try
         {
             using var r = await _http.PostAsJsonAsync("/pc/login", new { phone, pin });
-            if (!r.IsSuccessStatusCode) return (await r.Content.ReadFromJsonAsync<ErrorBody>())?.Error ?? "Could not log in";
+            if (!r.IsSuccessStatusCode) return (await r.Content.ReadFromJsonAsync<ErrorBody>())?.Error ?? "Could not log in. Please try again.";
             Apply((await r.Content.ReadFromJsonAsync<PcState>())!);
             return null;
         }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { return "Cannot reach the counter PC. Please ask staff."; }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { return "This PC cannot reach the counter right now. Please ask at the counter."; }
     }
 
     static void AskForWipe()
@@ -164,7 +164,7 @@ sealed class LockScreen : Form
 
     public void ShowLocked(string? message)
     {
-        _message.Text = message ?? "Log in with your phone number and PIN";
+        _message.Text = message ?? "Log in with your phone number and PIN.";
         _go.Text = message?.StartsWith("Locked by the customer") == true ? "Unlock" : "Log in";
         Bounds = SystemInformation.VirtualScreen; // every monitor
         if (!Visible) { _error.Text = ""; _phone.Text = ""; Show(); }
@@ -220,7 +220,7 @@ sealed class TimerWidget : Form
         var shown = left is long l ? (l > 0 ? Program.Fmt(l) + " left" : "Time over") : Program.Fmt(elapsed);
         _text.Text = shown; _tray.Text = "Cafe timer " + shown;
         foreach (var m in new[] { 10, 5, 1 }) // warnings at 10, 5 and 1 minutes left (voice comes in B5)
-            if (left is long x && x <= m * 60 && x > 0 && _warned.Add(m)) _tray.ShowBalloonTip(5000, "Time", $"{m} minute{(m > 1 ? "s" : "")} left", ToolTipIcon.Info);
+            if (left is long x && x <= m * 60 && x > 0 && _warned.Add(m)) _tray.ShowBalloonTip(5000, "Time left", $"{m} minute{(m > 1 ? "s" : "")} left", ToolTipIcon.Info);
         if (left is null || left > 600) _warned.Clear();
         var show = DateTime.UtcNow < _peekUntil || !Native.GameInFront(Handle);
         if (Visible != show) Visible = show;

@@ -38,7 +38,7 @@ public sealed class CafeCore : IDisposable
         _db.Open();
         // schema version: a newer program adds its changes as version 2, 3... and never reads a newer database by mistake
         const int SchemaVersion = 1;
-        if (Scalar<long>("PRAGMA user_version") > SchemaVersion) { _db.Dispose(); throw new CafeException("this database is from a newer version of the program"); }
+        if (Scalar<long>("PRAGMA user_version") > SchemaVersion) { _db.Dispose(); throw new CafeException("The cafe data comes from a newer version of this program. Install the newer version."); }
         Exec("""
             PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, role INTEGER NOT NULL, name TEXT NOT NULL,
@@ -77,14 +77,14 @@ public sealed class CafeCore : IDisposable
         // staff and owner logins work from any PC on the network, so their PINs must be much harder to guess
         var minPin = role == Role.Customer ? 4 : 6;
         if (pin.Length < minPin || pin.Length > 12 || !pin.All(char.IsAsciiDigit)) throw new CafeException($"PIN must be {minPin} to 12 digits");
-        if (phone.Length is < 10 or > 13 || !phone.All(char.IsAsciiDigit)) throw new CafeException("phone must be 10 to 13 digits");
-        if (string.IsNullOrWhiteSpace(name) || name.Length > 60) throw new CafeException("name must be 1 to 60 characters");
+        if (phone.Length is < 10 or > 13 || !phone.All(char.IsAsciiDigit)) throw new CafeException("The phone number must have 10 to 13 digits.");
+        if (string.IsNullOrWhiteSpace(name) || name.Length > 60) throw new CafeException("The name can be at most 60 letters long.");
         return Tx(() =>
         {
             // the very first user is the owner; after that only the owner adds staff, staff add customers
             var count = Scalar<long>("SELECT count(*) FROM users");
             if (count == 0 ? role != Role.Owner : RoleOf(by) is not Role.Owner && !(RoleOf(by) == Role.Staff && role == Role.Customer))
-                throw new CafeException("not allowed to add this kind of user");
+                throw new CafeException("You cannot add this kind of user.");
             var id = Insert("INSERT INTO users(role, name, phone, pin) VALUES(@p0, @p1, @p2, @p3)", (int)role, name, phone, HashPin(pin));
             Audit(by ?? id, "add_user", $"user {id} role {role}");
             return id;
@@ -101,7 +101,7 @@ public sealed class CafeCore : IDisposable
             if (!r.Read()) return (long?)null;
             var (user, stored, fails, lockedUntil) = (r.GetInt64(0), (byte[])r[1], r.GetInt64(2), r.IsDBNull(3) ? (DateTime?)null : Time(r.GetString(3)));
             r.Close();
-            if (lockedUntil > _now()) throw new CafeException("too many wrong PINs, try again later");
+            if (lockedUntil > _now()) throw new CafeException("Too many wrong PINs. Try again in 15 minutes.");
             if (!CheckPin(pin, stored))
             {
                 Exec("UPDATE users SET fails = @p0, locked_until = @p1 WHERE id = @p2", fails + 1, fails + 1 >= 5 ? Iso(_now().AddMinutes(15)) : null, user);
@@ -112,7 +112,7 @@ public sealed class CafeCore : IDisposable
             Audit(user, "login", null);
             return user;
         });
-        return id ?? throw new CafeException("wrong phone or PIN"); // same message for unknown phone and wrong PIN
+        return id ?? throw new CafeException("Wrong phone number or PIN."); // same message for unknown phone and wrong PIN
     }
 
     /// Staff and owner only: a customer's PIN must never open the counter pages (other customers' bills).
@@ -141,7 +141,7 @@ public sealed class CafeCore : IDisposable
     public long StartOnPlan(long by, string pc, long user) => Tx(() =>
     {
         var plan = Scalar<long?>("SELECT id FROM plans WHERE user_id = @p0 AND minutes_left > 0 AND expires > @p1 ORDER BY expires LIMIT 1", user, Iso(_now()))
-            ?? throw new CafeException("no valid plan (expired or used up)");
+            ?? throw new CafeException("No plan time left. It has run out or expired.");
         return Start(by, pc, user, null, plan);
     });
 
@@ -162,7 +162,7 @@ public sealed class CafeCore : IDisposable
     {
         RequireStaff(by); Minutes(minutes); // negative minutes would be a staff discount, which only the owner may give
         if (Exec("UPDATE sessions SET prepaid_min = prepaid_min + @p0 WHERE id = @p1 AND ended IS NULL AND prepaid_min IS NOT NULL", minutes, session) == 0)
-            throw new CafeException("only a running prepaid session can get more time");
+            throw new CafeException("Time can be added only for a prepaid customer who is playing.");
         Ledger(by, "charge", Price(minutes), session: session, reference: $"added {minutes} min");
         Audit(by, "add_time", $"session {session} +{minutes} min");
     });
@@ -171,7 +171,7 @@ public sealed class CafeCore : IDisposable
     {
         RequireStaff(by);
         if (Exec("UPDATE sessions SET pause_from = @p0 WHERE id = @p1 AND ended IS NULL AND pause_from IS NULL", Iso(_now()), session) == 0)
-            throw new CafeException("session is not running");
+            throw new CafeException("This customer is not playing right now.");
         Audit(by, "pause", $"session {session}");
     });
 
@@ -179,7 +179,7 @@ public sealed class CafeCore : IDisposable
     public void Resume(long by, long session, bool chargePausedTime = false) => Tx(() =>
     {
         if (chargePausedTime) RequireOwner(by); else RequireStaff(by);
-        var from = Scalar<string?>("SELECT pause_from FROM sessions WHERE id = @p0 AND ended IS NULL", session) ?? throw new CafeException("session is not paused");
+        var from = Scalar<string?>("SELECT pause_from FROM sessions WHERE id = @p0 AND ended IS NULL", session) ?? throw new CafeException("This customer's time is not paused.");
         var paused = chargePausedTime ? 0 : (long)(_now() - Time(from)).TotalSeconds;
         Exec("UPDATE sessions SET paused_sec = paused_sec + @p0, pause_from = NULL WHERE id = @p1", paused, session);
         Audit(by, "resume", $"session {session} paused {paused}s charged={chargePausedTime}");
@@ -189,7 +189,7 @@ public sealed class CafeCore : IDisposable
     {
         RequireStaff(by);
         if (InUse(newPc)) throw new CafeException($"{newPc} is already in use");
-        if (Exec("UPDATE sessions SET pc = @p0 WHERE id = @p1 AND ended IS NULL", newPc, session) == 0) throw new CafeException("session is not running");
+        if (Exec("UPDATE sessions SET pc = @p0 WHERE id = @p1 AND ended IS NULL", newPc, session) == 0) throw new CafeException("This customer is not playing right now.");
         Audit(by, "move", $"session {session} to {newPc}");
     });
 
@@ -197,7 +197,7 @@ public sealed class CafeCore : IDisposable
     public void JoinGroup(long by, long session, long groupOf) => Tx(() =>
     {
         RequireStaff(by);
-        var g = Scalar<long?>("SELECT coalesce(group_id, id) FROM sessions WHERE id = @p0", groupOf) ?? throw new CafeException("no such session");
+        var g = Scalar<long?>("SELECT coalesce(group_id, id) FROM sessions WHERE id = @p0", groupOf) ?? throw new CafeException("This visit was not found.");
         Exec("UPDATE sessions SET group_id = @p0 WHERE id IN (@p1, @p0)", g, session);
         Audit(by, "group", $"session {session} joins group {g}");
     });
@@ -206,7 +206,7 @@ public sealed class CafeCore : IDisposable
     /// at: when it really ended (a logout the PC queued while the admin PC was unreachable); default now.
     public Bill Stop(long by, long session, DateTime? at = null) => Tx(() =>
     {
-        RequireStaffOrSelf(by, Scalar<long?>("SELECT user_id FROM sessions WHERE id = @p0", session) ?? throw new CafeException("no such session"));
+        RequireStaffOrSelf(by, Scalar<long?>("SELECT user_id FROM sessions WHERE id = @p0", session) ?? throw new CafeException("This visit was not found."));
         var now = at ?? _now();
         if (Scalar<string?>("SELECT pause_from FROM sessions WHERE id = @p0 AND ended IS NULL", session) is string from) // stopping while paused ends the pause, uncharged
             Exec("UPDATE sessions SET paused_sec = paused_sec + @p0, pause_from = NULL WHERE id = @p1", Math.Max(0, (long)(now - Time(from)).TotalSeconds), session);
@@ -273,7 +273,7 @@ public sealed class CafeCore : IDisposable
     public void Lock(long by, string pc, string? message = null) => Tx(() =>
     {
         RequireStaff(by);
-        if (message?.Length > 200) throw new CafeException("message must be at most 200 characters");
+        if (message?.Length > 200) throw new CafeException("The message can be at most 200 letters long.");
         if (Exec("UPDATE pcs SET locked = 1, message = @p0 WHERE name = @p1", message, pc) == 0) throw new CafeException($"no PC called {pc}");
         if (Scalar<long?>("SELECT id FROM sessions WHERE pc = @p0 AND ended IS NULL AND pause_from IS NULL", pc) is long s) Pause(by, s);
         Audit(by, "lock", $"{pc}: {message}");
@@ -309,13 +309,13 @@ public sealed class CafeCore : IDisposable
         var now = StateOf(pc);
         if (now.SelfLocked)
         {
-            if (Login(phone, pin) != UserOf(now.Session)) throw new CafeException("only the customer who locked this PC can unlock it");
+            if (Login(phone, pin) != UserOf(now.Session)) throw new CafeException("Only the customer who locked this PC can unlock it.");
             Exec("UPDATE pcs SET self_locked = 0 WHERE name = @p0", pc);
             Audit(UserOf(now.Session), "self_unlock", pc);
             return StateOf(pc);
         }
-        if (now.Session is not null) throw new CafeException("this PC is already in use");
-        if (Scalar<long>("SELECT locked FROM pcs WHERE name = @p0", pc) == 1) throw new CafeException("this PC is locked by the counter");
+        if (now.Session is not null) throw new CafeException("Someone is already using this PC.");
+        if (Scalar<long>("SELECT locked FROM pcs WHERE name = @p0", pc) == 1) throw new CafeException("This PC is locked by the counter.");
         var user = Login(phone, pin);
         if (PlanMinutesLeft(user) > 0) StartOnPlan(user, pc, user); else StartPostpaid(user, pc, user);
         return StateOf(pc);
@@ -325,7 +325,7 @@ public sealed class CafeCore : IDisposable
     public PcState PcSelfLock(string pc) => Tx(() =>
     {
         var now = StateOf(pc);
-        if (now.Session is not long s || now.Locked) throw new CafeException("only a PC in use can be locked by its customer");
+        if (now.Session is not long s || now.Locked) throw new CafeException("Only a PC that is in use can be locked.");
         Exec("UPDATE pcs SET self_locked = 1 WHERE name = @p0", pc);
         Audit(UserOf(s), "self_lock", pc);
         return StateOf(pc);
@@ -335,7 +335,7 @@ public sealed class CafeCore : IDisposable
     /// "this happened N seconds ago" from a stopwatch, and the time can't go back before the PC was last heard from.
     public Bill PcLogout(string pc, long secondsAgo = 0) => Tx(() =>
     {
-        var s = StateOf(pc).Session ?? throw new CafeException("nobody is logged in");
+        var s = StateOf(pc).Session ?? throw new CafeException("Nobody is logged in on this PC.");
         var floor = new[] { Scalar<string?>("SELECT last_seen FROM pcs WHERE name = @p0", pc), Scalar<string>("SELECT started FROM sessions WHERE id = @p0", s) }
             .Where(x => x is not null).Max(x => Time(x!));
         var at = new[] { _now().AddSeconds(-Math.Clamp(secondsAgo, 0, 7 * 24 * 3600)), floor }.Max(); // a silly number must not crash the server
@@ -378,12 +378,12 @@ public sealed class CafeCore : IDisposable
     public void Pay(long by, long session, string method, long amount, string? upiLast4 = null) => Tx(() =>
     {
         RequireStaff(by);
-        if (amount <= 0) throw new CafeException("amount must be positive");
-        if (amount > BillFor(session).Due) throw new CafeException("more than is due");
+        if (amount <= 0) throw new CafeException("The amount must be more than ₹0.");
+        if (amount > BillFor(session).Due) throw new CafeException("That is more than the customer owes.");
         var user = UserOf(session);
         if (method == "wallet")
         {
-            if (WalletBalance(user) < amount) throw new CafeException("not enough in the wallet");
+            if (WalletBalance(user) < amount) throw new CafeException("Not enough money in the customer's wallet.");
             Ledger(by, "wallet", -amount, user: user, reference: $"paid session {session}");
         }
         else CashOrUpi(method, upiLast4);
@@ -396,7 +396,7 @@ public sealed class CafeCore : IDisposable
     public void TopUp(long by, long user, string method, long amount, string? upiLast4 = null) => Tx(() =>
     {
         RequireStaff(by);
-        if (amount <= 0) throw new CafeException("amount must be positive");
+        if (amount <= 0) throw new CafeException("The amount must be more than ₹0.");
         CashOrUpi(method, upiLast4);
         Ledger(by, "pay", amount, user: user, method: method, reference: upiLast4 ?? "wallet top-up");
         Ledger(by, "wallet", amount, user: user, reference: "top-up");
@@ -408,7 +408,7 @@ public sealed class CafeCore : IDisposable
     public long BuyPlan(long by, long user, int minutes, int validDays, long price, string method, string? upiLast4 = null) => Tx(() =>
     {
         RequireStaff(by); Minutes(minutes);
-        if (validDays is < 1 or > 366 || price is < 0 or > 10_000_000) throw new CafeException("plan needs 1 to 366 days and a price from ₹0 to ₹1,00,000");
+        if (validDays is < 1 or > 366 || price is < 0 or > 10_000_000) throw new CafeException("A plan needs 1 to 366 days and a price from ₹0 to ₹1,00,000.");
         CashOrUpi(method, upiLast4);
         var plan = Insert("INSERT INTO plans(user_id, minutes_left, expires) VALUES(@p0, @p1, @p2)", user, minutes, Iso(_now().AddDays(validDays)));
         Ledger(by, "pay", price, user: user, method: method, reference: upiLast4 ?? $"plan {plan}");
@@ -436,7 +436,7 @@ public sealed class CafeCore : IDisposable
     public long OpenShift(long by) => Tx(() =>
     {
         RequireStaff(by);
-        if (OpenShiftOf(by) is not null) throw new CafeException("a shift is already open");
+        if (OpenShiftOf(by) is not null) throw new CafeException("A shift is already open. Close it first.");
         var id = Insert("INSERT INTO shifts(staff_id, opened) VALUES(@p0, @p1)", by, Iso(_now()));
         Audit(by, "open_shift", $"shift {id}");
         return id;
@@ -445,7 +445,7 @@ public sealed class CafeCore : IDisposable
     /// Returns (expected cash, difference). Difference is counted minus expected: negative means cash is missing.
     public (long expected, long difference) CloseShift(long by, long countedCash) => Tx(() =>
     {
-        var shift = OpenShiftOf(by) ?? throw new CafeException("no open shift");
+        var shift = OpenShiftOf(by) ?? throw new CafeException("No shift is open. Start a shift first.");
         var expected = Scalar<long>("SELECT coalesce(sum(amount), 0) FROM ledger WHERE kind = 'pay' AND method = 'cash' AND shift_id = @p0", shift);
         Exec("UPDATE shifts SET closed = @p0, counted = @p1 WHERE id = @p2", Iso(_now()), countedCash, shift);
         Audit(by, "close_shift", $"shift {shift} expected {expected} counted {countedCash}");
@@ -469,7 +469,7 @@ public sealed class CafeCore : IDisposable
     (TimeSpan used, int? prepaid, long? plan, long user) SessionUse(long session)
     {
         using var r = Query("SELECT started, coalesce(ended, @p1), paused_sec, prepaid_min, plan_id, user_id, pause_from FROM sessions WHERE id = @p0", session, Iso(_now()));
-        if (!r.Read()) throw new CafeException("no such session");
+        if (!r.Read()) throw new CafeException("This visit was not found.");
         var end = r.IsDBNull(6) ? Time(r.GetString(1)) : Time(r.GetString(6)); // a running pause doesn't count yet
         var used = end - Time(r.GetString(0)) - TimeSpan.FromSeconds(r.GetInt64(2));
         int? prepaid = r.IsDBNull(3) ? null : r.GetInt32(3);
@@ -477,8 +477,8 @@ public sealed class CafeCore : IDisposable
     }
 
     Role? RoleOf(long? user) => user is null ? null : (Role?)Scalar<long?>("SELECT role FROM users WHERE id = @p0", user);
-    void RequireOwner(long by) { if (RoleOf(by) != Role.Owner) throw new CafeException("only the owner can do this"); }
-    void RequireStaff(long by) { if (RoleOf(by) is not (Role.Owner or Role.Staff)) throw new CafeException("only staff or the owner can do this"); }
+    void RequireOwner(long by) { if (RoleOf(by) != Role.Owner) throw new CafeException("Only the owner can do this."); }
+    void RequireStaff(long by) { if (RoleOf(by) is not (Role.Owner or Role.Staff)) throw new CafeException("Only staff or the owner can do this."); }
     void RequireStaffOrSelf(long by, long user) { if (by != user) RequireStaff(by); }
     long UserOf(long? session) => Scalar<long>("SELECT user_id FROM sessions WHERE id = @p0", session);
     bool InUse(string pc) => Scalar<long>("SELECT count(*) FROM sessions WHERE pc = @p0 AND ended IS NULL", pc) > 0;
@@ -487,11 +487,11 @@ public sealed class CafeCore : IDisposable
     static void CashOrUpi(string method, string? upiLast4)
     {
         if (method == "cash") return;
-        if (method != "upi") throw new CafeException("pay by cash, upi or wallet");
-        if (upiLast4 is not { Length: 4 } || !upiLast4.All(char.IsAsciiDigit)) throw new CafeException("UPI needs the last 4 digits of the reference");
+        if (method != "upi") throw new CafeException("Choose cash, UPI or wallet.");
+        if (upiLast4 is not { Length: 4 } || !upiLast4.All(char.IsAsciiDigit)) throw new CafeException("For UPI, type the last 4 digits of the payment reference number.");
     }
-    static void Minutes(int m) { if (m is < 1 or > 7 * 24 * 60) throw new CafeException("minutes must be from 1 to 10080 (a week)"); }
-    static void RequireReason(string reason) { if (string.IsNullOrWhiteSpace(reason)) throw new CafeException("a reason is required"); }
+    static void Minutes(int m) { if (m is < 1 or > 7 * 24 * 60) throw new CafeException("Minutes must be from 1 to 10080 (one week)."); }
+    static void RequireReason(string reason) { if (string.IsNullOrWhiteSpace(reason)) throw new CafeException("Please write a reason."); }
 
     void Ledger(long by, string kind, long amount, long? session = null, long? user = null, string? method = null, string? reference = null, string? reason = null) =>
         Insert("INSERT INTO ledger(at, by_user, kind, amount, session_id, user_id, method, ref, reason, shift_id) VALUES(@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8, @p9)",
