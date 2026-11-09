@@ -209,18 +209,40 @@ public sealed class BillingTests : IDisposable
     [Fact]
     public void Owner_or_staff_can_lock_any_pc_and_locked_time_is_free()
     {
+        var token = _cafe.AddPc(_owner, "PC1");
+        Assert.Throws<CafeException>(() => _cafe.AddPc(_staff, "PC2"));
+        Assert.Equal("PC1", _cafe.PcByToken(token));
+        Assert.Null(_cafe.PcByToken("made-up"));
         var s = _cafe.StartPostpaid(_staff, "PC1", _cust);
         Wait(20);
+        Assert.False(_cafe.StateOf("PC1").Locked);
         Assert.Throws<CafeException>(() => _cafe.Lock(_cust, "PC1"));
         _cafe.Lock(_staff, "PC1", "Please come to the counter");
+        Assert.Equal((true, "Please come to the counter"), (_cafe.StateOf("PC1").Locked, _cafe.StateOf("PC1").Message));
         Wait(30); // locked: not charged
         _cafe.Unlock(_owner, "PC1");
         Wait(5);
         Assert.Equal(TimeSpan.FromMinutes(25), _cafe.Stop(_staff, s).Used);
-        Assert.Equal(new[] { ("lock", (string?)"Please come to the counter"), ("unlock", (string?)null) }, _cafe.TakeCommands("PC1"));
-        Assert.Empty(_cafe.TakeCommands("PC1")); // handed out once
-        _cafe.Lock(_staff, "PC9"); // an idle PC can be locked too
-        Assert.Single(_cafe.TakeCommands("PC9"));
+        Assert.True(_cafe.StateOf("PC1").Locked); // no session: lock screen
+    }
+
+    [Fact]
+    public void Pc_login_uses_plan_time_first_then_pay_at_end_and_logout_bills()
+    {
+        _cafe.AddPc(_owner, "PC1");
+        Assert.Throws<CafeException>(() => _cafe.PcLogin("PC1", "9000000003", "0000"));
+        var st = _cafe.PcLogin("PC1", "9000000003", "2222");
+        Assert.Equal(("postpaid", false, (long?)null), (st.Mode, st.Locked, st.LeftSec));
+        Assert.Throws<CafeException>(() => _cafe.PcLogin("PC1", "9000000002", "1111")); // in use
+        Wait(40);
+        Assert.Equal(6000, _cafe.PcLogout("PC1").Charged);
+        _cafe.BuyPlan(_staff, _cust, 60, 7, 5000, "cash");
+        st = _cafe.PcLogin("PC1", "9000000003", "2222");
+        Assert.Equal(("plan", 3600L), (st.Mode, st.LeftSec));
+        Wait(10);
+        Assert.Equal(3000L, _cafe.StateOf("PC1").LeftSec);
+        _cafe.Lock(_staff, "PC1");
+        Assert.Throws<CafeException>(() => _cafe.PcLogout("PC9"));
     }
 
     [Fact]

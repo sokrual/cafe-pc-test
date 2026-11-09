@@ -30,6 +30,43 @@ jobs:
           dotnet list Cafe.Tests package --vulnerable --include-transitive 2>&1 | Tee-Object -Variable v
           if ($v -match "has the following vulnerable packages") { exit 1 }
 
+  pc-ui-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Build the admin server and the PC program
+        run: |
+          dotnet publish server/Cafe.Server -c Release -o out/server
+          dotnet publish pc/Cafe.Agent -c Release -o out/agent
+      - name: Lock screen escape tests, login, admin lock, logout (Phase 1, T1.1)
+        shell: pwsh
+        run: |
+          $env:CAFE_SERVER_EXE = "$PWD\out\server\Cafe.Server.exe"
+          $env:CAFE_AGENT_EXE = "$PWD\out\agent\Cafe.Agent.exe"
+          dotnet test --project pc/Cafe.UiTests
+      - name: On failure, screenshot the desktop
+        if: failure()
+        shell: powershell
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$PWD\screen.png")
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ui-failure-${{ matrix.os }}
+          path: screen.png
+
   kit:
     strategy:
       fail-fast: false

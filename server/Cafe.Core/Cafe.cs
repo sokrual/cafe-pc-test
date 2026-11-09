@@ -16,6 +16,9 @@ public record Bill(long SessionId, TimeSpan Used, long Charged, long Adjusted, l
     public long Due => Charged + Adjusted - Paid;
 }
 
+/// What a PC should show right now. Locked = lock screen (no session, or the admin locked it).
+public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec);
+
 public class CafeException(string message) : Exception(message);
 
 /// The admin PC's single source of truth: customers, sessions, money. Every public call is one transaction.
@@ -45,8 +48,8 @@ public sealed class CafeCore : IDisposable
             -- kind: charge | adjust | pay | wallet. amount in paise, + or -.
             CREATE TABLE IF NOT EXISTS ledger(id INTEGER PRIMARY KEY, at TEXT NOT NULL, by_user INTEGER NOT NULL, kind TEXT NOT NULL,
                 amount INTEGER NOT NULL, session_id INTEGER, user_id INTEGER, method TEXT, ref TEXT, reason TEXT, shift_id INTEGER);
-            -- what the admin wants a PC to do (lock, unlock); the PC picks these up and marks them done
-            CREATE TABLE IF NOT EXISTS commands(id INTEGER PRIMARY KEY, pc TEXT NOT NULL, kind TEXT NOT NULL, text TEXT, at TEXT NOT NULL, done TEXT);
+            -- each gaming PC: a secret token (only its SHA-256 is stored) and whether the admin has locked it
+            CREATE TABLE IF NOT EXISTS pcs(name TEXT PRIMARY KEY, token BLOB NOT NULL UNIQUE, locked INTEGER NOT NULL DEFAULT 0, message TEXT);
             CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, at TEXT NOT NULL, by_user INTEGER, action TEXT NOT NULL, detail TEXT);
             CREATE TRIGGER IF NOT EXISTS ledger_no_update BEFORE UPDATE ON ledger BEGIN SELECT RAISE(ABORT, 'ledger is append-only'); END;
             CREATE TRIGGER IF NOT EXISTS ledger_no_delete BEFORE DELETE ON ledger BEGIN SELECT RAISE(ABORT, 'ledger is append-only'); END;
@@ -228,32 +231,66 @@ public sealed class CafeCore : IDisposable
 
     // ---------------- PC control ----------------
 
+    /// Owner registers a gaming PC once; the token goes into that PC's settings and is never shown again.
+    public string AddPc(long by, string name) => Tx(() =>
+    {
+        RequireOwner(by);
+        var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        Exec("INSERT INTO pcs(name, token, locked) VALUES(@p0, @p1, 0)", name, SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token)));
+        Audit(by, "add_pc", name);
+        return token;
+    });
+
+    /// Which PC this token belongs to, or null.
+    public string? PcByToken(string token) =>
+        Scalar<string?>("SELECT name FROM pcs WHERE token = @p0", SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token)));
+
     /// Owner or staff lock a PC at any time (stop play, come to the counter). A running session is paused,
     /// so locked time is not charged; Unlock resumes it.
     public void Lock(long by, string pc, string? message = null) => Tx(() =>
     {
         RequireStaff(by);
+        if (Exec("UPDATE pcs SET locked = 1, message = @p0 WHERE name = @p1", message, pc) == 0) throw new CafeException($"no PC called {pc}");
         if (Scalar<long?>("SELECT id FROM sessions WHERE pc = @p0 AND ended IS NULL AND pause_from IS NULL", pc) is long s) Pause(by, s);
-        Insert("INSERT INTO commands(pc, kind, text, at) VALUES(@p0, 'lock', @p1, @p2)", pc, message, Iso(_now()));
         Audit(by, "lock", $"{pc}: {message}");
     });
 
     public void Unlock(long by, string pc) => Tx(() =>
     {
         RequireStaff(by);
+        if (Exec("UPDATE pcs SET locked = 0, message = NULL WHERE name = @p0", pc) == 0) throw new CafeException($"no PC called {pc}");
         if (Scalar<long?>("SELECT id FROM sessions WHERE pc = @p0 AND ended IS NULL AND pause_from IS NOT NULL", pc) is long s) Resume(by, s);
-        Insert("INSERT INTO commands(pc, kind, at) VALUES(@p0, 'unlock', @p1)", pc, Iso(_now()));
         Audit(by, "unlock", pc);
     });
 
-    /// What a PC should do now, oldest first; each command is handed out once.
-    public List<(string kind, string? text)> TakeCommands(string pc) => Tx(() =>
+    public PcState StateOf(string pc) => Tx(() =>
     {
-        var list = new List<(string, string?)>();
-        using (var r = Query("SELECT kind, text FROM commands WHERE pc = @p0 AND done IS NULL ORDER BY id", pc))
-            while (r.Read()) list.Add((r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1)));
-        Exec("UPDATE commands SET done = @p0 WHERE pc = @p1 AND done IS NULL", Iso(_now()), pc);
-        return list;
+        using var r = Query("SELECT locked, message FROM pcs WHERE name = @p0", pc);
+        if (!r.Read()) throw new CafeException($"no PC called {pc}");
+        var (adminLocked, message) = (r.GetInt64(0) == 1, r.IsDBNull(1) ? null : r.GetString(1));
+        r.Close();
+        if (Scalar<long?>("SELECT id FROM sessions WHERE pc = @p0 AND ended IS NULL", pc) is not long s) return new PcState(true, message, null, null, 0, null);
+        var (used, prepaid, plan, user) = SessionUse(s);
+        var mode = prepaid is not null ? "prepaid" : plan is not null ? "plan" : "postpaid";
+        long? left = prepaid is int b ? b * 60 - (long)used.TotalSeconds
+                   : plan is not null ? PlanMinutesLeft(user) * 60 - (long)used.TotalSeconds : null;
+        return new PcState(adminLocked, message, s, mode, (long)used.TotalSeconds, left);
+    });
+
+    /// Customer logs in at a PC: plays on plan or carried-over time if there is any, otherwise pay-at-end.
+    public PcState PcLogin(string pc, string phone, string pin) => Tx(() =>
+    {
+        if (StateOf(pc).Session is not null) throw new CafeException("this PC is already in use");
+        if (Scalar<long>("SELECT locked FROM pcs WHERE name = @p0", pc) == 1) throw new CafeException("this PC is locked by the counter");
+        var user = Login(phone, pin);
+        if (PlanMinutesLeft(user) > 0) StartOnPlan(user, pc, user); else StartPostpaid(user, pc, user);
+        return StateOf(pc);
+    });
+
+    public Bill PcLogout(string pc) => Tx(() =>
+    {
+        var s = StateOf(pc).Session ?? throw new CafeException("nobody is logged in");
+        return Stop(Scalar<long>("SELECT user_id FROM sessions WHERE id = @p0", s), s);
     });
 
     /// Pay-at-end bill: free inside the start grace; otherwise the minimum, then whole blocks,
