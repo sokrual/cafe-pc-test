@@ -299,6 +299,27 @@ public sealed class BillingTests : IDisposable
     }
 
     [Fact]
+    public void Many_pcs_and_staff_at_once_never_break_the_database()
+    {
+        var tokens = Enumerable.Range(1, 15).Select(i => _cafe.AddPc(_owner, $"PC{i}")).ToArray();
+        _cafe.PcLogin("PC1", "9000000003", "2222");
+        var errors = new System.Collections.Concurrent.ConcurrentBag<Exception>();
+        Parallel.For(0, 3000, new ParallelOptions { MaxDegreeOfParallelism = 16 }, i =>
+        {
+            try
+            {
+                var pc = _cafe.PcByToken(tokens[i % 15])!;
+                _cafe.PcSeen(pc); _cafe.StateOf(pc);
+                _cafe.PlanMinutesLeft(_cust); _cafe.WalletBalance(_cust);
+                if (i % 50 == 0) { _cafe.Lock(_staff, pc, "x"); _cafe.Unlock(_staff, pc); }
+            }
+            catch (Exception e) { errors.Add(e); }
+        });
+        Assert.Empty(errors);
+        Assert.Equal(0, _cafe.PcLogout("PC1").Charged); // the database still works afterwards (no time passed: inside the grace)
+    }
+
+    [Fact]
     public void Money_rows_cannot_be_edited_or_deleted_even_directly()
     {
         var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 60);

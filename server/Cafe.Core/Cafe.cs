@@ -61,6 +61,7 @@ public sealed class CafeCore : IDisposable
             CREATE INDEX IF NOT EXISTS ledger_user ON ledger(user_id, kind);
             CREATE INDEX IF NOT EXISTS sessions_open ON sessions(pc) WHERE ended IS NULL;
             """);
+        _ready = true;
     }
 
     public void Dispose() => _db.Dispose();
@@ -128,8 +129,8 @@ public sealed class CafeCore : IDisposable
     });
 
     /// Minutes the customer can still play on plans and carried-over prepaid time (what the PC counts down from).
-    public long PlanMinutesLeft(long user) =>
-        Scalar<long>("SELECT coalesce(sum(minutes_left), 0) FROM plans WHERE user_id = @p0 AND minutes_left > 0 AND expires > @p1", user, Iso(_now()));
+    public long PlanMinutesLeft(long user) => Tx(() =>
+        Scalar<long>("SELECT coalesce(sum(minutes_left), 0) FROM plans WHERE user_id = @p0 AND minutes_left > 0 AND expires > @p1", user, Iso(_now())));
 
     long Start(long by, string pc, long user, int? prepaidMin, long? plan) => Tx(() =>
     {
@@ -247,8 +248,8 @@ public sealed class CafeCore : IDisposable
     });
 
     /// Which PC this token belongs to, or null.
-    public string? PcByToken(string token) =>
-        Scalar<string?>("SELECT name FROM pcs WHERE token = @p0", SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token)));
+    public string? PcByToken(string token) => Tx(() =>
+        Scalar<string?>("SELECT name FROM pcs WHERE token = @p0", SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token))));
 
     /// Owner or staff lock a PC at any time (stop play, come to the counter). A running session is paused,
     /// so locked time is not charged; Unlock resumes it.
@@ -324,7 +325,7 @@ public sealed class CafeCore : IDisposable
     });
 
     /// Called on every status check, so a queued logout knows when the PC was last online.
-    public void PcSeen(string pc) => Exec("UPDATE pcs SET last_seen = @p0 WHERE name = @p1", Iso(_now()), pc);
+    public void PcSeen(string pc) => Tx(() => { Exec("UPDATE pcs SET last_seen = @p0 WHERE name = @p1", Iso(_now()), pc); });
 
     /// Pay-at-end bill: free inside the start grace; otherwise the minimum, then whole blocks,
     /// with BlockGraceMin free after each block ends (e.g. 35 min = 1 block, 36 min = 2 blocks).
@@ -387,7 +388,7 @@ public sealed class CafeCore : IDisposable
         Audit(by, "top_up", $"user {user} {method} {amount}");
     });
 
-    public long WalletBalance(long user) => Scalar<long>("SELECT coalesce(sum(amount), 0) FROM ledger WHERE kind = 'wallet' AND user_id = @p0", user);
+    public long WalletBalance(long user) => Tx(() => Scalar<long>("SELECT coalesce(sum(amount), 0) FROM ledger WHERE kind = 'wallet' AND user_id = @p0", user));
 
     public long BuyPlan(long by, long user, int minutes, int validDays, long price, string method, string? upiLast4 = null) => Tx(() =>
     {
@@ -435,8 +436,8 @@ public sealed class CafeCore : IDisposable
         return (expected, countedCash - expected);
     });
 
-    public long ShiftTotal(long shift, string method) =>
-        Scalar<long>("SELECT coalesce(sum(amount), 0) FROM ledger WHERE kind = 'pay' AND method = @p0 AND shift_id = @p1", method, shift);
+    public long ShiftTotal(long shift, string method) => Tx(() =>
+        Scalar<long>("SELECT coalesce(sum(amount), 0) FROM ledger WHERE kind = 'pay' AND method = @p0 AND shift_id = @p1", method, shift));
 
     // ---------------- helpers ----------------
 
@@ -488,9 +489,12 @@ public sealed class CafeCore : IDisposable
     }
     void Tx(Action work) => Tx(() => { work(); return 0; });
     SqliteTransaction? _tx;
+    bool _ready; // set once the schema exists
 
     SqliteCommand Cmd(string sql, object?[] args)
     {
+        // one connection is shared by every web request: touching it outside Tx() corrupts it (found on real Windows)
+        if (_tx is null && _ready) throw new InvalidOperationException("database used outside a transaction");
         var c = _db.CreateCommand();
         c.CommandText = sql; c.Transaction = _tx;
         for (var i = 0; i < args.Length; i++) c.Parameters.AddWithValue($"@p{i}", args[i] ?? DBNull.Value);
