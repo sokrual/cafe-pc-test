@@ -22,15 +22,16 @@ if ($Uninstall) {
     if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force; sc.exe delete $svc | Out-Null }
     if (Test-Path "$agh\AdGuardHome.exe") { Start-Process "$agh\AdGuardHome.exe" "-s uninstall" -Wait -WindowStyle Hidden }
     Remove-NetFirewallRule -Group "Shinzx counter" -ErrorAction SilentlyContinue
-    $keep = "$env:ProgramData\ShinzxCafe\before.json"
+    $keep = "$env:ProgramData\Cafe\before-install.json"
     if (Test-Path $keep) { # clock settings back as they were
         foreach ($p in (Get-Content $keep -Raw | ConvertFrom-Json).PSObject.Properties) {
             $key, $name = $p.Name -split '\|'
             if ($null -eq $p.Value) { Remove-ItemProperty $key $name -ErrorAction SilentlyContinue } else { Set-ItemProperty $key $name $p.Value }
         }
         Restart-Service w32time -ErrorAction SilentlyContinue
+        Remove-Item $keep
     }
-    Remove-Item $app, $agh, "$env:ProgramData\ShinzxCafe" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $app, $agh -Recurse -Force -ErrorAction SilentlyContinue
     Say "The cafe server and the internet filter are off this PC. The cafe data in C:\ProgramData\Cafe is kept."
     exit 0
 }
@@ -47,15 +48,15 @@ sc.exe failure $svc reset= 86400 actions= restart/2000/restart/2000/restart/2000
 Start-Service $svc
 
 # what this install changes outside its own folders, kept once so uninstall can put it back (admins and Windows only)
-$keep = "$env:ProgramData\ShinzxCafe"
+$keep = "$env:ProgramData\Cafe"   # the server's own data folder; kept at uninstall (a gaming PC uses ProgramData\ShinzxCafe)
 New-Item $keep -ItemType Directory -Force | Out-Null
 icacls $keep /inheritance:r /grant "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" | Out-Null
 $timeKeys = @("HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters|NtpServer", "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters|Type",
     "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpClient|SpecialPollInterval")
-if (-not (Test-Path "$keep\before.json")) {
+if (-not (Test-Path "$keep\before-install.json")) {
     $before = [ordered]@{}
     foreach ($t in $timeKeys) { $k, $n = $t -split '\|'; $before[$t] = (Get-ItemProperty $k -Name $n -ErrorAction SilentlyContinue).$n }
-    $before | ConvertTo-Json | Set-Content "$keep\before.json" -Encoding utf8
+    $before | ConvertTo-Json | Set-Content "$keep\before-install.json" -Encoding utf8
 }
 
 # --- clock: synced every hour with India's official time servers (NIC and NPL), as CERT-In asks; logs need the right time ---
