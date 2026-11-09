@@ -80,12 +80,12 @@ try {
     # ===== E. step 2 =====
     & "$stage\install-pc.ps1" -Ci
     Check "B3.E1" "Clean copy saved" (Test-Path "$data\clean-profile\AppData\Local\Discord\Update.txt") "$data\clean-profile"
-    reg.exe load HKU\T "$prof\NTUSER.DAT" 2>&1 | Out-Null
+    cmd.exe /c "reg load HKU\T `"$prof\NTUSER.DAT`" >nul 2>&1"
     $h = if ($LASTEXITCODE) { "Registry::HKEY_USERS\$($u.SID.Value)" } else { "Registry::HKEY_USERS\T" }
     $sys = Get-ItemProperty "$h\Software\Microsoft\Windows\CurrentVersion\Policies\System"
     $cmd = (Get-ItemProperty "$h\Software\Policies\Microsoft\Windows\System").DisableCMD
     Check "B3.E2" "Customer: no Task Manager, no Lock, no password change, no registry editor, no command prompt" ($sys.DisableTaskMgr -eq 1 -and $sys.DisableLockWorkstation -eq 1 -and $sys.DisableChangePassword -eq 1 -and $sys.DisableRegistryTools -eq 1 -and $cmd -eq 2) "DisableCMD $cmd"
-    Remove-Variable sys; [gc]::Collect(); reg.exe unload HKU\T 2>&1 | Out-Null
+    Remove-Variable sys; [gc]::Collect(); cmd.exe /c "reg unload HKU\T >nul 2>&1"
     Check "B3.E3" "Switch user hidden" ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System").HideFastUserSwitching -eq 1) ""
     $agentUp = WaitFor 20 { Get-Process Cafe.Agent -ErrorAction SilentlyContinue }
     Check "B3.E4" "Setup mode off: the watchdog starts the lock screen" ($agentUp -and -not (Test-Path "$app\setup.flag")) ""
@@ -160,5 +160,6 @@ finally {
     foreach ($f in Get-ChildItem $wd -Filter "*.log" -ErrorAction SilentlyContinue) { Write-Host "--- $($f.Name)"; Get-Content $f.FullName | Select-Object -Last 40 }
     $results | Format-Table id, result, test, detail -AutoSize -Wrap | Out-String -Width 250 | Write-Host
     $results | Export-Csv (Join-Path $repo "lockdown-results.csv") -NoTypeInformation -Encoding utf8
+    Copy-Item $wd (Join-Path $repo "lockdown-logs") -Recurse -Force -ErrorAction SilentlyContinue   # artifacts must sit in the checkout
 }
 if (@($results | Where-Object result -eq "FAIL").Count) { exit 1 }

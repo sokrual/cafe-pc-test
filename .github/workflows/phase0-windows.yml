@@ -103,7 +103,7 @@ jobs:
           name: lockdown-${{ matrix.os }}
           path: |
             lockdown-results.csv
-            C:\ProgramData\Cafe\logs\**
+            lockdown-logs/**
           if-no-files-found: warn
 
   kit:

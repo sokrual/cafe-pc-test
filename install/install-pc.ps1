@@ -212,7 +212,7 @@ if (Test-Path $flag) {
     $hive = "Registry::HKEY_USERS\$sid"
     $loaded = Test-Path $hive
     if (-not $loaded) { # Windows may still be closing the account's settings file just after a sign-out: try for 20 s
-        for ($i = 0; $i -lt 10; $i++) { reg.exe load "HKU\ShinzxCustomer" "$profilePath\NTUSER.DAT" 2>&1 | Out-Null; if (-not $LASTEXITCODE) { break }; Start-Sleep -Seconds 2 }
+        for ($i = 0; $i -lt 10; $i++) { cmd.exe /c "reg load HKU\ShinzxCustomer `"$profilePath\NTUSER.DAT`" >nul 2>&1"; if (-not $LASTEXITCODE) { break }; Start-Sleep -Seconds 2 }
         if ($LASTEXITCODE) { throw "Could not open the Customer settings (reg load $LASTEXITCODE). Restart the PC and run INSTALL-PC again." }
         $hive = "Registry::HKEY_USERS\ShinzxCustomer"
     }

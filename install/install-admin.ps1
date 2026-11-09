@@ -19,7 +19,7 @@ trap { Say "Setup stopped:`n$_`n`nRun it again. If it stops again, take a photo 
 
 if ($Uninstall) {
     if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force; sc.exe delete $svc | Out-Null }
-    if (Test-Path "$agh\AdGuardHome.exe") { & "$agh\AdGuardHome.exe" -s uninstall 2>&1 | Out-Null }
+    if (Test-Path "$agh\AdGuardHome.exe") { Start-Process "$agh\AdGuardHome.exe" "-s uninstall" -Wait -WindowStyle Hidden }
     Remove-NetFirewallRule -Group "Shinzx counter" -ErrorAction SilentlyContinue
     Remove-Item $app, $agh -Recurse -Force -ErrorAction SilentlyContinue
     Say "The cafe server and the internet filter are off this PC. The cafe data in C:\ProgramData\Cafe is kept."
@@ -53,11 +53,16 @@ $sha = @{ amd64 = "e42294dc26b2c0d8f4576a91f09aa5129ffdfb7b647026fac77f0abac9acf
 if (-not (Test-Path "$agh\AdGuardHome.exe")) {
     $zip = Join-Path $env:TEMP "AdGuardHome.zip"
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest "https://github.com/AdguardTeam/AdGuardHome/releases/download/$ver/AdGuardHome_windows_$arch.zip" -OutFile $zip -UseBasicParsing
+    for ($i = 1; ; $i++) { # GitHub's download servers sometimes time out: three tries
+        try { Invoke-WebRequest "https://github.com/AdguardTeam/AdGuardHome/releases/download/$ver/AdGuardHome_windows_$arch.zip" -OutFile $zip -UseBasicParsing; break }
+        catch { if ($i -ge 3) { throw "Could not download the internet filter (is the internet on?): $_" }; Start-Sleep -Seconds 10 }
+    }
     if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $sha) { Remove-Item $zip; throw "The internet filter download was damaged or changed. Nothing was installed." }
     Expand-Archive $zip $env:ProgramFiles -Force   # the zip holds one AdGuardHome folder
     Remove-Item $zip
-    & "$agh\AdGuardHome.exe" -s install 2>&1 | Out-Null
+    # Start-Process: AdGuard Home writes its progress to the error stream, which Windows PowerShell would treat as a failure
+    $p = Start-Process "$agh\AdGuardHome.exe" "-s install" -Wait -PassThru -WindowStyle Hidden
+    if ($p.ExitCode) { throw "The internet filter did not install (exit $($p.ExitCode))" }
 }
 
 # --- what the gaming PCs need from here ---
