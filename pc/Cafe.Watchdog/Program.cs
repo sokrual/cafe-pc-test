@@ -24,19 +24,27 @@ static class Watchdog
     public static void Run(CancellationToken stop)
     {
         var line = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "watchdog.args")).Trim();
-        var exe = Path.GetFileNameWithoutExtension(line.Split('"')[1]);
+        var path = Path.GetFullPath(line.Split('"')[1]);
+        var exe = Path.GetFileNameWithoutExtension(path);
         Log($"v{typeof(Watchdog).Assembly.GetName().Version} watching {exe}");
         while (!stop.IsCancellationRequested)
         {
             try
             {
-                if (ActiveSession() is uint s && !Process.GetProcessesByName(exe).Any(p => p.SessionId == s))
+                // match the full path, not just the name: a customer's renamed copy of some other program must not count
+                if (ActiveSession() is uint s && !Process.GetProcessesByName(exe).Any(p => p.SessionId == s && PathOf(p) == path))
                     Log(Start(s, line) is int pid ? $"started {exe} in session {s} (pid {pid})" : $"could not start {exe} in session {s}: error {Marshal.GetLastWin32Error()}");
             }
             catch (Exception e) { Log($"ERROR {e.Message}"); } // the loop must never die
             stop.WaitHandle.WaitOne(1000);
         }
         Log("stopped");
+    }
+
+    static string? PathOf(Process p)
+    {
+        try { return p.MainModule?.FileName is string f ? Path.GetFullPath(f) : null; }
+        catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException) { return null; } // exited, or not readable
     }
 
     static void Log(string line)

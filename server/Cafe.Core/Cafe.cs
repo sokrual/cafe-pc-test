@@ -123,6 +123,7 @@ public sealed class CafeCore : IDisposable
     /// Prepaid countdown: the minutes are charged now. No money back, but unused minutes stay with the customer (see Stop).
     public long StartPrepaid(long by, string pc, long user, int minutes) => Tx(() =>
     {
+        Minutes(minutes);
         var id = Start(by, pc, user, minutes, null);
         Ledger(by, "charge", Price(minutes), session: id, reference: $"prepaid {minutes} min");
         return id;
@@ -151,7 +152,7 @@ public sealed class CafeCore : IDisposable
 
     public void AddTime(long by, long session, int minutes) => Tx(() =>
     {
-        RequireStaff(by);
+        RequireStaff(by); Minutes(minutes); // negative minutes would be a staff discount, which only the owner may give
         if (Exec("UPDATE sessions SET prepaid_min = prepaid_min + @p0 WHERE id = @p1 AND ended IS NULL AND prepaid_min IS NOT NULL", minutes, session) == 0)
             throw new CafeException("only a running prepaid session can get more time");
         Ledger(by, "charge", Price(minutes), session: session, reference: $"added {minutes} min");
@@ -330,7 +331,10 @@ public sealed class CafeCore : IDisposable
         var floor = new[] { Scalar<string?>("SELECT last_seen FROM pcs WHERE name = @p0", pc), Scalar<string>("SELECT started FROM sessions WHERE id = @p0", s) }
             .Where(x => x is not null).Max(x => Time(x!));
         var at = new[] { _now().AddSeconds(-Math.Max(0, secondsAgo)), floor }.Max();
-        return Stop(Scalar<long>("SELECT user_id FROM sessions WHERE id = @p0", s), s, at);
+        var user = Scalar<long>("SELECT user_id FROM sessions WHERE id = @p0", s);
+        // an honest outage and a pulled network cable look the same from here, so the owner gets to look at long ones
+        if (_now() - at > TimeSpan.FromMinutes(2)) Audit(user, "review_late_logout", $"session {s} on {pc} ended {(int)(_now() - at).TotalMinutes} min before the PC reported it");
+        return Stop(user, s, at);
     });
 
     /// Called on every status check, so a queued logout knows when the PC was last online.
@@ -401,7 +405,8 @@ public sealed class CafeCore : IDisposable
 
     public long BuyPlan(long by, long user, int minutes, int validDays, long price, string method, string? upiLast4 = null) => Tx(() =>
     {
-        RequireStaff(by);
+        RequireStaff(by); Minutes(minutes);
+        if (validDays is < 1 or > 366 || price is < 0 or > 10_000_000) throw new CafeException("plan needs 1 to 366 days and a price from ₹0 to ₹1,00,000");
         if (method is not ("cash" or "upi") || (method == "upi" && upiLast4 is not { Length: 4 })) throw new CafeException("pay by cash, or upi with the last 4 digits");
         var plan = Insert("INSERT INTO plans(user_id, minutes_left, expires) VALUES(@p0, @p1, @p2)", user, minutes, Iso(_now().AddDays(validDays)));
         Ledger(by, "pay", price, user: user, method: method, reference: upiLast4 ?? $"plan {plan}");
@@ -448,6 +453,15 @@ public sealed class CafeCore : IDisposable
     public long ShiftTotal(long shift, string method) => Tx(() =>
         Scalar<long>("SELECT coalesce(sum(amount), 0) FROM ledger WHERE kind = 'pay' AND method = @p0 AND shift_id = @p1", method, shift));
 
+    /// Things the owner should look at (late logouts after a network outage, for now).
+    public List<string> ForReview() => Tx(() =>
+    {
+        using var r = Query("SELECT at, detail FROM audit WHERE action LIKE 'review_%' ORDER BY id DESC LIMIT 100");
+        var list = new List<string>();
+        while (r.Read()) list.Add($"{r.GetString(0)} {r.GetString(1)}");
+        return list;
+    });
+
     // ---------------- helpers ----------------
 
     (TimeSpan used, int? prepaid, long? plan, long user) SessionUse(long session)
@@ -464,6 +478,7 @@ public sealed class CafeCore : IDisposable
     void RequireOwner(long by) { if (RoleOf(by) != Role.Owner) throw new CafeException("only the owner can do this"); }
     void RequireStaff(long by) { if (RoleOf(by) is not (Role.Owner or Role.Staff)) throw new CafeException("only staff or the owner can do this"); }
     void RequireStaffOrSelf(long by, long user) { if (by != user) RequireStaff(by); }
+    static void Minutes(int m) { if (m is < 1 or > 7 * 24 * 60) throw new CafeException("minutes must be from 1 to 10080 (a week)"); }
     static void RequireReason(string reason) { if (string.IsNullOrWhiteSpace(reason)) throw new CafeException("a reason is required"); }
 
     void Ledger(long by, string kind, long amount, long? session = null, long? user = null, string? method = null, string? reference = null, string? reason = null) =>

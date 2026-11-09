@@ -332,6 +332,36 @@ public sealed class BillingTests : IDisposable
     }
 
     [Fact]
+    public void Staff_cannot_sneak_a_discount_through_negative_or_silly_numbers()
+    {
+        var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 60);
+        Assert.Throws<CafeException>(() => _cafe.AddTime(_staff, s, -60));
+        Assert.Throws<CafeException>(() => _cafe.AddTime(_staff, s, 0));
+        Assert.Throws<CafeException>(() => _cafe.StartPrepaid(_staff, "PC2", _cust, -30));
+        Assert.Throws<CafeException>(() => _cafe.BuyPlan(_staff, _cust, -600, 7, 5000, "cash"));
+        Assert.Throws<CafeException>(() => _cafe.BuyPlan(_staff, _cust, 600, 7, -5000, "cash"));
+        Assert.Throws<CafeException>(() => _cafe.BuyPlan(_staff, _cust, 600, 0, 5000, "cash"));
+        Assert.Throws<CafeException>(() => _cafe.StartPrepaid(_staff, "PC2", _cust, 100_000));
+        Assert.Equal(6000, _cafe.BillFor(s).Due); // unchanged
+    }
+
+    [Fact]
+    public void A_logout_dated_long_ago_is_flagged_for_the_owner()
+    {
+        _cafe.AddPc(_owner, "PC1");
+        _cafe.PcLogin("PC1", "9000000003", "2222");
+        Wait(1); _cafe.PcSeen("PC1");
+        Wait(120);
+        _cafe.PcLogout("PC1", 7200); // "I logged out 2 hours ago"
+        var flagged = Assert.Single(_cafe.ForReview());
+        Assert.Contains("PC1", flagged);
+        _cafe.PcLogin("PC1", "9000000003", "2222");
+        Wait(40); _cafe.PcSeen("PC1");
+        _cafe.PcLogout("PC1", 5); // ordinary: not flagged
+        Assert.Single(_cafe.ForReview());
+    }
+
+    [Fact]
     public void Money_rows_cannot_be_edited_or_deleted_even_directly()
     {
         var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 60);

@@ -149,7 +149,17 @@ public sealed class WatchdogTests : IDisposable
             Process? back = null;
             Rig.WaitFor(() => (back = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault(p => p.Id != first.Id)) is not null, 10, "PC program was not restarted");
             Assert.True(gone.Elapsed < TimeSpan.FromSeconds(5), $"restart took {gone.Elapsed.TotalSeconds:F1} s (limit 5 s)");
-            var app = Application.Attach(back!.Id);
+            // a fake "Cafe.Agent" (a renamed copy of cmd.exe) must not fool the watchdog
+            var fake = Path.Combine(_rig.Data, "Cafe.Agent.exe");
+            File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), fake);
+            using var decoy = Process.Start(new ProcessStartInfo(fake, "/k") { UseShellExecute = false, CreateNoWindow = true })!;
+            back!.Kill();
+            var gone2 = Stopwatch.StartNew();
+            Process? back2 = null;
+            Rig.WaitFor(() => (back2 = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault(p => p.Id != back.Id && p.Id != decoy.Id)) is not null, 10, "a renamed fake program fooled the watchdog");
+            Assert.True(gone2.Elapsed < TimeSpan.FromSeconds(5), $"restart next to a fake took {gone2.Elapsed.TotalSeconds:F1} s");
+            Rig.Kill(decoy);
+            var app = Application.Attach(back2!.Id);
             Rig.WaitFor(() => app.GetAllTopLevelWindows(_rig.Ui).Any(w => w.Properties.AutomationId.ValueOrDefault == "LockScreen" && !w.IsOffscreen), 15, "restarted PC program does not show the lock screen");
         }
         catch { Rig.Screenshot(); throw; }
@@ -185,13 +195,14 @@ sealed class Rig : IDisposable
 {
     const string Url = "https://127.0.0.1:5443";
     public readonly string Data = Path.Combine(Path.GetTempPath(), $"cafe-ui-{Guid.NewGuid():N}");
+    readonly string _pcDir = Path.Combine(Path.GetTempPath(), $"cafe-pc-{Guid.NewGuid():N}"); // what a gaming PC holds: its token + the server's pin
     public readonly UIA3Automation Ui = new();
     readonly System.Text.StringBuilder _serverLog = new();
     Process? _server;
     HttpClient _http = null!;
 
     public Rig() => StartServer();
-    public string AgentArgs => $"--server {Url} --token-file \"{Path.Combine(Data, "pc1.token")}\" --pin-file \"{Path.Combine(Data, "server.pin")}\" --name \"Test Cafe\" --logs \"{Path.Combine(Data, "logs")}\"";
+    public string AgentArgs => $"--server {Url} --token-file \"{Path.Combine(_pcDir, "pc.token")}\" --pin-file \"{Path.Combine(_pcDir, "server.pin")}\" --name \"Test Cafe\" --logs \"{Path.Combine(_pcDir, "logs")}\"";
 
     public void StartServer()
     {
@@ -200,14 +211,18 @@ sealed class Rig : IDisposable
         _server.ErrorDataReceived += (_, e) => { lock (_serverLog) _serverLog.AppendLine(e.Data); };
         _server.Start(); _server.BeginOutputReadLine(); _server.BeginErrorReadLine();
         WaitFor(() => File.Exists(Path.Combine(Data, "server.pin")) && Ping(), 60, "server did not start", () => _serverLog.ToString());
+        Directory.CreateDirectory(_pcDir);
+        File.Copy(Path.Combine(Data, "pc1.token"), Path.Combine(_pcDir, "pc.token"), true);
+        File.Copy(Path.Combine(Data, "server.pin"), Path.Combine(_pcDir, "server.pin"), true);
     }
     public void StopServer() => Kill(_server);
 
     public void Dispose()
     {
         Kill(_server); Ui.Dispose(); _http.Dispose();
-        foreach (var f in Directory.GetFiles(Path.Combine(Data, "logs"))) Console.WriteLine($"--- {Path.GetFileName(f)}\n{File.ReadAllText(f)}"); // logs end up in the test output
-        try { Directory.Delete(Data, true); } catch (IOException) { }
+        foreach (var dir in new[] { Path.Combine(Data, "logs"), Path.Combine(_pcDir, "logs") }) // logs end up in the test output
+            if (Directory.Exists(dir)) foreach (var f in Directory.GetFiles(dir)) Console.WriteLine($"--- {Path.GetFileName(f)}\n{File.ReadAllText(f)}");
+        foreach (var dir in new[] { Data, _pcDir }) try { Directory.Delete(dir, true); } catch (IOException) { }
     }
 
     bool Ping()

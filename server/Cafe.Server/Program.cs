@@ -10,6 +10,7 @@ using Cafe;
 // Usage: Cafe.Server [--data <folder>] [--port 5443] [--seed-test]   (seed = test users + PC1, for automated tests only)
 var data = Arg("--data") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Cafe");
 Directory.CreateDirectory(Path.Combine(data, "logs"));
+AdminsOnly(data);
 void Log(string line) { lock (data) File.AppendAllText(Path.Combine(data, "logs", $"server-{DateTime.Now:yyyyMMdd}.log"), $"{DateTime.Now:HH:mm:ss} {line}{Environment.NewLine}"); }
 
 using var cafe = new CafeCore(Path.Combine(data, "cafe.db"), DbKey(data));
@@ -64,11 +65,25 @@ app.MapPost("/staff/lock", (HttpContext c, PcBody b) => { cafe.Lock(Staff(c), b.
 app.MapPost("/staff/unlock", (HttpContext c, PcBody b) => { cafe.Unlock(Staff(c), b.Pc); return cafe.StateOf(b.Pc); });
 app.MapGet("/staff/state/{pc}", (HttpContext c, string pc) => { Staff(c); return cafe.StateOf(pc); });
 app.MapGet("/staff/bill/{session:long}", (HttpContext c, long session) => { Staff(c); return cafe.BillFor(session); });
+app.MapGet("/staff/review", (HttpContext c) => { Staff(c); return cafe.ForReview(); });
 
 Log($"started v{System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version}, certificate {cert.Thumbprint}");
 app.Run();
 
 string? Arg(string name) => Array.IndexOf(args, name) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+
+// DPAPI machine scope lets any Windows account on this PC decrypt db.key, so only Administrators and SYSTEM may
+// open this folder (the server runs as a SYSTEM service at the cafe; staff Windows accounts can't read it).
+static void AdminsOnly(string dir)
+{
+    var acl = new System.Security.AccessControl.DirectorySecurity();
+    acl.SetAccessRuleProtection(true, false);
+    foreach (var sid in new[] { "S-1-5-32-544", "S-1-5-18" })
+        acl.AddAccessRule(new(new System.Security.Principal.SecurityIdentifier(sid), System.Security.AccessControl.FileSystemRights.FullControl,
+            System.Security.AccessControl.InheritanceFlags.ContainerInherit | System.Security.AccessControl.InheritanceFlags.ObjectInherit,
+            System.Security.AccessControl.PropagationFlags.None, System.Security.AccessControl.AccessControlType.Allow));
+    new DirectoryInfo(dir).SetAccessControl(acl);
+}
 
 // The database key is random, made once, and stored encrypted with Windows DPAPI for this machine only.
 static string DbKey(string data)
