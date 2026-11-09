@@ -151,6 +151,7 @@ public sealed class WatchdogTests : IDisposable
             foreach (var dir in new[] { Path.GetDirectoryName(_exe)!, Path.GetDirectoryName(Rig.Env("CAFE_AGENT_EXE"))! })
             {
                 Grant(dir, "/inheritance:r", "/grant:r", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX");
+                Grant(dir, "/remove:g", "*S-1-5-11", "*S-1-1-0", "*S-1-5-4"); // Windows 11 gives new folders their own "Authenticated Users: Modify"
                 Grant(Path.Combine(dir, "*"), "/reset", "/T"); // files take the folder's permissions (a /T grant strips their access)
             }
             Assert.Equal(0, Sc("start CafeWatchdog"));
