@@ -56,10 +56,10 @@ static class Watchdog
         Log("stopped");
     }
 
-    static bool WritableByNonAdmins(string file)
+    internal static bool WritableByNonAdmins(string file)
     {
         var acl = Directory.Exists(file) ? (System.Security.AccessControl.FileSystemSecurity)new DirectoryInfo(file).GetAccessControl() : new FileInfo(file).GetAccessControl();
-        var anyone = new[] { "S-1-1-0", "S-1-5-11", "S-1-5-32-545", "S-1-5-4" }; // Everyone, Authenticated Users, Users, Interactive
+        var anyone = new[] { "S-1-1-0", "S-1-5-11", "S-1-5-32-545", "S-1-5-4", Wipe.CustomerSid() }; // Everyone, Authenticated Users, Users, Interactive, Customer
         // Write = write data/append/attributes only; "Modify" is not used because it also contains read and run
         const System.Security.AccessControl.FileSystemRights write = System.Security.AccessControl.FileSystemRights.Write
             | System.Security.AccessControl.FileSystemRights.Delete | System.Security.AccessControl.FileSystemRights.ChangePermissions | System.Security.AccessControl.FileSystemRights.TakeOwnership;

@@ -125,7 +125,7 @@ icacls "$data\wipe" /grant "*S-1-5-32-545:(OI)(CI)(W,RD)" | Out-Null
 
 # --- Windows settings: remember what they were, once, so uninstall can put them back ---
 $edge, $chrome, $firefox = "HKLM:\SOFTWARE\Policies\Microsoft\Edge", "HKLM:\SOFTWARE\Policies\Google\Chrome", "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\DNSOverHTTPS"
-$watched = @("$winlogon|AutoAdminLogon", "$winlogon|ForceAutoLogon", "$winlogon|DefaultUserName", "$winlogon|DefaultDomainName", "$winlogon|DefaultPassword",
+$watched = @("$winlogon|AutoAdminLogon", "$winlogon|ForceAutoLogon", "$winlogon|DefaultUserName", "$winlogon|DefaultDomainName",
     "$machinePolicy|HideFastUserSwitching", "$edge|DnsOverHttpsMode", "$chrome|DnsOverHttpsMode", "$firefox|Enabled", "$firefox|Locked",
     "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters|NtpServer", "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters|Type",
     "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpClient|SpecialPollInterval")
@@ -242,6 +242,13 @@ if (Test-Path $flag) {
             Key "$hive\$($p[0])"
             Set-ItemProperty "$hive\$($p[0])" $p[1] $p[2] -Type DWord
         }
+        # the owner's autostart list (Run, RunOnce): the logout clean-up puts exactly this back and removes anything a customer added
+        $runs = foreach ($k in "Run", "RunOnce") {
+            $item = Get-Item "$hive\Software\Microsoft\Windows\CurrentVersion\$k" -ErrorAction SilentlyContinue
+            if ($item) { foreach ($n in $item.GetValueNames()) { "$k`t$n`t$($item.GetValue($n, $null, 'DoNotExpandEnvironmentNames'))" } }
+        }
+        [IO.File]::WriteAllLines("$data\run-keys.txt", [string[]]@($runs))
+        Remove-Variable item -ErrorAction SilentlyContinue
     } finally {
         if (-not $loaded) { [gc]::Collect(); Start-Sleep -Milliseconds 500; reg.exe unload "HKU\ShinzxCustomer" | Out-Null }
     }

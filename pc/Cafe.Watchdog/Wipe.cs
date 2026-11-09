@@ -39,8 +39,10 @@ static class Wipe
             if (Owner(p) != sid || trusted.Contains((p.Id, StartOf(p)))) continue;
             var f = Native.PathOf(p);
             if (f == agent) continue;
-            // mouse/keyboard apps listed by the owner, only from folders customers cannot change
-            if (f is not null && keep.Contains(Path.GetFileName(f)) && programFiles.Any(d => f.StartsWith(d, StringComparison.OrdinalIgnoreCase))) continue;
+            // mouse/keyboard apps listed by the owner, only from folders customers cannot change (Steam's folder, for one,
+            // is open to all users: a customer's program named like a mouse app there must not survive the clean-up)
+            if (f is not null && keep.Contains(Path.GetFileName(f)) && programFiles.Any(d => f.StartsWith(d, StringComparison.OrdinalIgnoreCase))
+                && !Watchdog.WritableByNonAdmins(f) && !Watchdog.WritableByNonAdmins(Path.GetDirectoryName(f)!)) continue;
             try { p.Kill(); closed.Add(p); } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { } // already gone
         }
         foreach (var p in closed) p.WaitForExit(5000); // Explorer comes back by itself (Windows restarts it)
@@ -67,12 +69,43 @@ static class Wipe
         if (Registry.LocalMachine.OpenSubKey(@"SOFTWARE\WOW6432Node\Valve\Steam")?.GetValue("InstallPath") is string steam)
         {
             var cfg = Path.Combine(steam, "config");
-            File.Delete(Path.Combine(cfg, "loginusers.vdf")); // the "remember me" accounts list
-            var main = Path.Combine(cfg, "config.vdf");
-            if (File.Exists(main)) File.WriteAllText(main, Regex.Replace(File.ReadAllText(main), @"\s*""ConnectCache""\s*\{[^{}]*\}", "")); // saved login keys
-            report += "; Steam logins cleared";
+            // customers can write in Steam's folder: never follow a link they could have put there
+            if (Directory.Exists(cfg) && new DirectoryInfo(cfg).LinkTarget is null)
+            {
+                File.Delete(Path.Combine(cfg, "loginusers.vdf")); // the "remember me" accounts list
+                var main = Path.Combine(cfg, "config.vdf");
+                var text = File.Exists(main) ? File.ReadAllText(main) : "";
+                var cleaned = Regex.Replace(text, @"\s*""ConnectCache""\s*\{[^{}]*\}", ""); // saved login keys
+                if (cleaned != text) File.WriteAllText(main, cleaned);
+                report += "; Steam logins cleared";
+            }
         }
-        return report;
+        // ways to start a program again for the next customer: autostart entries and scheduled tasks
+        var runs = Path.Combine(Data, "run-keys.txt");
+        using var hive = Registry.Users.OpenSubKey(sid, true); // loaded while Customer is signed in
+        if (hive is not null && File.Exists(runs))
+        {
+            var saved = File.ReadAllLines(runs).Select(l => l.Split('\t', 3)).Where(p => p.Length == 3).ToList();
+            foreach (var k in new[] { "Run", "RunOnce" })
+            {
+                using var key = hive.CreateSubKey($@"Software\Microsoft\Windows\CurrentVersion\{k}");
+                foreach (var n in key.GetValueNames()) key.DeleteValue(n);
+                foreach (var p in saved.Where(p => p[0] == k)) key.SetValue(p[1], p[2], p[2].Contains('%') ? RegistryValueKind.ExpandString : RegistryValueKind.String);
+            }
+            report += "; autostart list reset";
+        }
+        var tasks = Path.Combine(Environment.SystemDirectory, "Tasks");
+        var removed = 0;
+        foreach (var f in Directory.EnumerateFiles(tasks, "*", SearchOption.AllDirectories))
+        {
+            string xml;
+            try { xml = File.ReadAllText(f); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { continue; }
+            if (!xml.Contains($">{sid}<") && !xml.Contains($"\\{User}<") && !xml.Contains($">{User}<")) continue; // the task runs as Customer
+            using var d = Process.Start(new ProcessStartInfo("schtasks.exe", $"/delete /tn \"{f[tasks.Length..]}\" /f") { UseShellExecute = false, CreateNoWindow = true })!;
+            d.WaitForExit(10_000);
+            removed++;
+        }
+        return report + $"; {removed} customer tasks removed";
     }
 
     // a cache that cannot move (a file still open) is left where it is: worst case it is rebuilt, never an error

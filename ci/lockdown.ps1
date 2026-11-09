@@ -20,6 +20,11 @@ function AsCustomer($exe, $argList) { # start a program as Customer (password re
     $null = $proc.Handle   # without this Windows PowerShell never reports the exit code
     $proc
 }
+function CustomerPs($command) { # run PowerShell as Customer; returns its exit code (0 = the command worked)
+    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("`$ErrorActionPreference = 'Stop'; $command"))
+    $p = AsCustomer "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" "-NoProfile -EncodedCommand $enc"; $p.WaitForExit(); $p.ExitCode
+}
+$runKey = "Software\Microsoft\Windows\CurrentVersion\Run"
 $wd = "$env:ProgramData\Cafe\logs"
 $app = "$env:ProgramFiles\ShinzxCafe"
 $data = "$env:ProgramData\ShinzxCafe"
@@ -85,6 +90,7 @@ try {
     $prof = (Get-CimInstance Win32_UserProfile | Where-Object SID -eq $u.SID.Value).LocalPath
     New-Item "$prof\AppData\Local\Discord" -ItemType Directory -Force | Out-Null; "app" | Set-Content "$prof\AppData\Local\Discord\Update.txt"
     "shortcut" | Set-Content "$prof\Desktop\Game.txt"
+    $ownerRun = CustomerPs "if (-not (Test-Path HKCU:\$runKey)) { New-Item HKCU:\$runKey | Out-Null }; Set-ItemProperty HKCU:\$runKey OwnerApp 'C:\owner.exe'"
     Start-Sleep -Seconds 5
 
     # ===== E. step 2 =====
@@ -117,6 +123,15 @@ try {
     "secret" | Set-Content "$prof\Downloads\secret.txt"
     Remove-Item "$prof\Desktop\Game.txt"
     New-Item "$prof\AppData\Local\NVIDIA\DXCache" -ItemType Directory -Force | Out-Null; "cache" | Set-Content "$prof\AppData\Local\NVIDIA\DXCache\x.bin"
+    # what a customer could leave behind to run again for the next customer, and a link meant to trick the clean-up
+    $taskMade = CustomerPs "schtasks.exe /create /tn ShinzxCustomerTask /tr 'C:\Windows\System32\PING.EXE 127.0.0.1' /sc minute /mo 30 /f; exit `$LASTEXITCODE"
+    $runMade = CustomerPs "Set-ItemProperty HKCU:\$runKey Evil 'C:\evil.exe'"
+    New-Item "C:\ShinzxCanary" -ItemType Directory -Force | Out-Null; "must stay" | Set-Content "C:\ShinzxCanary\keep.txt"
+    $linkMade = CustomerPs "New-Item -ItemType Junction -Path '$prof\Downloads\link' -Target 'C:\ShinzxCanary' | Out-Null"
+    New-Item "$env:ProgramFiles\OpenFolder" -ItemType Directory -Force | Out-Null
+    icacls.exe "$env:ProgramFiles\OpenFolder" /grant "*S-1-5-32-545:(OI)(CI)M" | Out-Null   # like Steam's folder: any user can write
+    Copy-Item "$env:WINDIR\System32\PING.EXE" "$env:ProgramFiles\OpenFolder\lghub.exe"
+    $p4 = AsCustomer "$env:ProgramFiles\OpenFolder\lghub.exe" "-t 127.0.0.1"
     Start-Sleep -Seconds 4   # the lock screen sees the session (polls every 2 s)
     Pc "/pc/logout" @{} | Out-Null
     $asked = WaitFor 15 { Test-Path "$data\wipe\request" }
@@ -132,14 +147,23 @@ try {
     $cfg = Get-Content "C:\FakeSteam\config\config.vdf" -Raw
     Check "B3.F6" "Steam saved logins cleared, other Steam settings kept" (-not (Test-Path "C:\FakeSteam\config\loginusers.vdf") -and $cfg -notmatch "ConnectCache" -and $cfg -match "Software") ""
     Check "B3.F7" "Lock screen still running after the clean-up" ([bool](Get-Process Cafe.Agent -ErrorAction SilentlyContinue)) ""
+    Check "B3.F8" "A customer's link cannot make the clean-up delete files elsewhere" ($linkMade -eq 0 -and (Test-Path "C:\ShinzxCanary\keep.txt")) "link made: exit $linkMade"
+    Check "B3.F9" "A program named like a mouse app in a folder anyone can write is closed" ($p4.HasExited) "lghub.exe in an open folder"
+    $run = Get-ItemProperty "Registry::HKEY_USERS\$($u.SID.Value)\$runKey" -ErrorAction SilentlyContinue
+    Check "B3.F10" "Customer's autostart entry removed, the owner's kept" ($runMade -eq 0 -and $ownerRun -eq 0 -and -not $run.Evil -and $run.OwnerApp -eq "C:\owner.exe") "made: customer exit $runMade, owner exit $ownerRun"
+    cmd.exe /c "schtasks /query /tn ShinzxCustomerTask >nul 2>&1"
+    Check "B3.F11" "Customer's scheduled task removed" ($taskMade -eq 0 -and $LASTEXITCODE -ne 0) "made: exit $taskMade"
     Stop-Process -Id $p3.Id -Force
 
     # ===== G. what a customer cannot do =====
     $stop = AsCustomer "$env:WINDIR\System32\sc.exe" "stop CafeWatchdog"; $stop.WaitForExit()
     Check "B3.G1" "Customer cannot stop the watchdog" ($stop.ExitCode -ne 0 -and (Get-Service CafeWatchdog).Status -eq "Running") "sc exit $($stop.ExitCode)"
-    foreach ($t in @(@("$app\setup.flag", "switch the lock screen off"), @("$app\Cafe.Agent.exe", "replace the lock screen"), @("$data\clean-profile\x.txt", "change the clean copy"))) {
-        $w = AsCustomer "$env:WINDIR\System32\cmd.exe" "/c echo x> `"$($t[0])`""; $w.WaitForExit()
-        Check "B3.G2" "Customer cannot $($t[1])" ($w.ExitCode -ne 0) "$($t[0]): exit $($w.ExitCode)"
+    # PowerShell, not cmd: the command prompt is switched off for Customer, so a cmd test would "pass" for the wrong reason
+    $own = CustomerPs "Set-Content -LiteralPath '$prof\Downloads\ok.txt' x"
+    Check "B3.G0" "Control: the same write works in the customer's own folder" ($own -eq 0) "exit $own"
+    foreach ($t in @(@("$app\setup.flag", "switch the lock screen off"), @("$app\Cafe.Agent.exe", "replace the lock screen"), @("$data\clean-profile\x.txt", "change the clean copy"), @("$data\run-keys.txt", "change the owner's autostart list"))) {
+        $w = CustomerPs "Set-Content -LiteralPath '$($t[0])' x"
+        Check "B3.G2" "Customer cannot $($t[1])" ($w -ne 0 -and -not ((Test-Path $t[0]) -and (Get-Content $t[0] -Raw) -eq "x`r`n")) "$($t[0]): exit $w"
     }
 
     # ===== H. Level A enforce: approved runs, unapproved is blocked, the cafe program is allowed =====
