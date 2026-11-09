@@ -25,6 +25,7 @@ $app = "$env:ProgramFiles\ShinzxCafe"
 $data = "$env:ProgramData\ShinzxCafe"
 $winlogon = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
 $autoBefore = (Get-ItemProperty $winlogon).AutoAdminLogon
+$ntpKey = "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters"
 $dnsBefore = @(Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | ForEach-Object { "$($_.InterfaceIndex)=$((Get-DnsClientServerAddress -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4).ServerAddresses -join ',')" })
 $runnerDns = ((Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | Select-Object -First 1).DNSServer | Where-Object AddressFamily -eq 2).ServerAddresses[0]
 
@@ -46,6 +47,7 @@ try {
     Check "B3.A4" "Internet filter (AdGuard Home) installed, checked and running" ((Get-Service AdGuardHome -ErrorAction SilentlyContinue).Status -eq "Running") "version pinned, SHA-256 checked"
     $wiz = WaitFor 20 { try { (Invoke-WebRequest http://127.0.0.1:3000 -UseBasicParsing).StatusCode -eq 200 } catch { $false } }
     Check "B3.A5" "Filter set-up page opens on the counter PC" $wiz "http://127.0.0.1:3000"
+    Check "B3.A6" "Internet filter restarts by itself if it stops" ((sc.exe qfailure AdGuardHome) -match "RESTART") ""
     Stop-Service CafeServer   # the gaming-PC tests below use a test server with test users on the same port
 
     # ===== B. test server with test users =====
@@ -56,6 +58,7 @@ try {
     function Pc($path, $body) { Invoke-RestMethod "https://127.0.0.1:5443$path" -Method Post -Headers @{ "X-Pc-Token" = $token } -ContentType "application/json" -Body ($body | ConvertTo-Json) }
 
     # ===== C. gaming PC, step 1 =====
+    $ntpBefore = (Get-ItemProperty $ntpKey).NtpServer   # after the counter PC install, which sets the same clock settings
     $stage = Join-Path $env:TEMP "stage-pc"; New-Item $stage -ItemType Directory -Force | Out-Null
     Copy-Item "$repo\install\*", "$out\agent\Cafe.Agent.exe", "$out\watchdog\Cafe.Watchdog.exe" $stage
     Copy-Item "$tdata\pc1.token" "$stage\pc.token"; Copy-Item "$tdata\server.pin" $stage
@@ -74,6 +77,8 @@ try {
     $other = try { Resolve-DnsName example.com -Server 8.8.8.8 -DnsOnly -QuickTimeout -ErrorAction Stop | Out-Null; "answered" } catch { "blocked" }
     $own = try { Resolve-DnsName example.com -DnsOnly -ErrorAction Stop | Out-Null; "works" } catch { "$_" }
     Check "B3.C6" "Other DNS servers blocked, the filter's one works" ($other -eq "blocked" -and $own -eq "works") "8.8.8.8 $other; normal lookups $own"
+    $poll = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpClient").SpecialPollInterval
+    Check "B3.C8" "Clock synced hourly with India's official time servers (NIC, NPL)" ((Get-ItemProperty $ntpKey).NtpServer -match "samay1.nic.in" -and $poll -eq 3600 -and (Get-Service w32time).Status -eq "Running") "time source now: $((w32tm.exe /query /source) -join ' ')"
     Check "B3.C7" "Browsers' own secure DNS switched off" ((Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge").DnsOverHttpsMode -eq "off") "Edge, Chrome, Firefox policies"
 
     # ===== D. the owner sets the Customer account up (here: an "installed Discord" and a shortcut) =====
@@ -158,6 +163,7 @@ try {
     $dnsAfter = @(Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | ForEach-Object { "$($_.InterfaceIndex)=$((Get-DnsClientServerAddress -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4).ServerAddresses -join ',')" })
     Check "B3.I1" "PC uninstall: service, account, files and rules gone" (-not (Get-Service CafeWatchdog -ErrorAction SilentlyContinue) -and -not (Get-LocalUser Customer -ErrorAction SilentlyContinue) -and -not (Test-Path $app) -and -not (Get-NetFirewallRule -Group "Shinzx PC" -ErrorAction SilentlyContinue)) ""
     Check "B3.I2" "PC uninstall: DNS and automatic sign-in back as before" (("$dnsAfter" -eq "$dnsBefore") -and (Get-ItemProperty $winlogon).AutoAdminLogon -eq $autoBefore) "DNS before $dnsBefore, after $dnsAfter"
+    Check "B3.I2b" "PC uninstall: clock settings back as before" ((Get-ItemProperty $ntpKey).NtpServer -eq $ntpBefore) "$ntpBefore"
     Check "B3.I3" "PC uninstall: Level A off" (-not ((CiTool.exe --list-policies) -match "Shinzx Level A")) ""
     & "$stageA\install-admin.ps1" -Uninstall -Ci
     Check "B3.I4" "Counter PC uninstall: server and filter gone" (-not (Get-Service CafeServer, AdGuardHome -ErrorAction SilentlyContinue)) ""

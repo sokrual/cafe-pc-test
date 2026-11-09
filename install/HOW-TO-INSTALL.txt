@@ -9,10 +9,14 @@ A. THE COUNTER PC (once)
 3. It shows this PC's address. Write it down.
 4. Open http://127.0.0.1:3000 in the browser and finish the internet filter setup.
    For "DNS server" choose "All interfaces" and port 53. Write down the password you choose.
+   Then in Settings, General settings: set "Query logs retention" to 180 days (4320 hours).
+   The law asks a cyber cafe to keep a record of the websites used for 180 days.
 5. A folder "for-gaming-PCs" is made next to INSTALL-ADMIN. Copy what is inside it,
    and the key file for each PC, into the install folder for the gaming PCs.
 
 B. EACH GAMING PC (two short visits)
+Do ONE gaming PC first and use it for a day. If all is well, do the others.
+
 1. Double-click INSTALL-PC. Type the counter PC's address when it asks.
    The PC restarts and signs in to the "Customer" account by itself. There is no lock screen yet.
 2. In the Customer account: install Discord, add the game shortcuts to the desktop,

@@ -16,6 +16,7 @@ function Say($text) {
     [System.Windows.Forms.MessageBox]::Show($text, "Shinzx setup") | Out-Null
 }
 trap { Say "Setup stopped:`n$_`n`nRun it again. If it stops again, take a photo of this window and send it on Discord to the person who gave you this software."; break }
+Start-Transcript "$src\install-log.txt" -Append | Out-Null   # what happened, step by step: send this file on Discord if setup stops
 
 if ($Uninstall) {
     if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force; sc.exe delete $svc | Out-Null }
@@ -36,6 +37,14 @@ if (-not (Get-Service $svc -ErrorAction SilentlyContinue)) {
 }
 sc.exe failure $svc reset= 86400 actions= restart/2000/restart/2000/restart/2000 | Out-Null
 Start-Service $svc
+
+# --- clock: synced every hour with India's official time servers (NIC and NPL), as CERT-In asks; logs need the right time ---
+$w32 = "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time"
+Set-ItemProperty "$w32\Parameters" NtpServer "samay1.nic.in,0x9 samay2.nic.in,0x9 time.nplindia.org,0x9"
+Set-ItemProperty "$w32\Parameters" Type "NTP"
+Set-ItemProperty "$w32\TimeProviders\NtpClient" SpecialPollInterval 3600 -Type DWord
+Set-Service w32time -StartupType Automatic; Restart-Service w32time -Force
+w32tm.exe /resync /nowait | Out-Null
 
 # --- firewall: the server and the filter answer the shop network only, never the internet ---
 Remove-NetFirewallRule -Group "Shinzx counter" -ErrorAction SilentlyContinue
@@ -65,6 +74,8 @@ if (-not (Test-Path "$agh\AdGuardHome.exe")) {
     $p = Start-Process "$agh\AdGuardHome.exe" "-s install" -Wait -PassThru -WindowStyle Hidden
     if ($p.ExitCode) { throw "The internet filter did not install (exit $($p.ExitCode))" }
 }
+
+sc.exe failure AdGuardHome reset= 86400 actions= restart/2000/restart/2000/restart/2000 | Out-Null   # restarts if it stops: without it no PC finds any website
 
 # --- what the gaming PCs need from here ---
 $pin = "$env:ProgramData\Cafe\server.pin"

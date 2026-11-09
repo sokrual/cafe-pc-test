@@ -22,6 +22,7 @@ function Say($text) {
     [System.Windows.Forms.MessageBox]::Show($text, "Shinzx setup") | Out-Null
 }
 trap { Say "Setup stopped:`n$_`n`nRun it again. If it stops again, take a photo of this window and send it on Discord to the person who gave you this software."; break }
+if (-not $Uninstall) { Start-Transcript "$src\install-log.txt" -Append | Out-Null }   # what happened, step by step: send this file on Discord if setup stops
 
 # The Windows sign-in password is kept where Windows keeps it for automatic sign-in (an LSA secret), never in a file.
 Add-Type -Namespace Shinzx -Name Lsa -MemberDefinition @'
@@ -125,7 +126,9 @@ icacls "$data\wipe" /grant "*S-1-5-32-545:(OI)(CI)(W,RD)" | Out-Null
 # --- Windows settings: remember what they were, once, so uninstall can put them back ---
 $edge, $chrome, $firefox = "HKLM:\SOFTWARE\Policies\Microsoft\Edge", "HKLM:\SOFTWARE\Policies\Google\Chrome", "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\DNSOverHTTPS"
 $watched = @("$winlogon|AutoAdminLogon", "$winlogon|ForceAutoLogon", "$winlogon|DefaultUserName", "$winlogon|DefaultDomainName", "$winlogon|DefaultPassword",
-    "$machinePolicy|HideFastUserSwitching", "$edge|DnsOverHttpsMode", "$chrome|DnsOverHttpsMode", "$firefox|Enabled", "$firefox|Locked")
+    "$machinePolicy|HideFastUserSwitching", "$edge|DnsOverHttpsMode", "$chrome|DnsOverHttpsMode", "$firefox|Enabled", "$firefox|Locked",
+    "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters|NtpServer", "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters|Type",
+    "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpClient|SpecialPollInterval")
 if (-not (Test-Path "$data\before.json")) {
     $before = [ordered]@{}
     foreach ($w in $watched) { $k, $n = $w -split '\|'; $before[$w] = (Get-ItemProperty $k -Name $n -ErrorAction SilentlyContinue).$n }
@@ -183,6 +186,14 @@ if ($dnsOk) {
 } elseif (-not (Get-NetFirewallRule -Group "Shinzx PC" -ErrorAction SilentlyContinue)) {   # an existing lock stays as it is
     Say "Note: the internet filter on the counter PC ($DnsServer) did not answer, so web filtering is NOT on for this PC yet.`nFinish the filter setup on the counter PC, then run INSTALL-PC again. Everything else works."
 }
+
+# --- clock: synced every hour with India's official time servers (NIC and NPL), as CERT-In asks; logs need the right time ---
+$w32 = "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time"
+Set-ItemProperty "$w32\Parameters" NtpServer "samay1.nic.in,0x9 samay2.nic.in,0x9 time.nplindia.org,0x9"
+Set-ItemProperty "$w32\Parameters" Type "NTP"
+Set-ItemProperty "$w32\TimeProviders\NtpClient" SpecialPollInterval 3600 -Type DWord
+Set-Service w32time -StartupType Automatic; Restart-Service w32time -Force
+w32tm.exe /resync /nowait | Out-Null
 
 # --- the watchdog service: runs as Windows itself (SYSTEM), starts with the PC, also in Safe Mode, restarts if it stops ---
 if (-not (Get-Service $svc -ErrorAction SilentlyContinue)) {
