@@ -23,12 +23,13 @@ if ($Mode -eq "Off") { Write-Host "Level A is off."; exit 0 }
 wevtutil.exe sl "Microsoft-Windows-CodeIntegrity/Operational" /ms:67108864   # 64 MB; the 1 MB default fills fast on a gaming PC
 $xml = "$data\levelA.xml"
 Copy-Item "$env:WINDIR\schemas\CodeIntegrity\ExamplePolicies\DefaultWindows_Enforced.xml" $xml -Force
-$rules = @(New-CIPolicyRule -FilePathRule "$env:ProgramFiles\ShinzxCafe\*")
+# "| ForEach-Object { $_ }" unrolls: these cmdlets can return a list as one object, which Merge-CIPolicy refuses
+$rules = @(New-CIPolicyRule -FilePathRule "$env:ProgramFiles\ShinzxCafe\*" | ForEach-Object { $_ })
 foreach ($dir in $Approve) {
     if (-not (Test-Path $dir)) { throw "Approved folder not found: $dir" }
     # Publisher = the maker's certificate, so new versions from the same maker still run
     $files = Get-SystemDriver -ScanPath $dir -UserPEs -NoScript -NoShadowCopy
-    $rules += New-CIPolicyRule -DriverFiles $files -Level Publisher -Fallback Hash
+    $rules += @(New-CIPolicyRule -DriverFiles $files -Level Publisher -Fallback Hash | ForEach-Object { $_ })
 }
 Merge-CIPolicy -PolicyPaths $xml -Rules $rules -OutputFilePath $xml | Out-Null
 Set-CIPolicyIdInfo -FilePath $xml -PolicyName "Shinzx Level A" -ResetPolicyID | Out-Null

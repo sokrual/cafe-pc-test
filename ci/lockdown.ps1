@@ -16,7 +16,9 @@ function AsCustomer($exe, $argList) { # start a program as Customer (password re
     $cred = [pscredential]::new("Customer", $pw)
     $p = @{ FilePath = $exe; Credential = $cred; LoadUserProfile = $true; WorkingDirectory = "$env:WINDIR\System32"; PassThru = $true; WindowStyle = "Hidden" }
     if ($argList) { $p.ArgumentList = $argList }
-    Start-Process @p
+    $proc = Start-Process @p
+    $null = $proc.Handle   # without this Windows PowerShell never reports the exit code
+    $proc
 }
 $wd = "$env:ProgramData\Cafe\logs"
 $app = "$env:ProgramFiles\ShinzxCafe"
@@ -34,8 +36,9 @@ try {
     Check "B3.A1" "Cafe server runs as a Windows service" ((Get-Service CafeServer).Status -eq "Running") (Get-Service CafeServer).StartType
     [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }   # the test only; PCs pin the certificate
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $code = try { Invoke-WebRequest https://127.0.0.1:5443/pc/state -UseBasicParsing | Out-Null; 200 } catch { [int]$_.Exception.Response.StatusCode }
-    Check "B3.A2" "Server answers HTTPS and refuses a PC without its key" ($code -eq 401) "HTTP $code"
+    $code = 0; $why = ""
+    WaitFor 30 { $script:code = try { Invoke-WebRequest https://127.0.0.1:5443/pc/state -UseBasicParsing | Out-Null; 200 } catch { $script:why = $_.Exception.Message; [int]$_.Exception.Response.StatusCode }; $script:code -ne 0 } | Out-Null
+    Check "B3.A2" "Server answers HTTPS and refuses a PC without its key" ($code -eq 401) "HTTP $code $why"
     $rule = Get-NetFirewallRule -Group "Shinzx counter" | Where-Object DisplayName -like "*cafe server*" | Get-NetFirewallAddressFilter
     Check "B3.A3" "Firewall lets only the shop network reach the server" ("$($rule.RemoteAddress)" -eq "LocalSubnet") "remote: $($rule.RemoteAddress)"
     Check "B3.A4" "Internet filter (AdGuard Home) installed, checked and running" ((Get-Service AdGuardHome -ErrorAction SilentlyContinue).Status -eq "Running") "version pinned, SHA-256 checked"

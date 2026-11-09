@@ -28,6 +28,7 @@ if ($Uninstall) {
 
 # --- the cafe server ---
 if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force }
+Get-Process Cafe.Server -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Seconds 1
 New-Item $app -ItemType Directory -Force | Out-Null   # inside Program Files: only admins can change it
 Copy-Item "$src\Cafe.Server.exe" $app -Force
 if (-not (Get-Service $svc -ErrorAction SilentlyContinue)) {

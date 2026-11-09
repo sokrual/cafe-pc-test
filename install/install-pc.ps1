@@ -103,7 +103,8 @@ foreach ($f in "pc.token", "server.pin") {
 
 # --- program files ---
 if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force }
-Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process Cafe.Watchdog, Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force   # a stopped service can take a moment to let go of its file
+Start-Sleep -Seconds 1
 New-Item $app -ItemType Directory -Force | Out-Null   # inside Program Files: customers can read and run, not change
 foreach ($f in "Cafe.Agent.exe", "Cafe.Watchdog.exe", "keep-running.txt", "install-pc.ps1", "levelA.ps1", "SETUP-MODE.bat", "pc.token", "server.pin") {
     if ($src -ne $app -and (Test-Path "$src\$f")) { Copy-Item "$src\$f" $app -Force }   # SETUP-MODE runs from $app itself
