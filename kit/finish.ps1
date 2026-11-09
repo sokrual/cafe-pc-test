@@ -23,6 +23,12 @@ function Add-Result($id, $test, $ok, $detail) {
     $res = if ($null -eq $ok) { "NOT TESTED" } elseif ($ok) { "PASS" } else { "FAIL" }
     $results.Add([pscustomobject]@{ id = $id; test = $test; result = $res; detail = "$detail" })
 }
+function Maker($sig) { # the company (O=) on the signing certificate
+    if (-not $sig) { return "(file is gone)" }
+    if (-not $sig.SignerCertificate) { return "(not signed)" }
+    if ($sig.SignerCertificate.Subject -match '(?:^|, )O="?([^",]+)') { return $Matches[1] }
+    $sig.SignerCertificate.GetNameInfo("SimpleName", $false)
+}
 
 if (-not $ReportOnly) {
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -53,6 +59,48 @@ if (-not $ReportOnly) {
         }
         "time,user,path" | Out-File (Join-Path $logs "would-be-blocked.csv") -Encoding utf8
         @($wbRows) | Where-Object { $_ } | Export-Csv (Join-Path $logs "would-be-blocked.csv") -NoTypeInformation -Encoding utf8 -Append
+
+        # Level A: every file Windows would not have trusted (event 3076), with who signed it. Events name the disk
+        # as \Device\HarddiskVolumeN, so map those back to drive letters first.
+        Add-Type -Namespace Shinzx -Name Dos -MemberDefinition '[DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern uint QueryDosDevice(string name, System.Text.StringBuilder target, int max);'
+        $dev = @{}
+        foreach ($d in [IO.DriveInfo]::GetDrives()) { $sb = New-Object Text.StringBuilder 300; if ([Shinzx.Dos]::QueryDosDevice($d.Name.TrimEnd('\'), $sb, 300)) { $dev[$sb.ToString()] = $d.Name.TrimEnd('\') } }
+        $files = foreach ($x in @(Get-WinEvent -FilterHashtable @{ LogName = "Microsoft-Windows-CodeIntegrity/Operational"; Id = 3076; StartTime = $started } -ErrorAction SilentlyContinue)) {
+            $f = "$((([xml]$x.ToXml()).Event.EventData.Data | Where-Object Name -eq "File Name").'#text')"
+            foreach ($k in $dev.Keys) { if ($f.StartsWith("$k\", "OrdinalIgnoreCase")) { $f = $dev[$k] + $f.Substring($k.Length) } }
+            $f
+        }
+        $aRows = foreach ($f in @($files | Where-Object { $_ } | Sort-Object -Unique)) {
+            $s = if (Test-Path -LiteralPath $f) { Get-AuthenticodeSignature -LiteralPath $f }
+            $maker = Maker $s
+            [pscustomobject]@{ maker = $maker; path = $f }
+        }
+        "maker,path" | Out-File (Join-Path $logs "levelA-would-block.csv") -Encoding utf8
+        @($aRows) | Where-Object { $_ } | Export-Csv (Join-Path $logs "levelA-would-block.csv") -NoTypeInformation -Encoding utf8 -Append
+
+        # what is on this PC, for the owner to review: programs, non-Microsoft services and drivers, start-up items
+        Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*", "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*", "Registry::HKEY_USERS\*\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
+            Where-Object DisplayName | Select-Object DisplayName, Publisher, DisplayVersion, InstallDate, InstallLocation | Sort-Object DisplayName -Unique |
+            Export-Csv (Join-Path $logs "installed-programs.csv") -NoTypeInformation -Encoding utf8
+        $svc = foreach ($x in @(Get-CimInstance Win32_Service) + @(Get-CimInstance Win32_SystemDriver)) {
+            $p = "$($x.PathName)" -replace '^\\\?\?\\', '' -replace '^\\SystemRoot\\', "$env:WINDIR\" -replace '^(?i)System32\\', "$env:WINDIR\System32\"
+            $p = if ($p -match '^"([^"]+)"') { $Matches[1] } elseif ($p -match '^(.+?\.(exe|sys))(\s|$)') { $Matches[1] } else { $p }
+            $s = if ($p -and (Test-Path -LiteralPath $p)) { Get-AuthenticodeSignature -LiteralPath $p }
+            $maker = Maker $s
+            if ($maker -ne "Microsoft Corporation") { [pscustomobject]@{ kind = $x.CimClass.CimClassName -replace 'Win32_System|Win32_'; name = $x.Name; state = $x.State; maker = $maker; path = $p } }
+        }
+        @($svc) | Where-Object { $_ } | Export-Csv (Join-Path $logs "services-and-drivers.csv") -NoTypeInformation -Encoding utf8
+        Get-CimInstance Win32_StartupCommand | Select-Object Name, Command, Location, User | Export-Csv (Join-Path $logs "startup.csv") -NoTypeInformation -Encoding utf8
+
+        # everything Microsoft Defender has found on this PC (its history, not only during the test), and its exceptions
+        try {
+            $names = @{}; foreach ($t in @(Get-MpThreat)) { $names[$t.ThreatID] = $t.ThreatName }
+            @(Get-MpThreatDetection) | ForEach-Object { [pscustomobject]@{ time = $_.InitialDetectionTime; threat = $names[$_.ThreatID]; files = ($_.Resources -join ' ; '); program = $_.ProcessName } } |
+                Export-Csv (Join-Path $logs "security-finds.csv") -NoTypeInformation -Encoding utf8
+            $p = Get-MpPreference
+            @($p.ExclusionPath) + @($p.ExclusionProcess) + @($p.ExclusionExtension) | Where-Object { $_ } | Out-File (Join-Path $logs "defender-exceptions.txt") -Encoding utf8
+            (Get-MpComputerStatus).RealTimeProtectionEnabled | Out-File (Join-Path $logs "defender-realtime.txt") -Encoding utf8
+        } catch { "Defender not working: $_" | Out-File (Join-Path $logs "defender-error.txt") -Encoding utf8 }
     }
     finally {
         # 3. ALWAYS restore AppLocker and its service exactly as they were before START-TEST, even if step 1-2 failed.
@@ -80,6 +128,13 @@ if (-not $ReportOnly) {
             $old = (Get-Content (Join-Path $logs "appidsvc-starttype.txt") -Raw).Trim()
             if ($map[$old]) { sc.exe config AppIDSvc start= $($map[$old]) | Out-Null }
         } catch { Write-Host "Restoring the service setting failed: $_" -ForegroundColor Red }
+        try { # remove the Level A watch-only policy (every id START-TEST added)
+            foreach ($id in @(Get-Content (Join-Path $logs "levelA-policy-id.txt") -ErrorAction Stop | Where-Object { $_.Trim() })) { CiTool.exe --remove-policy $id.Trim() -json | Out-Null }
+        } catch { Write-Host "Removing the Level A check failed: $_" -ForegroundColor Red }
+        try {
+            $old = (Get-Content (Join-Path $logs "pua-before.txt") -Raw -ErrorAction Stop).Trim()
+            Set-MpPreference -PUAProtection (@{ "0" = "Disabled"; "1" = "Enabled"; "2" = "AuditMode" }[$old])
+        } catch { Write-Host "Restoring the Defender setting failed: $_" -ForegroundColor Red }
     }
     # check the restore really worked
     $before = @(([xml](Get-Content (Join-Path $logs "applocker-backup.xml") -Raw)).SelectNodes("//*[@Action]")).Count
@@ -87,6 +142,13 @@ if (-not $ReportOnly) {
     $left = @(Get-ScheduledTask -TaskName "ShinzxTest*" -ErrorAction SilentlyContinue).Count + @(Get-LocalUser "ShinzxTest" -ErrorAction SilentlyContinue).Count
     Add-Result "T0.9a" "PC app rules restored to how they were" ($now -eq $before) "$now rules now, $before before the test"
     Add-Result "T0.9b" "Test tasks and test user removed" ($left -eq 0) "$left left"
+    $ids = @(Get-Content (Join-Path $logs "levelA-policy-id.txt") -ErrorAction SilentlyContinue | Where-Object { $_.Trim() } | ForEach-Object { $_.Trim().Trim('{}') })
+    $still = @($ids | Where-Object { (CiTool.exe --list-policies) -match [regex]::Escape($_) })
+    Add-Result "T0.9c" "Level A watch-only check removed" ($still.Count -eq 0) "$($still.Count) of $($ids.Count) still on"
+    if (Test-Path (Join-Path $logs "pua-before.txt")) {
+        $want = (Get-Content (Join-Path $logs "pua-before.txt") -Raw).Trim(); $now = "$((Get-MpPreference).PUAProtection)"
+        Add-Result "T0.9d" "Defender setting put back" ($now -eq $want) "now $now, before $want"
+    }
 }
 
 # ---------------- build the report ----------------
@@ -165,6 +227,24 @@ $gameHits = @($wb | Where-Object { $_.path -match $gameWords } | Select-Object -
 $otherHits = @($wb | Where-Object { $_.path -notmatch $gameWords } | Select-Object -ExpandProperty path -Unique)
 Add-Result "T0.2f" "No game, launcher or anti-cheat would be blocked by Level B" ($gameHits.Count -eq 0) "$($gameHits.Count) game-related, $($otherHits.Count) other programs would be blocked"
 
+# Level A: the list the owner approves from, grouped by maker; games, launchers, anti-cheats and mouse/keyboard apps marked
+$la = @(); $laFile = Join-Path $logs "levelA-would-block.csv"
+if (Test-Path $laFile) { $la = @(Import-Csv $laFile) }
+$hwWords = "logitech|razer|corsair|steelseries|hyperx|asus|msi|redragon|cosmic byte|ant esports|zebronics|realtek|intel|nvidia|amd|advanced micro"
+$makers = @($la | Group-Object maker | Sort-Object Count -Descending | ForEach-Object {
+    $tag = if ("$($_.Name) $($_.Group[0].path)" -match $gameWords) { "game" } elseif ($_.Name -match $hwWords) { "hardware" } else { "check" }
+    [pscustomobject]@{ maker = $_.Name; files = $_.Count; tag = $tag; example = $_.Group[0].path } })
+Add-Result "T0.4b" "Level A list of programs to approve was made" (Test-Path $laFile) "$($la.Count) files from $($makers.Count) makers would need approval"
+
+# security: anything Defender found, and any exceptions someone added to it
+$finds = @(); if (Test-Path (Join-Path $logs "security-finds.csv")) { $finds = @(Import-Csv (Join-Path $logs "security-finds.csv")) }
+$except = @(Get-Content (Join-Path $logs "defender-exceptions.txt") -ErrorAction SilentlyContinue | Where-Object { $_ })
+if (Test-Path (Join-Path $logs "defender-error.txt")) { Add-Result "T0.5b" "No harmful or unwanted programs found" $null (Get-Content (Join-Path $logs "defender-error.txt") -Raw) }
+else {
+    Add-Result "T0.5b" "No harmful or unwanted programs found" ($finds.Count -eq 0) $(if ($finds) { ($finds.threat | Select-Object -Unique) -join ", " } else { "none found" })
+    Add-Result "T0.5c" "No exceptions added to Microsoft Defender" ($except.Count -eq 0) $(if ($except) { "$($except.Count) exceptions - check each one" } else { "none" })
+}
+
 # write report.txt + zip
 $pass = @($results | Where-Object result -eq "PASS").Count
 $fail = @($results | Where-Object result -eq "FAIL").Count
@@ -175,6 +255,13 @@ $out += "", "SUMMARY: $pass passed, $fail failed, $nt not tested", ""
 $out += $results | ForEach-Object { "[{0}] {1} {2} - {3}" -f $_.result, $_.id, $_.test, $_.detail }
 if ($gameHits) { $out += "", "GAME-RELATED PROGRAMS LEVEL B WOULD BLOCK (must fix before Level B goes live):"; $out += $gameHits | ForEach-Object { "  $_" } }
 if ($otherHits) { $out += "", "OTHER PROGRAMS LEVEL B WOULD BLOCK (expected - downloads, USB, temp):"; $out += $otherHits | Select-Object -First 50 | ForEach-Object { "  $_" } }
+if ($finds) { $out += "", "HARMFUL OR UNWANTED PROGRAMS DEFENDER FOUND (this PC may need a clean reinstall):"; $out += $finds | ForEach-Object { "  $($_.time)  $($_.threat)  $($_.files)" } }
+if ($except) { $out += "", "EXCEPTIONS IN MICROSOFT DEFENDER (it does not scan these - remove any you did not add):"; $out += $except | ForEach-Object { "  $_" } }
+if ($makers) {
+    $out += "", "PROGRAMS LEVEL A WOULD BLOCK, BY MAKER (approve the ones you know; full list in levelA-would-block.csv):"
+    $out += "  game = game, launcher or anti-cheat   hardware = mouse, keyboard, sound or graphics   check = look at it"
+    $out += $makers | Select-Object -First 60 | ForEach-Object { "  [{0}] {1} ({2} files) e.g. {3}" -f $_.tag, $_.maker, $_.files, $_.example }
+}
 $out | Out-File (Join-Path $logs "REPORT.txt") -Encoding utf8
 $out | Write-Host
 

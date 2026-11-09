@@ -49,7 +49,7 @@ $cv = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
     "CPU: $((Get-CimInstance Win32_Processor | Select-Object -First 1).Name) ($([Environment]::ProcessorCount) threads)"
     "GPU: $((Get-CimInstance Win32_VideoController).Name -join ', ')"
     "RAM: {0:N0} GB" -f ((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
-    "Kit: v3, timer SHA-256 $((Get-FileHash $exe).Hash)"
+    "Kit: v4, timer SHA-256 $((Get-FileHash $exe).Hash)"
 ) | Out-File (Join-Path $logs "pc-info.txt") -Encoding utf8
 Add-Result "T0.0" "Windows 11 version 25H2 or newer" ([int]$cv.CurrentBuild -ge 26200) "$($os.Caption) $($cv.DisplayVersion) build $($cv.CurrentBuild)"
 
@@ -173,6 +173,32 @@ Write-Policy $audit "S-1-5-32-545" (@($profiles | ForEach-Object { Risky $_.Loca
 Apply-Policy $audit
 Add-Result "T0.2e" "Day-long check switched on (audit only, nothing blocked)" $true "$(@($profiles).Count) user profiles watched"
 
+# --- Level A watch-only: Windows' own App Control with Microsoft's "Windows only" example policy in AUDIT mode.
+#     Nothing is blocked; every program Windows would not trust is logged (event 3076), so FINISH-TEST can list
+#     them by maker for the owner to approve. ---
+try {
+    $ci = Join-Path $logs "levelA-audit.xml"
+    Copy-Item "$env:WINDIR\schemas\CodeIntegrity\ExamplePolicies\DefaultWindows_Audit.xml" $ci -Force
+    Set-CIPolicyIdInfo -FilePath $ci -PolicyName "Shinzx test (watch only)" -ResetPolicyID | Out-Null
+    Set-RuleOption -FilePath $ci -Option 3   # 3 = audit mode; set again so this can never block anything
+    $ciId = ([xml](Get-Content $ci -Raw)).SiPolicy.PolicyID
+    ConvertFrom-CIPolicy -XmlFilePath $ci -BinaryFilePath (Join-Path $logs "levelA.cip") | Out-Null
+    $ciId | Out-File (Join-Path $logs "levelA-policy-id.txt") -Append -Encoding utf8   # FINISH-TEST removes every id listed
+    CiTool.exe --update-policy (Join-Path $logs "levelA.cip") -json | Out-Null
+    if ($LASTEXITCODE) { throw "CiTool exit $LASTEXITCODE" }
+    Add-Result "T0.4a" "Level A watch-only check switched on (nothing blocked)" ([bool]((CiTool.exe --list-policies) -match [regex]::Escape($ciId.Trim('{}')))) "policy $ciId"
+} catch { Add-Result "T0.4a" "Level A watch-only check switched on (nothing blocked)" $false $_.Exception.Message }
+
+# --- Security scan: Microsoft Defender quick scan now; its unwanted-program check (PUA) set to log-only for the test ---
+try {
+    $puaFile = Join-Path $logs "pua-before.txt"
+    if (-not (Test-Path $puaFile)) { "$((Get-MpPreference).PUAProtection)" | Out-File $puaFile -Encoding utf8 }
+    Set-MpPreference -PUAProtection AuditMode
+    Start-MpScan -ScanType QuickScan
+    $mp = Get-MpComputerStatus
+    Add-Result "T0.5a" "Security scan ran (Microsoft Defender)" $true "real-time protection on: $($mp.RealTimeProtectionEnabled); virus list from $($mp.AntivirusSignatureLastUpdated)"
+} catch { Add-Result "T0.5a" "Security scan ran (Microsoft Defender)" $null "Defender is not working on this PC: $($_.Exception.Message)" }
+
 # --- Scheduled tasks: timer for every user at sign-in, hidden measurer as SYSTEM at start-up ---
 $set = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries
 $timerArgs = "--log `"$userLogs`" --games `"$root\games.txt`" --expires $expires"
@@ -186,6 +212,6 @@ Add-Result "T0.1b" "Day-long timer monitoring installed" $true "starts after the
 $results | Export-Csv (Join-Path $logs "start-results.csv") -NoTypeInformation -Encoding utf8
 Stop-Transcript | Out-Null
 $fails = @($results | Where-Object result -eq "FAIL").Count
-$msg = "Setup finished ($fails problem(s) found, they will be in the report).`n`nNext:`n1. The PC will restart now.`n2. Use it normally for a day - customers can play as usual.`n3. Tomorrow, double-click FINISH-TEST.`n`nRestart now?"
+$msg = "Setup is done. $fails problem(s) found. They will be in the report.`n`nNext:`n1. The PC restarts now.`n2. Use it normally for one or two days. Customers can play as usual.`n   Open every game once and let it update.`n3. Then double-click FINISH-TEST.`n`nRestart now?"
 if ($Ci) { Write-Host "CI run: no restart. $fails FAIL(s)."; exit 0 }
 if ((Say $msg "YesNo") -eq "Yes") { Restart-Computer -Force } else { Say "OK. Restart the PC when it is free - the day-long test starts after that." | Out-Null }

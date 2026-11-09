@@ -15,7 +15,7 @@ $lines = Get-Content (Join-Path $done.FullName "REPORT.txt")
 $res = foreach ($l in $lines) { if ($l -match '^\[(PASS|FAIL|NOT TESTED)\] (\S+) (.*)$') { [pscustomobject]@{ r = $Matches[1]; id = $Matches[2]; text = $Matches[3] } } }
 
 # must PASS on every Windows machine
-$mustPass = "T0.1a", "T0.2g", "T0.2c", "T0.2h", "T0.2e", "T0.1b", "T0.1f", "T0.1h", "T0.9a", "T0.9b"
+$mustPass = "T0.1a", "T0.2g", "T0.2c", "T0.2h", "T0.2e", "T0.1b", "T0.1f", "T0.1h", "T0.9a", "T0.9b", "T0.4a", "T0.4b", "T0.9c"
 if ($env:PROCESSOR_ARCHITECTURE -ne "ARM64") { $mustPass += "T0.1g" } # on Arm our x64 timer runs emulated and uses more memory
 foreach ($id in $mustPass) {
     $hit = @($res | Where-Object id -eq $id)
@@ -48,12 +48,17 @@ if (Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object
 # the audit log must have caught the program run from Downloads (proves the day-long check works without a restart)
 $wb = Import-Csv (Join-Path $done.FullName "would-be-blocked.csv")
 $sawDownload = [bool]($wb | Where-Object path -match "shinzx-ci-download")
+# Level A watch-only must have logged our own unsigned timer (proves the events are read and the paths decoded)
+$la = @(Import-Csv (Join-Path $done.FullName "levelA-would-block.csv"))
+$sawTimer = [bool]($la | Where-Object { $_.path -like "$root\ShinzxTimerTest.exe" })
+foreach ($f in "installed-programs.csv", "services-and-drivers.csv", "startup.csv") { if (-not (Test-Path (Join-Path $done.FullName $f))) { $hard.Add("$f missing") } }
 foreach ($r in $res) { $summary.Add("| $($r.r) | $($r.id) | $($r.text -replace '\|', '/') |") }
 
 $out = @("## Round $Round on $((Get-CimInstance Win32_OperatingSystem).Caption)", "",
-    "Audit log caught the Downloads program: $sawDownload", "",
+    "Audit log caught the Downloads program: $sawDownload", "Level A log caught the unsigned timer: $sawTimer ($($la.Count) files listed)", "",
     "| Result | ID | Check |", "|---|---|---|") + $summary + @("", "**Must-pass problems: $($hard.Count)**") + ($hard | ForEach-Object { "- $_" })
 $out | Write-Host
 if ($env:GITHUB_STEP_SUMMARY) { $out | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
+if (-not $sawTimer) { $hard.Add("Level A watch-only did not list ShinzxTimerTest.exe"); $la | Select-Object -First 20 | Format-Table | Out-String | Write-Host }
 if (-not $sawDownload) { $hard.Add("audit log did not record the program run from Downloads") }
 if ($hard.Count) { exit 1 }
