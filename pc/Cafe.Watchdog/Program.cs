@@ -47,7 +47,8 @@ static class Watchdog
     static bool WritableByNonAdmins(string file)
     {
         var anyone = new[] { "S-1-1-0", "S-1-5-11", "S-1-5-32-545", "S-1-5-4" }; // Everyone, Authenticated Users, Users, Interactive
-        const System.Security.AccessControl.FileSystemRights write = System.Security.AccessControl.FileSystemRights.Write | System.Security.AccessControl.FileSystemRights.Modify
+        // Write = write data/append/attributes only; "Modify" is not used because it also contains read and run
+        const System.Security.AccessControl.FileSystemRights write = System.Security.AccessControl.FileSystemRights.Write
             | System.Security.AccessControl.FileSystemRights.Delete | System.Security.AccessControl.FileSystemRights.ChangePermissions | System.Security.AccessControl.FileSystemRights.TakeOwnership;
         return new FileInfo(file).GetAccessControl().GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier))
             .Cast<System.Security.AccessControl.FileSystemAccessRule>()
