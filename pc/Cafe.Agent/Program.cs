@@ -66,6 +66,7 @@ sealed class Agent : ApplicationContext
             await Refresh();
         };
         poll.Start();
+        _lock.SetBusy(WipePending()); // a pending request must stay blocked immediately after a restart
         Apply(_state);
         _ = Refresh();
     }
