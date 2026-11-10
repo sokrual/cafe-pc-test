@@ -33,6 +33,7 @@ $autoBefore = (Get-ItemProperty $winlogon).AutoAdminLogon
 $ntpKey = "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters"
 $ntpOriginal = (Get-ItemProperty $ntpKey).NtpServer
 $screenKey = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Control Panel\Desktop"
+$screenOriginal = Get-ItemProperty $screenKey -ErrorAction SilentlyContinue
 $dohOriginal = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -ErrorAction SilentlyContinue).DnsOverHttpsMode
 # control for C6: other DNS servers must answer BEFORE the install, or "blocked" afterwards proves nothing
 $googleBefore = try { Resolve-DnsName example.com -Server 8.8.8.8 -DnsOnly -QuickTimeout -ErrorAction Stop | Out-Null; "answered" } catch { "blocked" }
@@ -253,10 +254,9 @@ try {
     Check "B3.I4" "Counter PC uninstall: server and filter gone" (-not (Get-Service CafeServer, AdGuardHome -ErrorAction SilentlyContinue)) ""
     Check "B3.I4b" "Counter PC uninstall: clock settings back as before" ((Get-ItemProperty $ntpKey).NtpServer -eq $ntpOriginal) "$ntpOriginal"
     $screenAfter = Get-ItemProperty $screenKey -ErrorAction SilentlyContinue
-    $saved = Get-Content "$env:ProgramData\Cafe\before-install.json" -Raw | ConvertFrom-Json
     $screenRestored = $true
     foreach ($name in "ScreenSaveActive", "ScreenSaveTimeOut", "ScreenSaverIsSecure", "SCRNSAVE.EXE") {
-        $before = $saved.("$screenKey|$name")
+        $before = if ($null -eq $screenOriginal) { $null } else { $screenOriginal.$name }
         if ($null -eq $before) { if ($null -ne $screenAfter.$name) { $screenRestored = $false } }
         elseif ($screenAfter.$name -ne $before) { $screenRestored = $false }
     }
