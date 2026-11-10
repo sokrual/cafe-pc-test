@@ -36,7 +36,7 @@ static class Wipe
         try
         {
             var attributes = File.GetAttributes(Request);
-            if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) == 0) return true;
+            if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) == 0 && LinkCount(Request) <= 1) return true;
             normalized = true;
             RemoveEntryNoFollow(Request);
             using var marker = new FileStream(Request, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
