@@ -58,7 +58,13 @@ sealed class Agent : ApplicationContext
         _timer = new TimerWidget(Now, () => Send("/pc/logout", lockNow: true), () => Send("/pc/selflock", lockNow: true));
         KeyBlocker.Install(() => _lock.Visible);
         var poll = new System.Windows.Forms.Timer { Interval = 2000 };
-        poll.Tick += async (_, _) => { _lock.SetBusy(File.Exists(WipeNote)); await Refresh(); };
+        poll.Tick += async (_, _) =>
+        {
+            var pending = WipePending();
+            _lock.SetBusy(pending);
+            if (pending) Apply(_state with { Locked = true, Message = "Please ask at the counter." });
+            await Refresh();
+        };
         poll.Start();
         Apply(_state);
         _ = Refresh();
@@ -95,6 +101,7 @@ sealed class Agent : ApplicationContext
 
     void Apply(PcState s)
     {
+        if (WipePending()) s = s with { Locked = true, Message = "Please ask at the counter." };
         if (_state.Session is not null && s.Session is null) AskForWipe(); // logged out, here or at the counter
         if (s.Locked != _state.Locked) Program.Log(s.Locked ? $"locked: {s.Message}" : $"unlocked, session {s.Session} ({s.Mode})");
         (_state, _stateAt) = (s, DateTime.UtcNow);
@@ -104,6 +111,7 @@ sealed class Agent : ApplicationContext
 
     async Task<string?> Login(string phone, string pin)
     {
+        if (WipePending()) return "Please ask at the counter.";
         try
         {
             using var r = await _http.PostAsJsonAsync("/pc/login", new { phone, pin });
@@ -112,6 +120,14 @@ sealed class Agent : ApplicationContext
             return null;
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { return "This PC cannot reach the counter right now. Please ask at the counter."; }
+    }
+
+    static bool WipePending()
+    {
+        try { _ = File.GetAttributes(WipeNote); return true; }
+        catch (FileNotFoundException) { return false; }
+        catch (DirectoryNotFoundException) { return false; }
+        catch { return true; }
     }
 
     static void AskForWipe()
