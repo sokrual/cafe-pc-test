@@ -126,7 +126,7 @@ static class Wipe
         }
         foreach (var p in closed) p.WaitForExit(5000); // Explorer comes back by itself (Windows restarts it)
 
-        var report = $"closed {closed.Count} programs";
+        var report = $"closed={closed.Count}";
         var profile = Registry.LocalMachine.OpenSubKey($@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\{sid}")?.GetValue("ProfileImagePath") as string;
         var clean = Path.Combine(Data, "clean-profile");
         if (profile is null || !Directory.Exists(clean)) throw new InvalidOperationException("clean profile unavailable");
@@ -155,7 +155,7 @@ static class Wipe
         {
             for (var i = 0; i < caches.Length; i++) Move(Path.Combine(hold, $"{i}"), Path.Combine(profile, caches[i]));
         }
-        report += $"; {links} links removed; files reset (robocopy {exitCode})"; // 0-7 = fine; files Windows keeps open are skipped
+        report += $"; links={links}; robocopy={exitCode}"; // 0-7 = fine; files Windows keeps open are skipped
 
         if (Registry.LocalMachine.OpenSubKey(@"SOFTWARE\WOW6432Node\Valve\Steam")?.GetValue("InstallPath") is string steam)
         {
@@ -168,7 +168,7 @@ static class Wipe
                 var text = File.Exists(main) ? File.ReadAllText(main) : "";
                 var cleaned = Regex.Replace(text, @"\s*""ConnectCache""\s*\{[^{}]*\}", ""); // saved login keys
                 if (cleaned != text) File.WriteAllText(main, cleaned);
-                report += "; Steam logins cleared";
+                report += "; steam=1";
             }
         }
         // ways to start a program again for the next customer: autostart entries and scheduled tasks
@@ -184,7 +184,7 @@ static class Wipe
                 foreach (var n in key.GetValueNames()) key.DeleteValue(n);
                 foreach (var p in saved.Where(p => p[0] == k)) key.SetValue(p[1], p[2], p[2].Contains('%') ? RegistryValueKind.ExpandString : RegistryValueKind.String);
             }
-            report += "; autostart list reset";
+            report += "; autostart=1";
         }
         var tasks = Path.Combine(Environment.SystemDirectory, "Tasks");
         var removed = 0;
@@ -197,7 +197,7 @@ static class Wipe
             d.WaitForExit(10_000);
             removed++;
         }
-        return report + $"; {removed} customer tasks removed";
+        return report + $"; tasks={removed}";
     }
 
     // A customer can leave links in the account: folder links (junctions) and hard links to files they cannot change
@@ -212,7 +212,8 @@ static class Wipe
             {
                 var target = e.LinkTarget is string t ? Path.GetFullPath(t, Path.GetDirectoryName(e.FullName)!) : null;
                 if (target is not null && target.StartsWith(profile + "\\", StringComparison.OrdinalIgnoreCase)) continue;
-                try { if (e is DirectoryInfo d) d.Delete(); else e.Delete(); n++; } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                if (e is DirectoryInfo d) d.Delete(); else e.Delete();
+                n++;
             }
             else if (e is DirectoryInfo d) n += RemoveLinks(d.FullName, profile, clean);
             // only files the copy will write over matter: deleting an extra file removes just that name
