@@ -92,12 +92,16 @@ public sealed class LockScreenTests : IDisposable
         Click("TimerWidget", "Logout");
         var loggedOutAt = played.Elapsed;
         Rig.WaitFor(() => !Hidden("LockScreen"), 10, "logout while offline did not lock the screen");
-        Thread.Sleep(20000); // 20 s more offline
+        Thread.Sleep(125000); // long enough for the server to flag the queued logout for staff review
         _rig.StartServer();
         staff = await _rig.StaffToken();
         Rig.WaitFor(() => _rig.State(staff)["session"] is null, 20, "queued logout never reached the admin PC");
         var used = TimeSpan.Parse(_rig.Bill(staff, session)["used"]!.ToString()!);
-        Assert.True(used <= loggedOutAt + TimeSpan.FromSeconds(5), $"billed {used}, but the customer logged out after {loggedOutAt} (offline time was charged)");
+        Assert.True(used >= loggedOutAt + TimeSpan.FromSeconds(123), $"billed {used}, but the server received the queued logout after at least {loggedOutAt + TimeSpan.FromSeconds(18)}");
+        var review = _rig.Review(staff);
+        Assert.Contains(review, item =>
+            item.Contains("PC1", StringComparison.Ordinal) &&
+            item.Contains("reported logout", StringComparison.Ordinal));
     }
 
     // ---------------- helpers ----------------
@@ -290,6 +294,12 @@ sealed class Rig : IDisposable
     }
     public Dictionary<string, object?> State(string token) => Get("/staff/state/PC1", token);
     public Dictionary<string, object?> Bill(string token, long session) => Get($"/staff/bill/{session}", token);
+    public List<string> Review(string token)
+    {
+        using var m = new HttpRequestMessage(HttpMethod.Get, "/staff/review");
+        m.Headers.Authorization = new("Bearer", token);
+        return _http.Send(m).Content.ReadFromJsonAsync<List<string>>().Result!;
+    }
     public long ElapsedSec(string token) => long.Parse(State(token)["elapsedSec"]!.ToString()!);
 
     public static string Env(string name) => Environment.GetEnvironmentVariable(name) ?? throw new InvalidOperationException($"set {name}");
