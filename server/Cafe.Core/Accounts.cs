@@ -64,6 +64,31 @@ public sealed partial class CafeCore
         return recovery;
     });
 
+    /// Owner enrollment for a staff account; staff use the same TOTP login and replay protection as the owner.
+    public string StartTwoStepFor(long owner, string phone) => Tx(() =>
+    {
+        RequireOwner(owner);
+        var user = Scalar<long?>( "SELECT id FROM users WHERE phone = @p0 AND role IN (@p1, @p2)", phone, (int)Role.Owner, (int)Role.Staff)
+            ?? throw new CafeException("No owner or staff account has this phone number.");
+        _ = user;
+        return NewTwoStepSecret();
+    });
+
+    public string TurnOnTwoStepFor(long owner, string phone, string secret, string code) => Tx(() =>
+    {
+        RequireOwner(owner);
+        var user = Scalar<long?>( "SELECT id FROM users WHERE phone = @p0 AND role IN (@p1, @p2)", phone, (int)Role.Owner, (int)Role.Staff)
+            ?? throw new CafeException("No owner or staff account has this phone number.");
+        var key = FromBase32(secret);
+        if (key.Length < 10 || TotpStep(key, code) is not long step)
+            throw new CafeException("That code does not match. Type the 6 digits the app shows now.");
+        var recovery = Convert.ToHexString(RandomNumberGenerator.GetBytes(8));
+        Exec("UPDATE users SET totp = @p0, totp_step = @p1, recovery = @p2, fails = 0, locked_until = NULL WHERE id = @p3",
+            key, step, SHA256.HashData(Encoding.UTF8.GetBytes(recovery)), user);
+        Audit(owner, "two_step_on", $"user {user}");
+        return recovery;
+    });
+
     // the code's 30-second step if it matches now or one step either side (phone clocks drift a little), else null
     long? TotpStep(byte[] key, string code)
     {

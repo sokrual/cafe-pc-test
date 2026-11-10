@@ -55,6 +55,23 @@ public sealed class AccountTests : IDisposable
     }
 
     [Fact]
+    public void Owner_can_enroll_staff_two_step_and_staff_login_requires_a_fresh_code()
+    {
+        var secret = _cafe.StartTwoStepFor(_owner, "9000000002");
+        Assert.Equal(32, secret.Length);
+        var recovery = _cafe.TurnOnTwoStepFor(_owner, "9000000002", secret, AppCode(secret));
+        Assert.Equal(16, recovery.Length);
+        Assert.Throws<CafeException>(() => _cafe.StaffLogin("9000000002", "111111"));
+        _clock = _clock.AddSeconds(30);
+        var code = AppCode(secret);
+        Assert.Equal(_staff, _cafe.StaffLogin("9000000002", "111111", code));
+        Assert.Throws<CafeException>(() => _cafe.StaffLogin("9000000002", "111111", code));
+        Assert.Throws<CafeException>(() => _cafe.StartTwoStepFor(_staff, "9000000002"));
+        Assert.Throws<CafeException>(() => _cafe.TurnOnTwoStepFor(_staff, "9000000002", secret, code));
+        Assert.Throws<CafeException>(() => _cafe.StartTwoStepFor(_owner, "9000000003"));
+    }
+
+    [Fact]
     public void Guessing_app_codes_locks_the_owner_out_even_with_the_right_PIN()
     {
         var secret = CafeCore.NewTwoStepSecret();

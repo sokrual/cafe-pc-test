@@ -93,6 +93,13 @@ app.MapPost("/staff/two-step/start", (HttpContext c) =>
     return new { secret, uri = $"otpauth://totp/Shinzx%20Cafe?secret={secret}&issuer=Shinzx%20Cafe" };
 });
 app.MapPost("/staff/two-step/on", (HttpContext c, TwoStepBody b) => new { recovery = cafe.TurnOnTwoStep(Owner(c), b.Secret, b.Code) });
+app.MapPost("/staff/two-step/staff/start", (HttpContext c, PhoneBody b) =>
+{
+    var secret = cafe.StartTwoStepFor(Owner(c), b.Phone);
+    return new { secret, uri = $"otpauth://totp/Shinzx%20Cafe?secret={secret}&issuer=Shinzx%20Cafe" };
+});
+app.MapPost("/staff/two-step/staff/on", (HttpContext c, StaffTwoStepBody b) =>
+    new { recovery = cafe.TurnOnTwoStepFor(Owner(c), b.Phone, b.Secret, b.Code) });
 app.MapPost("/staff/lock", (HttpContext c, PcBody b) => { cafe.Lock(Staff(c), b.Pc, b.Message); return cafe.StateOf(b.Pc); });
 app.MapPost("/staff/unlock", (HttpContext c, PcBody b) => { cafe.Unlock(Staff(c), b.Pc); return cafe.StateOf(b.Pc); });
 app.MapGet("/staff/state/{pc}", (HttpContext c, string pc) => { Staff(c); return cafe.StateOf(pc); });
@@ -167,5 +174,7 @@ static void Seed(CafeCore cafe, string data, bool offlineLockTest)
 record LoginBody(string Phone, string Pin, string? Code = null);
 record UserBody(Role Role, string Name, string Phone, string Pin);
 record TwoStepBody(string Secret, string Code);
+record PhoneBody(string Phone);
+record StaffTwoStepBody(string Phone, string Secret, string Code);
 record PcBody(string Pc, string? Message);
 record TimeLockBody(bool Enabled);
