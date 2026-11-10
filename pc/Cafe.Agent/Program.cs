@@ -155,6 +155,7 @@ sealed class LockScreen : Form
     readonly TextBox _pin = new() { Name = "Pin", Width = 320, Font = new Font("Segoe UI", 16), PlaceholderText = "PIN", UseSystemPasswordChar = true };
     readonly Button _go = new() { Name = "Login", Text = "Log in", Width = 320, Height = 48, Font = new Font("Segoe UI", 14, FontStyle.Bold), BackColor = Color.FromArgb(0, 120, 215), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
     readonly Label _error = new() { Name = "Error", AutoSize = false, Width = 520, Height = 40, ForeColor = Color.Salmon, Font = new Font("Segoe UI", 12), TextAlign = ContentAlignment.MiddleCenter };
+    bool _busy;
 
     public LockScreen(string cafeName, Func<string, string, Task<string?>> login)
     {
@@ -193,7 +194,8 @@ sealed class LockScreen : Form
     // nobody logs in while the last customer's apps and logins are being cleared
     public void SetBusy(bool busy)
     {
-        if (busy == (_error.Text == Cleaning)) return;
+        if (busy == _busy) return;
+        _busy = busy;
         _go.Enabled = !busy; _error.Text = busy ? Cleaning : "";
     }
 
