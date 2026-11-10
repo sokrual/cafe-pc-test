@@ -5,6 +5,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+  pull_request: # every pull request gets the same 8 jobs before it is merged
 
 jobs:
   server-tests:
