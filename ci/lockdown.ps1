@@ -128,6 +128,11 @@ try {
     "`"InstallConfigStore`"`n{`n`t`"Software`" { `"x`" `"1`" }`n`t`"ConnectCache`"`n`t{`n`t`t`"7a2b`" `"secret`"`n`t}`n}" | Set-Content "C:\FakeSteam\config\config.vdf"
     $steamKey = "HKLM:\SOFTWARE\WOW6432Node\Valve\Steam"; New-Item $steamKey -Force | Out-Null; Set-ItemProperty $steamKey InstallPath "C:\FakeSteam"
     Pc "/pc/login" @{ phone = "9000000003"; pin = "2222" } | Out-Null
+    # A request must wait while the counter server still reports an active session.
+    Set-Content "$data\wipe\request" ""
+    Start-Sleep -Seconds 4
+    Check "B3.F0" "Watchdog keeps a clean-up request while a session is running" (Test-Path "$data\wipe\request") ""
+    Remove-Item "$data\wipe\request" -Force -ErrorAction SilentlyContinue
     $p1 = AsCustomer "$env:WINDIR\System32\PING.EXE" "-t 127.0.0.1"
     $p2 = AsCustomer "$env:ProgramFiles\FakeGame\game.exe" "-t 127.0.0.1"
     $p3 = AsCustomer "$env:ProgramFiles\FakeMouse\lghub.exe" "-t 127.0.0.1"
@@ -148,10 +153,25 @@ try {
     Copy-Item "$env:WINDIR\System32\PING.EXE" "$env:ProgramFiles\OpenFolder\lghub.exe"
     $p4 = AsCustomer "$env:ProgramFiles\OpenFolder\lghub.exe" "-t 127.0.0.1"
     Start-Sleep -Seconds 4   # the lock screen sees the session (polls every 2 s)
+    # A directory containing a junction at the request path is a request, not a reason to follow it.
+    New-Item "$data\wipe\request" -ItemType Directory -Force | Out-Null
+    New-Item -ItemType Junction -Path "$data\wipe\request\escape" -Target "C:\ShinzxCanary" | Out-Null
     Pc "/pc/logout" @{} | Out-Null
     $asked = WaitFor 15 { Test-Path "$data\wipe\request" }
     $done = WaitFor 90 { -not (Test-Path "$data\wipe\request") }
-    Check "B3.F1" "Logout asks for the clean-up and the watchdog finishes it" ($asked -and $done) "asked $asked, done $done"
+    Check "B3.F1" "Logout request folder and its junction are removed without following the link" ($asked -and $done -and (Test-Path "C:\ShinzxCanary\keep.txt")) "asked $asked, done $done"
+    # A junction at the request path itself is also removed without touching its target.
+    New-Item -ItemType Junction -Path "$data\wipe\request" -Target "C:\ShinzxCanary" | Out-Null
+    $linkDone = WaitFor 30 { -not (Test-Path "$data\wipe\request") }
+    Check "B3.F1b" "A junction at the request path is removed without following it" ($linkDone -and (Test-Path "C:\ShinzxCanary\keep.txt")) "done $linkDone"
+    # A failed clean-up keeps the request and the lock screen blocked; restoring the clean copy lets the next loop retry.
+    Move-Item "$data\clean-profile" "$data\clean-profile.saved"
+    Set-Content "$data\wipe\request" ""
+    Start-Sleep -Seconds 5
+    $blocked = Test-Path "$data\wipe\request"
+    Move-Item "$data\clean-profile.saved" "$data\clean-profile"
+    $retryDone = WaitFor 45 { -not (Test-Path "$data\wipe\request") }
+    Check "B3.F1c" "A failed clean-up stays pending and retries successfully" ($blocked -and $retryDone) "blocked $blocked, retry $retryDone"
     Start-Sleep -Seconds 2
     Check "B3.F2" "Customer's programs closed (a Windows one and a game)" ($p1.HasExited -and $p2.HasExited) "ping $($p1.HasExited), game $($p2.HasExited)"
     Check "B3.F3" "Mouse app on the keep list stays running" (-not $p3.HasExited) "lghub.exe"
