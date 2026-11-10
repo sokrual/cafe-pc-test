@@ -504,13 +504,14 @@ public sealed class BillingTests : IDisposable
     }
 
     [Fact]
-    public void Pin_login_locks_after_five_wrong_tries_and_says_nothing_specific()
+    public void Pin_login_locks_after_three_wrong_tries_for_ten_minutes_and_says_nothing_specific()
     {
         Assert.Equal(_cust, _cafe.Login("9000000003", "2222"));
         var unknown = Assert.Throws<CafeException>(() => _cafe.Login("9999999999", "2222")).Message;
-        for (var i = 0; i < 5; i++) Assert.Equal(unknown, Assert.Throws<CafeException>(() => _cafe.Login("9000000003", "0000")).Message);
-        Assert.Throws<CafeException>(() => _cafe.Login("9000000003", "2222")); // right PIN, but locked
-        Wait(16);
+        for (var i = 0; i < 3; i++) Assert.Equal(unknown, Assert.Throws<CafeException>(() => _cafe.Login("9000000003", "0000")).Message);
+        var locked = Assert.Throws<CafeException>(() => _cafe.Login("9000000003", "2222"));
+        Assert.StartsWith("Too many wrong PINs", locked.Message);
+        Wait(10);
         Assert.Equal(_cust, _cafe.Login("9000000003", "2222"));
     }
 

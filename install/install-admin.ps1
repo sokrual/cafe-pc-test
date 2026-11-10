@@ -62,7 +62,6 @@ if (-not (Test-Path "$keep\before-install.json")) {
 
 # --- counter screen: Windows locks after 10 idle minutes and requires the Windows sign-in credential ---
 $idleKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
-New-Item $idleKey -Force | Out-Null
 New-ItemProperty $idleKey InactivityTimeoutSecs -PropertyType DWord -Value 600 -Force | Out-Null
 
 # --- clock: synced every hour with India's official time servers (NIC and NPL), as CERT-In asks; logs need the right time ---

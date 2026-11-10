@@ -125,6 +125,23 @@ public sealed class AccountTests : IDisposable
     }
 
     [Fact]
+    public void Customer_gets_three_fresh_PIN_tries_after_the_ten_minute_lock()
+    {
+        for (var i = 0; i < 3; i++) Assert.Throws<CafeException>(() => _cafe.Login("9000000003", "0000"));
+        Assert.Throws<CafeException>(() => _cafe.Login("9000000003", "2222"));
+
+        _clock = _clock.AddMinutes(10);
+        var unknown = Assert.Throws<CafeException>(() => _cafe.Login("9999999999", "2222")).Message;
+        for (var i = 0; i < 2; i++)
+            Assert.Equal(unknown, Assert.Throws<CafeException>(() => _cafe.Login("9000000003", "0000")).Message);
+        Assert.Equal(unknown, Assert.Throws<CafeException>(() => _cafe.Login("9000000003", "0000")).Message);
+        Assert.StartsWith("Too many wrong PINs", Assert.Throws<CafeException>(() => _cafe.Login("9000000003", "2222")).Message);
+
+        _clock = _clock.AddMinutes(10);
+        Assert.Equal(_cust, _cafe.Login("9000000003", "2222"));
+    }
+
+    [Fact]
     public void Counter_logins_remain_valid_until_explicit_logout()
     {
         var tokens = new StaffTokens();

@@ -153,6 +153,12 @@ public sealed partial class CafeCore : IDisposable
             var (user, stored, fails, lockedUntil) = (r.GetInt64(0), (byte[])r[1], r.GetInt64(2), r.IsDBNull(3) ? (DateTime?)null : Time(r.GetString(3)));
             r.Close();
             if (lockedUntil > _now()) throw new CafeException("Too many wrong PINs. Try again in 10 minutes.");
+            if (lockedUntil.HasValue)
+            {
+                // A completed lock starts a fresh three-attempt window.
+                fails = 0;
+                Exec("UPDATE users SET fails = 0, locked_until = NULL WHERE id = @p0", user);
+            }
             if (!CheckPin(pin, stored))
             {
                 Exec("UPDATE users SET fails = @p0, locked_until = @p1 WHERE id = @p2", fails + 1, fails + 1 >= 3 ? Iso(_now().AddMinutes(10)) : null, user);

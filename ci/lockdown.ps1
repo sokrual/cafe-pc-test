@@ -34,6 +34,7 @@ $ntpKey = "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters"
 $ntpOriginal = (Get-ItemProperty $ntpKey).NtpServer
 $idleKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
 $idleOriginal = Get-ItemProperty $idleKey -ErrorAction SilentlyContinue
+$enableLUAOriginal = $idleOriginal.EnableLUA
 $dohOriginal = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -ErrorAction SilentlyContinue).DnsOverHttpsMode
 # control for C6: other DNS servers must answer BEFORE the install, or "blocked" afterwards proves nothing
 $googleBefore = try { Resolve-DnsName example.com -Server 8.8.8.8 -DnsOnly -QuickTimeout -ErrorAction Stop | Out-Null; "answered" } catch { "blocked" }
@@ -69,6 +70,7 @@ try {
     Check "B3.A6" "Internet filter restarts by itself if it stops" ((sc.exe qfailure AdGuardHome) -match "RESTART") ""
     $idle = Get-ItemProperty $idleKey
     Check "B3.A7" "Windows locks the counter PC after 10 idle minutes" ($idle.InactivityTimeoutSecs -eq 600) "InactivityTimeoutSecs $($idle.InactivityTimeoutSecs)"
+    Check "B3.A7b" "Install leaves Windows UAC enabled setting unchanged" ($idle.EnableLUA -eq $enableLUAOriginal) "EnableLUA before $enableLUAOriginal, after $($idle.EnableLUA)"
     Stop-Service CafeServer   # the gaming-PC tests below use a test server with test users on the same port
 
     # ===== B. test server with test users =====
