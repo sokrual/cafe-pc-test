@@ -97,7 +97,10 @@ public sealed class LockScreenTests : IDisposable
         staff = await _rig.StaffToken();
         Rig.WaitFor(() => _rig.State(staff)["session"] is null, 20, "queued logout never reached the admin PC");
         var used = TimeSpan.Parse(_rig.Bill(staff, session)["used"]!.ToString()!);
-        Assert.True(used <= loggedOutAt + TimeSpan.FromSeconds(5), $"billed {used}, but the customer logged out after {loggedOutAt} (offline time was charged)");
+        Assert.True(used >= loggedOutAt + TimeSpan.FromSeconds(18), $"billed {used}, but the server received the queued logout after at least {loggedOutAt + TimeSpan.FromSeconds(18)}");
+        var review = _rig.Get("/staff/review", staff);
+        Assert.Contains("review_late_logout", System.Text.Json.JsonSerializer.Serialize(review));
+        Assert.Contains("PC1", System.Text.Json.JsonSerializer.Serialize(review));
     }
 
     // ---------------- helpers ----------------
