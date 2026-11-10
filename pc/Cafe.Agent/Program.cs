@@ -188,7 +188,7 @@ sealed class LockScreen : Form
         _phone.Focus();
     }
 
-    const string Cleaning = "Getting this PC ready for the next customer. Please wait.";
+    const string Cleaning = "Please ask at the counter.";
     // nobody logs in while the last customer's apps and logins are being cleared
     public void SetBusy(bool busy)
     {
