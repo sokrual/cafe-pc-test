@@ -41,23 +41,27 @@ static class Watchdog
             {
                 if (Wipe.RequestExists())
                 {
-                    if (!Wipe.PrepareRequest(out var requestError))
+                    if (!Wipe.PrepareRequest(out var requestError, out var normalized))
                         Log($"cleanup request path could not be made safe (error code {requestError})");
-                    else if (!Wipe.ServerHasNoSession(out var serverError))
-                        Log(serverError == 0 ? "cleanup deferred (session active)" : $"cleanup deferred (server error code {serverError})");
-                    else if (sid is null)
-                        Log("cleanup failed (error code 2)");
                     else
                     {
-                        try
+                        if (normalized) Log("unsafe cleanup request object removed without following it");
+                        if (!Wipe.ServerHasNoSession(out var serverError))
+                            Log(serverError == 0 ? "cleanup deferred (session active)" : $"cleanup deferred (server error code {serverError})");
+                        else if (sid is null)
+                            Log("cleanup failed (error code 2)");
+                        else
                         {
-                            var report = Wipe.Run(sid, path, trusted);
-                            File.Delete(Wipe.Request); // only a completed clean-up releases the lock screen
-                            Log($"cleanup complete: {report}");
-                        }
-                        catch (Exception e)
-                        {
-                            Log($"cleanup failed (error code {Wipe.ErrorCode(e)})");
+                            try
+                            {
+                                var report = Wipe.Run(sid, path, trusted);
+                                File.Delete(Wipe.Request); // only a completed clean-up releases the lock screen
+                                Log($"cleanup complete: {report}");
+                            }
+                            catch (Exception e)
+                            {
+                                Log($"cleanup failed (error code {Wipe.ErrorCode(e)})");
+                            }
                         }
                     }
                 }
