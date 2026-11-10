@@ -92,12 +92,12 @@ public sealed class LockScreenTests : IDisposable
         Click("TimerWidget", "Logout");
         var loggedOutAt = played.Elapsed;
         Rig.WaitFor(() => !Hidden("LockScreen"), 10, "logout while offline did not lock the screen");
-        Thread.Sleep(20000); // 20 s more offline
+        Thread.Sleep(125000); // long enough for the server to flag the queued logout for staff review
         _rig.StartServer();
         staff = await _rig.StaffToken();
         Rig.WaitFor(() => _rig.State(staff)["session"] is null, 20, "queued logout never reached the admin PC");
         var used = TimeSpan.Parse(_rig.Bill(staff, session)["used"]!.ToString()!);
-        Assert.True(used >= loggedOutAt + TimeSpan.FromSeconds(18), $"billed {used}, but the server received the queued logout after at least {loggedOutAt + TimeSpan.FromSeconds(18)}");
+        Assert.True(used >= loggedOutAt + TimeSpan.FromSeconds(123), $"billed {used}, but the server received the queued logout after at least {loggedOutAt + TimeSpan.FromSeconds(18)}");
         var review = _rig.Review(staff);
         Assert.Contains(review, item => item.Contains("review_late_logout", StringComparison.Ordinal));
         Assert.Contains(review, item => item.Contains("PC1", StringComparison.Ordinal));
