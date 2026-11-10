@@ -33,7 +33,7 @@ static class Program
     public static string Fmt(long sec) => sec >= 3600 ? $"{sec / 3600}:{sec / 60 % 60:00}:{sec % 60:00}" : $"{sec / 60:00}:{sec % 60:00}";
 }
 
-public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec, bool SelfLocked = false);
+public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec, bool SelfLocked = false, bool LockWhenTimeRunsOut = false);
 record ErrorBody(string Error);
 
 sealed class Agent : ApplicationContext
@@ -219,8 +219,15 @@ sealed class TimerWidget : Form
         if (state.Locked) { if (Visible) Hide(); return; }
         var shown = left is long l ? (l > 0 ? Program.Fmt(l) + " left" : "Time over") : Program.Fmt(elapsed);
         _text.Text = shown; _tray.Text = "Cafe timer " + shown;
-        foreach (var m in new[] { 10, 5, 1 }) // warnings at 10, 5 and 1 minutes left (voice comes in B5)
-            if (left is long x && x <= m * 60 && x > 0 && _warned.Add(m)) _tray.ShowBalloonTip(5000, "Time left", $"{m} minute{(m > 1 ? "s" : "")} left", ToolTipIcon.Info);
+        var warningMinutes = state.LockWhenTimeRunsOut ? new[] { 5, 1 } : new[] { 10, 5, 1 };
+        foreach (var m in warningMinutes) // keep today's warnings when the setting is off
+            if (left is long x && x <= m * 60 && x > 0 && _warned.Add(m))
+            {
+                var message = state.LockWhenTimeRunsOut
+                    ? $"{m} minute{(m > 1 ? "s" : "")} left. Please ask at the counter for more time."
+                    : $"{m} minute{(m > 1 ? "s" : "")} left";
+                _tray.ShowBalloonTip(5000, "Time left", message, ToolTipIcon.Info);
+            }
         if (left is null || left > 600) _warned.Clear();
         var show = DateTime.UtcNow < _peekUntil || !Native.GameInFront(Handle);
         if (Visible != show) Visible = show;

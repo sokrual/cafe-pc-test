@@ -53,7 +53,7 @@ public record Bill(long SessionId, TimeSpan Used, long Charged, long Adjusted, l
 
 /// What a PC should show right now. Locked = lock screen (no session, or the admin locked it).
 /// SelfLocked: the customer locked it (time keeps running; their PIN or staff unlocks it).
-public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec, bool SelfLocked = false);
+public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec, bool SelfLocked = false, bool LockWhenTimeRunsOut = false);
 
 public class CafeException(string message) : Exception(message);
 
@@ -72,7 +72,7 @@ public sealed partial class CafeCore : IDisposable
         _db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Password = key, Pooling = false }.ToString());
         _db.Open();
         // schema version: a newer program adds its changes as version 2, 3... and never reads a newer database by mistake
-        const int SchemaVersion = 2; // 2: owner two-step login
+        const int SchemaVersion = 3; // 2: owner two-step login; 3: time-expiry setting
         if (Scalar<long>("PRAGMA user_version") > SchemaVersion) { _db.Dispose(); throw new CafeException("The cafe data comes from a newer version of this program. Install the newer version."); }
         Exec("""
             PRAGMA foreign_keys = ON;
@@ -91,6 +91,8 @@ public sealed partial class CafeCore : IDisposable
             CREATE TABLE IF NOT EXISTS pcs(name TEXT PRIMARY KEY, token BLOB NOT NULL UNIQUE, locked INTEGER NOT NULL DEFAULT 0, message TEXT,
                 self_locked INTEGER NOT NULL DEFAULT 0, last_seen TEXT);
             CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, at TEXT NOT NULL, by_user INTEGER, action TEXT NOT NULL, detail TEXT);
+            CREATE TABLE IF NOT EXISTS settings(name TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT OR IGNORE INTO settings(name, value) VALUES('lock_when_time_runs_out', '0');
             CREATE TRIGGER IF NOT EXISTS ledger_no_update BEFORE UPDATE ON ledger BEGIN SELECT RAISE(ABORT, 'ledger is append-only'); END;
             CREATE TRIGGER IF NOT EXISTS ledger_no_delete BEFORE DELETE ON ledger BEGIN SELECT RAISE(ABORT, 'ledger is append-only'); END;
             CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;
@@ -106,6 +108,16 @@ public sealed partial class CafeCore : IDisposable
     }
 
     public void Dispose() => _db.Dispose();
+
+    /// The owner controls this setting; it is stored on the counter PC and defaults to off.
+    public bool LockWhenTimeRunsOut => Tx(() => Scalar<long>("SELECT value FROM settings WHERE name = 'lock_when_time_runs_out'") == 1);
+
+    public void SetLockWhenTimeRunsOut(long by, bool enabled) => Tx(() =>
+    {
+        RequireOwner(by);
+        Exec("UPDATE settings SET value = @p0 WHERE name = 'lock_when_time_runs_out'", enabled ? "1" : "0");
+        Audit(by, "setting_lock_when_time_runs_out", enabled ? "on" : "off");
+    });
 
     // ---------------- people ----------------
 
@@ -351,20 +363,25 @@ public sealed partial class CafeCore : IDisposable
         Audit(by, "unlock", pc);
     });
 
-    public PcState StateOf(string pc) => Tx(() =>
+    public PcState StateOf(string pc)
+    {
+        EnforceTimeLimits();
+        return Tx(() =>
     {
         using var r = Query("SELECT locked, message, self_locked FROM pcs WHERE name = @p0", pc);
         if (!r.Read()) throw new CafeException($"no PC called {pc}");
         var (adminLocked, message, selfLocked) = (r.GetInt64(0) == 1, r.IsDBNull(1) ? null : r.GetString(1), r.GetInt64(2) == 1);
         r.Close();
-        if (Scalar<long?>("SELECT id FROM sessions WHERE pc = @p0 AND ended IS NULL", pc) is not long s) return new PcState(true, message, null, null, 0, null);
+        var lockOnExpiry = Scalar<long>("SELECT value FROM settings WHERE name = 'lock_when_time_runs_out'") == 1;
+        if (Scalar<long?>("SELECT id FROM sessions WHERE pc = @p0 AND ended IS NULL", pc) is not long s) return new PcState(true, message, null, null, 0, null, false, lockOnExpiry);
         var (used, prepaid, plan, user) = SessionUse(s);
         var mode = prepaid is not null ? "prepaid" : plan is not null ? "plan" : "postpaid";
         long? left = prepaid is int b ? b * 60 - (long)used.TotalSeconds
                    : plan is not null ? PlanMinutesLeft(user) * 60 - (long)used.TotalSeconds : null;
         if (selfLocked && !adminLocked) message = "Locked by the customer. Their time is still running.";
-        return new PcState(adminLocked || selfLocked, message, s, mode, (long)used.TotalSeconds, left, selfLocked && !adminLocked);
-    });
+        return new PcState(adminLocked || selfLocked, message, s, mode, (long)used.TotalSeconds, left, selfLocked && !adminLocked, lockOnExpiry);
+        });
+    }
 
     /// Customer logs in at a PC: plays on plan or carried-over time if there is any, otherwise pay-at-end.
     /// If the customer locked the PC themselves, only their own phone + PIN unlocks it.
@@ -405,6 +422,23 @@ public sealed partial class CafeCore : IDisposable
         // An honest outage and a tampered PC can both report a long delay, so staff can review the claim.
         if (reportedDelay > 120) Audit(user, "review_late_logout", $"session {s} on {pc} reported logout {reportedDelay / 60} min before the server received it");
         return Stop(user, s, at);
+    });
+
+    /// End prepaid or plan sessions at zero when the owner has enabled automatic locking.
+    /// This runs on the server timer even when a gaming PC is offline; StateOf also calls it on reconnect.
+    public void EnforceTimeLimits() => Tx(() =>
+    {
+        if (Scalar<long>("SELECT value FROM settings WHERE name = 'lock_when_time_runs_out'") != 1) return;
+        using var r = Query("SELECT id, user_id FROM sessions WHERE ended IS NULL AND (prepaid_min IS NOT NULL OR plan_id IS NOT NULL)");
+        var due = new List<(long session, long user)>();
+        while (r.Read()) due.Add((r.GetInt64(0), r.GetInt64(1)));
+        r.Close();
+        foreach (var (session, user) in due)
+        {
+            var (used, prepaid, plan, owner) = SessionUse(session);
+            var limitSeconds = prepaid is int bought ? bought * 60L : plan is not null ? PlanMinutesLeft(owner) * 60L : long.MaxValue;
+            if (used.TotalSeconds >= limitSeconds) Stop(user, session, _now());
+        }
     });
 
     /// Called on every status check, so a queued logout knows when the PC was last online.

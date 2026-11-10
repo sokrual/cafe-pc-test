@@ -28,6 +28,55 @@ public sealed class BillingTests : IDisposable
         return _cafe.Stop(_staff, s).Charged;
     }
 
+    [Fact]
+    public void Time_lock_setting_is_owner_only_and_off_keeps_the_existing_logout_behaviour()
+    {
+        _cafe.AddPc(_owner, "PC1");
+        Assert.False(_cafe.LockWhenTimeRunsOut); // default is off
+        Assert.Throws<CafeException>(() => _cafe.SetLockWhenTimeRunsOut(_staff, true));
+        Assert.Throws<CafeException>(() => _cafe.SetLockWhenTimeRunsOut(_cust, true));
+
+        var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 30);
+        Wait(31);
+        _cafe.EnforceTimeLimits(); // off: the server does not end the session
+        Assert.Equal(s, _cafe.StateOf("PC1").Session);
+        Assert.Equal(3000, _cafe.Stop(_staff, s).Charged); // normal manual logout still bills as before
+    }
+
+    [Fact]
+    public void Time_lock_on_ends_and_bills_a_prepaid_session_at_zero()
+    {
+        _cafe.AddPc(_owner, "PC1");
+        _cafe.SetLockWhenTimeRunsOut(_owner, true);
+        Assert.True(_cafe.LockWhenTimeRunsOut);
+        var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 30);
+        Wait(30);
+        _cafe.EnforceTimeLimits();
+
+        var state = _cafe.StateOf("PC1");
+        Assert.True(state.Locked);
+        Assert.Null(state.Session);
+        Assert.Equal(TimeSpan.FromMinutes(30), _cafe.BillFor(s).Used);
+        Assert.Equal(3000, _cafe.BillFor(s).Charged);
+    }
+
+    [Fact]
+    public void Time_lock_on_ends_an_offline_pc_session_before_it_reconnects()
+    {
+        _cafe.AddPc(_owner, "PC1");
+        _cafe.BuyPlan(_staff, _cust, 30, 7, 3000, "cash");
+        _cafe.SetLockWhenTimeRunsOut(_owner, true);
+        var started = _cafe.PcLogin("PC1", "9000000003", "2222");
+        var session = started.Session!.Value;
+        Wait(36); // no PC status checks: it is offline
+
+        _cafe.EnforceTimeLimits(); // the counter server ends it without a PC request
+        Assert.Null(_cafe.StateOf("PC1").Session); // on reconnect, the PC receives the lock screen state
+        Assert.True(_cafe.StateOf("PC1").Locked);
+        Assert.Equal(TimeSpan.FromMinutes(36), _cafe.BillFor(session).Used);
+        Assert.Equal(3000, _cafe.BillFor(session).Charged); // six minutes past the plan: one normal overtime block
+    }
+
     [Fact] public void T2_1_inside_grace_is_free() => Assert.Equal(0, PlayFor(1));
 
     [Theory]
