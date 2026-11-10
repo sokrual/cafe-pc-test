@@ -242,7 +242,6 @@ sealed class LockScreen : Form
         Func<string, string, int, string, string?, Task<string?>> offlineUnlock)
     {
         _offlineUnlock = offlineUnlock;
-    {
         Name = "LockScreen"; Text = cafeName;
         FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true;
         StartPosition = FormStartPosition.Manual; BackColor = Color.FromArgb(14, 14, 22);

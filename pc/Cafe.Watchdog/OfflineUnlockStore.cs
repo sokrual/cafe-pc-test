@@ -1,8 +1,10 @@
 using System.Security.Cryptography;
+using System.Runtime.InteropServices;
+using System.ComponentModel;
 using System.Text;
 using System.Text.Json;
 
-sealed record OfflineUnlockAccount(string Phone, string Secret);
+sealed record OfflineUnlockAccount(string Phone, string Secret, long LastStep);
 sealed record OfflineUnlockRate(long Paise30 = 4000, long Paise60 = 6000, long Paise90 = 10000,
     long ExtraBlockPaise = 4000, int GraceMin = 5, int MinimumMin = 30, int BlockMin = 30,
     int BlockGraceMin = 5, int CarryOverDays = 7);
@@ -36,7 +38,7 @@ sealed class OfflineUnlockStore
     {
         if (!File.Exists(_path)) return new State();
         var protectedBytes = File.ReadAllBytes(_path);
-        var clear = ProtectedData.Unprotect(protectedBytes, null, DataProtectionScope.LocalMachine);
+        var clear = Unprotect(protectedBytes);
         return JsonSerializer.Deserialize<State>(clear, Json) ?? throw new InvalidDataException("offline unlock cache is empty");
     }
 
@@ -44,7 +46,7 @@ sealed class OfflineUnlockStore
     {
         Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
         var clear = JsonSerializer.SerializeToUtf8Bytes(state);
-        var protectedBytes = ProtectedData.Protect(clear, null, DataProtectionScope.LocalMachine);
+        var protectedBytes = Protect(clear);
         var temp = _path + ".new";
         File.WriteAllBytes(temp, protectedBytes);
         File.Move(temp, _path, true);
@@ -58,6 +60,8 @@ sealed class OfflineUnlockStore
             var state = Read();
             state.Rate = data.Rate;
             state.Accounts = data.Accounts ?? [];
+            foreach (var account in state.Accounts)
+                state.UsedSteps[account.Phone] = Math.Max(state.UsedSteps.GetValueOrDefault(account.Phone, -1), account.LastStep);
             Write(state);
         }
     }
@@ -146,6 +150,46 @@ sealed class OfflineUnlockStore
             state.Pending.RemoveAll(s => s.SaleId == saleId);
             Write(state);
         }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct DataBlob { public int Length; public IntPtr Data; }
+
+    [DllImport("crypt32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern bool CryptProtectData(ref DataBlob input, string description, IntPtr entropy, IntPtr reserved,
+        IntPtr prompt, uint flags, out DataBlob output);
+    [DllImport("crypt32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern bool CryptUnprotectData(ref DataBlob input, out IntPtr description, IntPtr entropy, IntPtr reserved,
+        IntPtr prompt, uint flags, out DataBlob output);
+    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
+
+    static byte[] Protect(byte[] clear)
+    {
+        var handle = GCHandle.Alloc(clear, GCHandleType.Pinned);
+        try
+        {
+            var input = new DataBlob { Length = clear.Length, Data = handle.AddrOfPinnedObject() };
+            if (!CryptProtectData(ref input, "Cafe offline unlock cache", IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0x4, out var output))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            try { var result = new byte[output.Length]; Marshal.Copy(output.Data, result, 0, result.Length); return result; }
+            finally { LocalFree(output.Data); }
+        }
+        finally { handle.Free(); }
+    }
+
+    static byte[] Unprotect(byte[] protectedBytes)
+    {
+        var handle = GCHandle.Alloc(protectedBytes, GCHandleType.Pinned);
+        try
+        {
+            var input = new DataBlob { Length = protectedBytes.Length, Data = handle.AddrOfPinnedObject() };
+            if (!CryptUnprotectData(ref input, out var description, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0, out var output))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (description != IntPtr.Zero) LocalFree(description);
+            try { var result = new byte[output.Length]; Marshal.Copy(output.Data, result, 0, result.Length); return result; }
+            finally { LocalFree(output.Data); }
+        }
+        finally { handle.Free(); }
     }
 
     static byte[] DecodeBase32(string text)

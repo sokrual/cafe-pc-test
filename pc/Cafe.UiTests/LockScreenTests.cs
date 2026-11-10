@@ -199,12 +199,11 @@ public sealed class OfflineLockTests
             static AutomationElement Part(AutomationElement root, string id) =>
                 root.FindFirstDescendant(c => c.ByAutomationId(id)) ?? throw new InvalidOperationException($"no {id} on screen");
             var lockScreen = LockWindow();
-            Rig.WaitFor(() => Part(LockWindow(), "StaffUnlock").IsEnabled, 15, "offline staff unlock button did not appear");
+            Rig.WaitFor(() => !Part(LockWindow(), "StaffUnlock").IsOffscreen, 15, "offline staff unlock button did not appear");
             Part(lockScreen, "StaffUnlock").AsButton().Invoke();
             Part(lockScreen, "StaffPhone").AsTextBox().Text = "9000000002";
             Part(lockScreen, "StaffCode").AsTextBox().Text = Rig.AppCode(secret);
             Part(lockScreen, "Minutes").AsTextBox().Text = "30";
-            Part(lockScreen, "PaymentMethod").AsComboBox().Select("cash");
             Part(lockScreen, "OfflineUnlockSubmit").AsButton().Invoke();
             Rig.WaitFor(() => Find() is null or { IsOffscreen: true }, 15, "offline staff unlock did not hide the lock screen");
 
@@ -250,11 +249,11 @@ public sealed class OfflineLockTests
                 Part(screen, "StaffCode").AsTextBox().Text = "000000";
                 Part(screen, "Minutes").AsTextBox().Text = "30";
                 Part(screen, "OfflineUnlockSubmit").AsButton().Invoke();
-                Thread.Sleep(300);
+                Rig.WaitFor(() => Part(screen, "OfflineUnlockSubmit").AsButton().IsEnabled, 10, "offline unlock attempt did not finish");
             }
             Part(screen, "StaffCode").AsTextBox().Text = "000000";
             Part(screen, "OfflineUnlockSubmit").AsButton().Invoke();
-            Rig.WaitFor(() => Text(screen, "Error").Contains("10 minutes", StringComparison.OrdinalIgnoreCase), 10,
+            Rig.WaitFor(() => Part(screen, "Error").Name.Contains("10 minutes", StringComparison.OrdinalIgnoreCase), 10,
                 "three wrong codes did not pause offline unlock for ten minutes");
         }
         finally { Rig.Kill(agent); }
