@@ -3,7 +3,8 @@ using Microsoft.Data.Sqlite;
 using Xunit;
 
 // One test per check in the Phase 2 test plan (T2.x), plus the security rules the money depends on.
-// Placeholder rate card: ₹60/hour, 2 min start grace, 30 min minimum, 30 min blocks, 5 min grace after each block. Paise.
+// Owner's rate card: 30 min ₹40, 1 h ₹60, 1.5 h ₹100, then ₹40 per 30 min; 5 min start grace, 30 min minimum,
+// 30 min blocks, 5 min grace after each block; unused minutes of a charged block are kept for 7 days. Paise.
 public sealed class BillingTests : IDisposable
 {
     DateTime _clock = new(2026, 11, 9, 10, 0, 0, DateTimeKind.Utc);
@@ -40,7 +41,7 @@ public sealed class BillingTests : IDisposable
         Wait(31);
         _cafe.EnforceTimeLimits(); // off: the server does not end the session
         Assert.Equal(s, _cafe.StateOf("PC1").Session);
-        Assert.Equal(3000, _cafe.Stop(_staff, s).Charged); // normal manual logout still bills as before
+        Assert.Equal(4000, _cafe.Stop(_staff, s).Charged); // normal manual logout still bills as before
     }
 
     [Fact]
@@ -57,7 +58,7 @@ public sealed class BillingTests : IDisposable
         Assert.True(state.Locked);
         Assert.Null(state.Session);
         Assert.Equal(TimeSpan.FromMinutes(30), _cafe.BillFor(s).Used);
-        Assert.Equal(3000, _cafe.BillFor(s).Charged);
+        Assert.Equal(4000, _cafe.BillFor(s).Charged);
     }
 
     [Fact]
@@ -74,21 +75,33 @@ public sealed class BillingTests : IDisposable
         Assert.Null(_cafe.StateOf("PC1").Session); // on reconnect, the PC receives the lock screen state
         Assert.True(_cafe.StateOf("PC1").Locked);
         Assert.Equal(TimeSpan.FromMinutes(36), _cafe.BillFor(session).Used);
-        Assert.Equal(3000, _cafe.BillFor(session).Charged); // six minutes past the plan: one normal overtime block
+        Assert.Equal(4000, _cafe.BillFor(session).Charged); // six minutes past the plan: one ₹40 extra block
     }
 
     [Fact] public void T2_1_inside_grace_is_free() => Assert.Equal(0, PlayFor(1));
 
+    [Fact]
+    public void Unused_minutes_of_a_charged_block_are_kept_for_7_days_but_not_the_free_start()
+    {
+        Assert.Equal(0, PlayFor(5)); // free start: nothing charged, nothing kept
+        Assert.Equal(0, _cafe.PlanMinutesLeft(_cust));
+        Assert.Equal(6000, PlayFor(36)); // 1 hour charged, 24 min kept
+        Assert.Equal(24, _cafe.PlanMinutesLeft(_cust));
+        _clock = _clock.AddDays(7).AddMinutes(1);
+        Assert.Equal(0, _cafe.PlanMinutesLeft(_cust)); // gone after 7 days
+    }
+
     [Theory]
-    [InlineData(2, 0)]       // exactly at the start grace: still free
-    [InlineData(3, 3000)]    // just past it: the 30 min minimum, ₹30
-    [InlineData(29, 3000)]
-    [InlineData(30, 3000)]
-    [InlineData(35, 3000)]   // inside the 5 min grace after the first block
-    [InlineData(36, 6000)]   // grace over: another 30 min block
+    [InlineData(5, 0)]       // exactly at the start grace: still free
+    [InlineData(6, 4000)]    // just past it: the 30 min minimum, ₹40
+    [InlineData(29, 4000)]
+    [InlineData(30, 4000)]
+    [InlineData(35, 4000)]   // inside the 5 min grace after the first block
+    [InlineData(36, 6000)]   // grace over: 1 hour, ₹60
     [InlineData(61, 6000)]
     [InlineData(65, 6000)]
-    [InlineData(66, 9000)]
+    [InlineData(66, 10000)]  // 1.5 hours, ₹100
+    [InlineData(96, 14000)]  // past the card: ₹40 for each further 30 min
     public void T2_2_pay_at_end_follows_minimum_and_blocks(double minutes, long paise) => Assert.Equal(paise, PlayFor(minutes));
 
     [Fact]
@@ -104,7 +117,8 @@ public sealed class BillingTests : IDisposable
         Wait(75); // 15 min past: grace over, one more 30 min block
         var bill = _cafe.Stop(_staff, s2);
         Assert.Equal(TimeSpan.FromMinutes(75), bill.Used);
-        Assert.Equal(9000, bill.Charged);
+        Assert.Equal(10000, bill.Charged); // ₹60 bought + one ₹40 extra block
+        Assert.Equal(15, _cafe.PlanMinutesLeft(_cust)); // the unused 15 min of that block are kept
     }
 
     [Fact]
@@ -133,11 +147,11 @@ public sealed class BillingTests : IDisposable
         Wait(5);
         var bill = _cafe.Stop(_staff, s);
         Assert.Equal(TimeSpan.FromMinutes(25), bill.Used); // 20 + 5, the 30 paused minutes not counted
-        Assert.Equal(3000, bill.Charged);
+        Assert.Equal(4000, bill.Charged);
 
         var p = _cafe.StartPrepaid(_staff, "PC3", _cust, 30);
         _cafe.AddTime(_staff, p, 30);
-        Assert.Equal(6000, _cafe.BillFor(p).Due);
+        Assert.Equal(8000, _cafe.BillFor(p).Due); // ₹40 per 30 min recharge
     }
 
     [Fact]
@@ -185,7 +199,7 @@ public sealed class BillingTests : IDisposable
         Wait(20); _cafe.Stop(_staff, b);    // 45 min: 2 blocks
         Wait(40); _cafe.Stop(_staff, lead); // 85 min: 3 blocks
         var bill = _cafe.BillFor(lead);
-        Assert.Equal((1 + 2 + 3) * 3000, bill.Due);
+        Assert.Equal(4000 + 6000 + 10000, bill.Due);
         Assert.Equal(TimeSpan.FromMinutes(25 + 45 + 85), bill.Used);
     }
 
@@ -218,7 +232,7 @@ public sealed class BillingTests : IDisposable
         _cafe.ExtendPlan(_owner, plan, 7, "customer was travelling");
         var s2 = _cafe.StartOnPlan(_cust, "PC1", _cust);
         Wait(450); // 420 min left, uses 450: 30 min beyond the plan is billed
-        Assert.Equal(3000, _cafe.Stop(_cust, s2).Charged);
+        Assert.Equal(4000, _cafe.Stop(_cust, s2).Charged);
     }
 
     [Fact]
@@ -238,8 +252,8 @@ public sealed class BillingTests : IDisposable
         _cafe.BuyPlan(_staff, _cust, 30, 7, 3000, "cash");
         var over2 = _cafe.StartOnPlan(_cust, "PC1", _cust);
         Wait(36); // 30 left: 6 min over, grace gone, one 30 min block in money
-        Assert.Equal(3000, _cafe.Stop(_cust, over2).Charged);
-        Assert.Throws<CafeException>(() => _cafe.StartOnPlan(_cust, "PC1", _cust)); // nothing left
+        Assert.Equal(4000, _cafe.Stop(_cust, over2).Charged);
+        Assert.Equal(24, _cafe.PlanMinutesLeft(_cust)); // the unused 24 min of that block are kept
     }
 
     [Fact]
@@ -282,14 +296,14 @@ public sealed class BillingTests : IDisposable
     public void T2_10_split_payment_and_shift_close_show_missing_cash()
     {
         var shift = _cafe.OpenShift(_staff);
-        var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 120);
+        var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 120); // ₹140
         _cafe.Pay(_staff, s, "cash", 7000);
-        Assert.Throws<CafeException>(() => _cafe.Pay(_staff, s, "upi", 5000));          // no last 4 digits
-        Assert.Throws<CafeException>(() => _cafe.Pay(_staff, s, "upi", 6000, "1234")); // more than is due
-        _cafe.Pay(_staff, s, "upi", 5000, "1234");
+        Assert.Throws<CafeException>(() => _cafe.Pay(_staff, s, "upi", 7000));          // no last 4 digits
+        Assert.Throws<CafeException>(() => _cafe.Pay(_staff, s, "upi", 8000, "1234")); // more than is due
+        _cafe.Pay(_staff, s, "upi", 7000, "1234");
         Assert.Equal(0, _cafe.BillFor(s).Due);
         Assert.Equal(7000, _cafe.ShiftTotal(shift, "cash"));
-        Assert.Equal(5000, _cafe.ShiftTotal(shift, "upi"));
+        Assert.Equal(7000, _cafe.ShiftTotal(shift, "upi"));
         var (expected, difference) = _cafe.CloseShift(_staff, 6000); // ₹10 short in the drawer
         Assert.Equal(7000, expected);
         Assert.Equal(-1000, difference);
@@ -324,12 +338,12 @@ public sealed class BillingTests : IDisposable
         Assert.Equal(("postpaid", false, (long?)null), (st.Mode, st.Locked, st.LeftSec));
         Assert.Throws<CafeException>(() => _cafe.PcLogin("PC1", "9000000002", "111111")); // in use
         Wait(40);
-        Assert.Equal(6000, _cafe.PcLogout("PC1").Charged);
+        Assert.Equal(6000, _cafe.PcLogout("PC1").Charged); // 40 min: 1 hour charged, 20 min kept
         _cafe.BuyPlan(_staff, _cust, 60, 7, 5000, "cash");
         st = _cafe.PcLogin("PC1", "9000000003", "2222");
-        Assert.Equal(("plan", 3600L), (st.Mode, st.LeftSec));
+        Assert.Equal(("plan", 4800L), (st.Mode, st.LeftSec)); // 60 bought + 20 kept
         Wait(10);
-        Assert.Equal(3000L, _cafe.StateOf("PC1").LeftSec);
+        Assert.Equal(4200L, _cafe.StateOf("PC1").LeftSec);
         _cafe.Lock(_staff, "PC1");
         Assert.Throws<CafeException>(() => _cafe.PcLogout("PC9"));
     }

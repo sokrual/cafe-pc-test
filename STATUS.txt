@@ -58,7 +58,13 @@ TEST PHASES ON REAL PCS (after the build)
     Phase 0 kit (kit/): one cafe PC for 1-2 days, changes nothing for customers. Sent to the owner after B5.
     Then: 1 lock and escape, 2 billing, 3 sign-up and data, 4 owner features, 5 load, 6 real customers and rollout.
 
-OPEN DECISIONS FOR THE CAFE OWNER (defaults in the code until he decides)
-    Grace minutes, block size, minimum charge, how long prepaid minutes last, whether to switch on "lock the PC
-    when time runs out" (owner setting, off by default; the owner screen for it comes in B5.2),
-    PIN length, the real rate card, the Windows version on his PCs, the logo.
+OWNER DECISIONS (10 Nov 2026)
+    In the code: rate card 30 min Rs 40, 1 hour Rs 60, 1.5 hours Rs 100, then Rs 40 per 30 min (extra time past
+    bought time is also Rs 40 per 30 min); free if the customer leaves within 5 minutes; 30 min minimum; 30 min
+    blocks with 5 free minutes after each; unused minutes (bought time and the unused part of a charged block)
+    kept for 7 days, but nothing is kept from the free start; when time runs out the customer keeps playing and
+    the extra time is billed ("lock the PC when time runs out" stays off). All PCs: same price, Windows 11 Pro.
+    Still to build: 3 wrong PIN tries lock for 10 minutes; only the owner resets a forgotten PIN (from his phone,
+    B5.8); no staff time-out in the software (the counter PC uses the Windows lock); customer PIN 4 digits;
+    the owner's logo on the lock screen. Rules: the central IT (Guidelines for Cyber Cafe) Rules, 2011.
+    Later: membership with discounts and perks.

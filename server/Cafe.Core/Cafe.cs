@@ -6,9 +6,10 @@ namespace Cafe;
 
 public enum Role { Owner, Staff, Customer }
 
-// Placeholder rate card until the real one arrives. Money is always whole paise (₹1 = 100).
+// The owner's rate card (10 Nov 2026), same on every PC. Money is always whole paise (₹1 = 100).
+// 30 min ₹40, 1 hour ₹60, 1.5 hours ₹100, then ₹40 for each further 30 min; extra time past bought time is ₹40 per 30 min.
 // GraceMin: free if the whole session is this short. BlockGraceMin: free minutes after each block or bought time ends.
-// CarryOverDays: how long unused prepaid minutes stay usable (placeholder, owner to set).
+// CarryOverDays: how long unused minutes stay usable (bought time and the unused part of a charged block).
 /// Addresses the counter server answers: this PC, the shop network (private ranges) and Tailscale; never the internet.
 public static class ShopNetwork
 {
@@ -44,7 +45,8 @@ public static class StaffLoginNetwork
     }
 }
 
-public record Rate(long PerHourPaise = 6000, int GraceMin = 2, int MinimumMin = 30, int BlockMin = 30, int BlockGraceMin = 5, int CarryOverDays = 30);
+public record Rate(long Paise30 = 4000, long Paise60 = 6000, long Paise90 = 10000, long ExtraBlockPaise = 4000,
+    int GraceMin = 5, int MinimumMin = 30, int BlockMin = 30, int BlockGraceMin = 5, int CarryOverDays = 7);
 
 public record Bill(long SessionId, TimeSpan Used, long Charged, long Adjusted, long Paid)
 {
@@ -306,17 +308,25 @@ public sealed partial class CafeCore : IDisposable
                 }
                 if (left > 0) ChargeOvertime(by, session, user, used - TimeSpan.FromMinutes(usedMin - left), "past plan");
             }
-            else Ledger(by, "charge", Charge(used), session: session, user: user, reference: $"{BillableMinutes(used)} min");
+            else
+            {
+                var billed = BillableMinutes(used);
+                Ledger(by, "charge", Price(billed), session: session, user: user, reference: $"{billed} min");
+                if (billed > usedMin) CarryOver(by, user, billed - usedMin); // the unused part of the last block
+            }
             Audit(by, "stop", $"session {session} used {used}");
         }
         return BillFor(session);
     });
 
-    // Over the bought time: 5 min grace, then 30-min blocks (minimum 30), paid in money.
+    // Over the bought time: 5 min grace, then 30-min blocks at the extra-block price; the unused part is kept.
     void ChargeOvertime(long by, long session, long user, TimeSpan over, string what)
     {
         var minutes = BillableMinutes(over, startGrace: false);
-        if (minutes > 0) Ledger(by, "charge", Price(minutes), session: session, user: user, reference: $"{minutes} min {what}");
+        if (minutes == 0) return;
+        Ledger(by, "charge", minutes / Rate.BlockMin * Rate.ExtraBlockPaise, session: session, user: user, reference: $"{minutes} min {what}");
+        var overMin = (int)Math.Ceiling(over.TotalMinutes);
+        if (minutes > overMin) CarryOver(by, user, minutes - overMin);
     }
 
     // Unused prepaid minutes become a time balance for another day (no money back).
@@ -455,7 +465,12 @@ public sealed partial class CafeCore : IDisposable
         return Math.Max(Rate.MinimumMin, blocks * Rate.BlockMin);
     }
 
-    long Price(int minutes) => (minutes * Rate.PerHourPaise + 59) / 60; // round up to the paisa
+    // bought time and pay-at-end bills: whole 30-min blocks from the rate card
+    long Price(int minutes) => (int)Math.Ceiling(minutes / (double)Rate.BlockMin) switch
+    {
+        <= 0 => 0, 1 => Rate.Paise30, 2 => Rate.Paise60, 3 => Rate.Paise90,
+        var n => Rate.Paise90 + (n - 3) * Rate.ExtraBlockPaise,
+    };
 
     // ---------------- money ----------------
 
