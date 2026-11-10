@@ -5,6 +5,7 @@ If something goes wrong, send a photo of the screen and the file install-log.txt
 (it is next to INSTALL-PC or INSTALL-ADMIN) on Discord to the person who gave you this software.
 
 A. THE COUNTER PC (once)
+The counter PC's Windows account must have a password or PIN; otherwise the 10-minute idle lock protects nothing.
 1. Make sure this PC always gets the same network address.
    In the router's settings this is called "address reservation" or "static IP".
    If you are not sure how, ask the person who set up your internet.

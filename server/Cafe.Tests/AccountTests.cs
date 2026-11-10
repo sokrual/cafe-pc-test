@@ -3,7 +3,7 @@ using Cafe;
 using Microsoft.Data.Sqlite;
 using Xunit;
 
-// B5.1: adding and removing PCs, PIN resets, the owner's two-step login, staff auto-logout.
+// B5.1: adding and removing PCs, PIN resets, the owner's two-step login, counter login lifetime.
 public sealed class AccountTests : IDisposable
 {
     DateTime _clock = new(2026, 11, 10, 10, 0, 0, DateTimeKind.Utc);
@@ -68,15 +68,28 @@ public sealed class AccountTests : IDisposable
     }
 
     [Fact]
-    public void PIN_reset_follows_the_roles()
+    public void PIN_reset_is_owner_only_and_is_audited()
     {
-        _cafe.ResetPin(_staff, "9000000003", "5555");
+        Assert.Throws<CafeException>(() => _cafe.ResetPin(_staff, "9000000003", "5555"));
+        Assert.Throws<CafeException>(() => _cafe.ResetPin(_cust, "9000000003", "6666"));
+        _cafe.ResetPin(_owner, "9000000003", "5555");
         Assert.Equal(_cust, _cafe.Login("9000000003", "5555"));
-        Assert.Throws<CafeException>(() => _cafe.ResetPin(_staff, "9000000001", "999999")); // staff cannot reset the owner
-        Assert.Throws<CafeException>(() => _cafe.ResetPin(_cust, "9000000003", "6666"));    // customers cannot reset
-        Assert.Throws<CafeException>(() => _cafe.ResetPin(_owner, "9000000002", "1234"));   // staff PINs need 6+ digits
+        Assert.Throws<CafeException>(() => _cafe.ResetPin(_owner, "9000000002", "1234"));
         _cafe.ResetPin(_owner, "9000000002", "222222");
         Assert.Equal(_staff, _cafe.StaffLogin("9000000002", "222222"));
+        using var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = _file, Password = "test-key-123", Pooling = false }.ToString());
+        db.Open();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "SELECT by_user, action, detail FROM audit WHERE action = 'reset_pin' ORDER BY id";
+        using var rows = cmd.ExecuteReader();
+        Assert.True(rows.Read());
+        Assert.Equal(_owner, rows.GetInt64(0));
+        Assert.Equal("reset_pin", rows.GetString(1));
+        Assert.Equal($"user {_cust}", rows.GetString(2));
+        Assert.True(rows.Read());
+        Assert.Equal(_owner, rows.GetInt64(0));
+        Assert.Equal($"user {_staff}", rows.GetString(2));
+        Assert.False(rows.Read());
     }
 
     [Fact]
@@ -97,22 +110,52 @@ public sealed class AccountTests : IDisposable
     }
 
     [Fact]
-    public void Staff_are_logged_out_after_30_minutes_without_use()
+    public void Three_wrong_PINs_lock_every_role_for_ten_minutes()
     {
-        var clock = new DateTime(2026, 11, 10, 10, 0, 0, DateTimeKind.Utc);
-        var tokens = new StaffTokens(() => clock);
+        foreach (var (phone, correct) in new[] { ("9000000001", "432100"), ("9000000002", "111111"), ("9000000003", "2222") })
+        {
+            for (var i = 0; i < 3; i++) Assert.Throws<CafeException>(() => _cafe.Login(phone, "0000"));
+            var locked = Assert.Throws<CafeException>(() => _cafe.Login(phone, correct));
+            Assert.StartsWith("Too many wrong PINs", locked.Message);
+            _clock = _clock.AddMinutes(9).AddSeconds(59);
+            Assert.Throws<CafeException>(() => _cafe.Login(phone, correct));
+            _clock = _clock.AddSeconds(1);
+            Assert.NotEqual(0, _cafe.Login(phone, correct));
+        }
+    }
+
+    [Fact]
+    public void Customer_gets_three_fresh_PIN_tries_after_the_ten_minute_lock()
+    {
+        for (var i = 0; i < 3; i++) Assert.Throws<CafeException>(() => _cafe.Login("9000000003", "0000"));
+        Assert.Throws<CafeException>(() => _cafe.Login("9000000003", "2222"));
+
+        _clock = _clock.AddMinutes(10);
+        var unknown = Assert.Throws<CafeException>(() => _cafe.Login("9999999999", "2222")).Message;
+        for (var i = 0; i < 2; i++)
+            Assert.Equal(unknown, Assert.Throws<CafeException>(() => _cafe.Login("9000000003", "0000")).Message);
+        Assert.Equal(unknown, Assert.Throws<CafeException>(() => _cafe.Login("9000000003", "0000")).Message);
+        Assert.StartsWith("Too many wrong PINs", Assert.Throws<CafeException>(() => _cafe.Login("9000000003", "2222")).Message);
+
+        _clock = _clock.AddMinutes(10);
+        Assert.Equal(_cust, _cafe.Login("9000000003", "2222"));
+    }
+
+    [Fact]
+    public void Counter_logins_remain_valid_until_explicit_logout()
+    {
+        var tokens = new StaffTokens();
         var t = tokens.Issue(_staff);
-        clock = clock.AddMinutes(29);
-        Assert.Equal(_staff, tokens.Check(t)); // each use starts the 30 minutes again
-        clock = clock.AddMinutes(29);
-        Assert.Equal(_staff, tokens.Check(t));
-        clock = clock.AddMinutes(31);
-        Assert.Null(tokens.Check(t));
-        tokens.Issue(_owner);                  // old logins are cleared when someone logs in
-        Assert.Equal(1, tokens.Count);
         var u = tokens.Issue(_owner);
+        Assert.Equal(2, tokens.Count);
+        Assert.Equal(_staff, tokens.Check(t));
+        Assert.Equal(_owner, tokens.Check(u));
+        Assert.Equal(_staff, tokens.Check(t));
         tokens.End(u);
         Assert.Null(tokens.Check(u));
+        Assert.Equal(_staff, tokens.Check(t));
+        tokens.End(t);
+        Assert.Null(tokens.Check(t));
         Assert.Null(tokens.Check("made-up"));
     }
 }

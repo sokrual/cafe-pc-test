@@ -52,12 +52,17 @@ $keep = "$env:ProgramData\Cafe"   # the server's own data folder; kept at uninst
 New-Item $keep -ItemType Directory -Force | Out-Null
 icacls $keep /inheritance:r /grant "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" | Out-Null
 $timeKeys = @("HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters|NtpServer", "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters|Type",
-    "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpClient|SpecialPollInterval")
+    "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpClient|SpecialPollInterval",
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System|InactivityTimeoutSecs")
 if (-not (Test-Path "$keep\before-install.json")) {
     $before = [ordered]@{}
     foreach ($t in $timeKeys) { $k, $n = $t -split '\|'; $before[$t] = (Get-ItemProperty $k -Name $n -ErrorAction SilentlyContinue).$n }
     $before | ConvertTo-Json | Set-Content "$keep\before-install.json" -Encoding utf8
 }
+
+# --- counter screen: Windows locks after 10 idle minutes and requires the Windows sign-in credential ---
+$idleKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+New-ItemProperty $idleKey InactivityTimeoutSecs -PropertyType DWord -Value 600 -Force | Out-Null
 
 # --- clock: synced every hour with India's official time servers (NIC and NPL), as CERT-In asks; logs need the right time ---
 $w32 = "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time"

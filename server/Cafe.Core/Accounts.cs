@@ -34,13 +34,12 @@ public sealed partial class CafeCore
 
     // ---------------- PINs ----------------
 
-    /// A forgotten PIN is reset at the counter (after the person shows their ID). Staff reset customers' PINs;
-    /// only the owner resets staff PINs (and their own).
+    /// Only the owner can reset a forgotten PIN, for any account.
     public void ResetPin(long by, string phone, string pin) => Tx(() =>
     {
         var user = Scalar<long?>("SELECT id FROM users WHERE phone = @p0", phone) ?? throw new CafeException("No one has this phone number.");
         var role = RoleOf(user);
-        if (role == Role.Customer) RequireStaff(by); else RequireOwner(by);
+        RequireOwner(by);
         var minPin = role == Role.Customer ? 4 : 6;
         if (pin.Length < minPin || pin.Length > 12 || !pin.All(char.IsAsciiDigit)) throw new CafeException($"PIN must be {minPin} to 12 digits");
         Exec("UPDATE users SET pin = @p0, fails = 0, locked_until = NULL WHERE id = @p1", HashPin(pin), user);
@@ -114,27 +113,19 @@ public sealed partial class CafeCore
     }
 }
 
-/// Counter logins: a random token per login. It ends after 30 minutes without use (staff auto-logout) or at logout.
-public sealed class StaffTokens(Func<DateTime>? now = null)
+/// Counter logins: a random token per login. It remains valid until the user logs out.
+public sealed class StaffTokens
 {
-    public static readonly TimeSpan Idle = TimeSpan.FromMinutes(30);
-    readonly ConcurrentDictionary<string, (long user, DateTime until)> _tokens = new();
-    readonly Func<DateTime> _now = now ?? (() => DateTime.UtcNow);
+    readonly ConcurrentDictionary<string, long> _tokens = new();
 
     public string Issue(long user)
     {
-        foreach (var (t, s) in _tokens) if (s.until <= _now()) _tokens.TryRemove(t, out _); // old logins never pile up
         var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-        _tokens[token] = (user, _now() + Idle);
+        _tokens[token] = user;
         return token;
     }
 
-    public long? Check(string token)
-    {
-        if (!_tokens.TryGetValue(token, out var s) || s.until <= _now()) return null;
-        _tokens[token] = (s.user, _now() + Idle);
-        return s.user;
-    }
+    public long? Check(string token) => _tokens.TryGetValue(token, out var user) ? user : null;
 
     public void End(string token) => _tokens.TryRemove(token, out _);
     public int Count => _tokens.Count;

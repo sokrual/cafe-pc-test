@@ -142,7 +142,7 @@ public sealed partial class CafeCore : IDisposable
         });
     }
 
-    /// PIN login with lockout: 5 wrong tries lock the account for 15 minutes.
+    /// PIN login with lockout: 3 wrong tries lock the account for 10 minutes.
     public long Login(string phone, string pin)
     {
         // A wrong PIN returns null instead of throwing inside the transaction, so the failed-try count is saved, not rolled back.
@@ -152,10 +152,16 @@ public sealed partial class CafeCore : IDisposable
             if (!r.Read()) return (long?)null;
             var (user, stored, fails, lockedUntil) = (r.GetInt64(0), (byte[])r[1], r.GetInt64(2), r.IsDBNull(3) ? (DateTime?)null : Time(r.GetString(3)));
             r.Close();
-            if (lockedUntil > _now()) throw new CafeException("Too many wrong PINs. Try again in 15 minutes.");
+            if (lockedUntil > _now()) throw new CafeException("Too many wrong PINs. Try again in 10 minutes.");
+            if (lockedUntil.HasValue)
+            {
+                // A completed lock starts a fresh three-attempt window.
+                fails = 0;
+                Exec("UPDATE users SET fails = 0, locked_until = NULL WHERE id = @p0", user);
+            }
             if (!CheckPin(pin, stored))
             {
-                Exec("UPDATE users SET fails = @p0, locked_until = @p1 WHERE id = @p2", fails + 1, fails + 1 >= 5 ? Iso(_now().AddMinutes(15)) : null, user);
+                Exec("UPDATE users SET fails = @p0, locked_until = @p1 WHERE id = @p2", fails + 1, fails + 1 >= 3 ? Iso(_now().AddMinutes(10)) : null, user);
                 Audit(user, "login_failed", null);
                 return null;
             }

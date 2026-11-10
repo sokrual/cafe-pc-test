@@ -32,6 +32,9 @@ $winlogon = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
 $autoBefore = (Get-ItemProperty $winlogon).AutoAdminLogon
 $ntpKey = "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters"
 $ntpOriginal = (Get-ItemProperty $ntpKey).NtpServer
+$idleKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+$idleOriginal = Get-ItemProperty $idleKey -ErrorAction SilentlyContinue
+$enableLUAOriginal = $idleOriginal.EnableLUA
 $dohOriginal = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -ErrorAction SilentlyContinue).DnsOverHttpsMode
 # control for C6: other DNS servers must answer BEFORE the install, or "blocked" afterwards proves nothing
 $googleBefore = try { Resolve-DnsName example.com -Server 8.8.8.8 -DnsOnly -QuickTimeout -ErrorAction Stop | Out-Null; "answered" } catch { "blocked" }
@@ -65,6 +68,9 @@ try {
     $wiz = WaitFor 20 { try { (Invoke-WebRequest http://127.0.0.1:3000 -UseBasicParsing).StatusCode -eq 200 } catch { $false } }
     Check "B3.A5" "Filter set-up page opens on the counter PC" $wiz "http://127.0.0.1:3000"
     Check "B3.A6" "Internet filter restarts by itself if it stops" ((sc.exe qfailure AdGuardHome) -match "RESTART") ""
+    $idle = Get-ItemProperty $idleKey
+    Check "B3.A7" "Windows locks the counter PC after 10 idle minutes" ($idle.InactivityTimeoutSecs -eq 600) "InactivityTimeoutSecs $($idle.InactivityTimeoutSecs)"
+    Check "B3.A7b" "Install leaves Windows UAC enabled setting unchanged" ($idle.EnableLUA -eq $enableLUAOriginal) "EnableLUA before $enableLUAOriginal, after $($idle.EnableLUA)"
     Stop-Service CafeServer   # the gaming-PC tests below use a test server with test users on the same port
 
     # ===== B. test server with test users =====
@@ -249,6 +255,10 @@ try {
     & "$stageA\install-admin.ps1" -Uninstall -Ci
     Check "B3.I4" "Counter PC uninstall: server and filter gone" (-not (Get-Service CafeServer, AdGuardHome -ErrorAction SilentlyContinue)) ""
     Check "B3.I4b" "Counter PC uninstall: clock settings back as before" ((Get-ItemProperty $ntpKey).NtpServer -eq $ntpOriginal) "$ntpOriginal"
+    $idleAfter = Get-ItemProperty $idleKey -ErrorAction SilentlyContinue
+    $idleBefore = if ($null -eq $idleOriginal) { $null } else { $idleOriginal.InactivityTimeoutSecs }
+    $idleRestored = if ($null -eq $idleBefore) { $null -eq $idleAfter.InactivityTimeoutSecs } else { $idleAfter.InactivityTimeoutSecs -eq $idleBefore }
+    Check "B3.I4c" "Counter PC uninstall: previous idle-lock setting restored" $idleRestored "before $idleBefore, after $($idleAfter.InactivityTimeoutSecs)"
 }
 catch { Check "B3.X" "script error" $false "$_ (line $($_.InvocationInfo.ScriptLineNumber))" }
 finally {
