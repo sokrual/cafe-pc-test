@@ -39,10 +39,27 @@ static class Watchdog
         {
             try
             {
-                if (File.Exists(Wipe.Request))
+                if (Wipe.RequestExists())
                 {
-                    Log(sid is null ? "wipe asked for, but there is no Customer account" : $"wipe: {Wipe.Run(sid, path, trusted)}");
-                    File.Delete(Wipe.Request); // the lock screen lets the next customer log in once this is gone
+                    if (!Wipe.PrepareRequest(out var requestError))
+                        Log($"cleanup request path could not be made safe (error code {requestError})");
+                    else if (!Wipe.ServerHasNoSession(out var serverError))
+                        Log(serverError == 0 ? "cleanup deferred (session active)" : $"cleanup deferred (server error code {serverError})");
+                    else if (sid is null)
+                        Log("cleanup failed (error code 2)");
+                    else
+                    {
+                        try
+                        {
+                            var report = Wipe.Run(sid, path, trusted);
+                            File.Delete(Wipe.Request); // only a completed clean-up releases the lock screen
+                            Log($"cleanup complete: {report}");
+                        }
+                        catch (Exception e)
+                        {
+                            Log($"cleanup failed (error code {Wipe.ErrorCode(e)})");
+                        }
+                    }
                 }
                 // match the full path, not just the name: a customer's renamed copy of some other program must not count
                 if (!File.Exists(setup) && ActiveSession() is uint s && !Process.GetProcessesByName(exe).Any(p => p.SessionId == s && Native.PathOf(p) == path))
