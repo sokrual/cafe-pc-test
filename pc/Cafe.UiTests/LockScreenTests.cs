@@ -98,9 +98,9 @@ public sealed class LockScreenTests : IDisposable
         Rig.WaitFor(() => _rig.State(staff)["session"] is null, 20, "queued logout never reached the admin PC");
         var used = TimeSpan.Parse(_rig.Bill(staff, session)["used"]!.ToString()!);
         Assert.True(used >= loggedOutAt + TimeSpan.FromSeconds(18), $"billed {used}, but the server received the queued logout after at least {loggedOutAt + TimeSpan.FromSeconds(18)}");
-        var review = _rig.Get("/staff/review", staff);
-        Assert.Contains("review_late_logout", System.Text.Json.JsonSerializer.Serialize(review));
-        Assert.Contains("PC1", System.Text.Json.JsonSerializer.Serialize(review));
+        var review = _rig.Review(staff);
+        Assert.Contains(review, item => item.Contains("review_late_logout", StringComparison.Ordinal));
+        Assert.Contains(review, item => item.Contains("PC1", StringComparison.Ordinal));
     }
 
     // ---------------- helpers ----------------
@@ -293,6 +293,12 @@ sealed class Rig : IDisposable
     }
     public Dictionary<string, object?> State(string token) => Get("/staff/state/PC1", token);
     public Dictionary<string, object?> Bill(string token, long session) => Get($"/staff/bill/{session}", token);
+    public List<string> Review(string token)
+    {
+        using var m = new HttpRequestMessage(HttpMethod.Get, "/staff/review");
+        m.Headers.Authorization = new("Bearer", token);
+        return _http.Send(m).Content.ReadFromJsonAsync<List<string>>().Result!;
+    }
     public long ElapsedSec(string token) => long.Parse(State(token)["elapsedSec"]!.ToString()!);
 
     public static string Env(string name) => Environment.GetEnvironmentVariable(name) ?? throw new InvalidOperationException($"set {name}");
