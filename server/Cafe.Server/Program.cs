@@ -34,6 +34,18 @@ var app = builder.Build();
 app.UseRateLimiter();
 var staffTokens = new StaffTokens();
 
+app.Use(async (ctx, next) =>
+{
+    if (ctx.Request.Path.StartsWithSegments("/staff")
+        && !StaffLoginNetwork.Allows(ctx.Connection.RemoteIpAddress, ctx.Connection.LocalIpAddress))
+    {
+        ctx.Response.StatusCode = 403;
+        ctx.Response.ContentType = "text/plain; charset=utf-8";
+        await ctx.Response.WriteAsync(StaffLoginNetwork.RefusalMessage);
+        return;
+    }
+    await next(ctx);
+});
 app.Use(async (ctx, next) => // second wall behind the firewall rule: nothing from outside the shop network gets an answer
 {
     if (ShopNetwork.Allows(ctx.Connection.RemoteIpAddress)) { await next(ctx); return; }
@@ -62,7 +74,6 @@ app.MapPost("/pc/logout", (HttpContext c, long? ago) => { var pc = Pc(c); var bi
 
 app.MapPost("/staff/login", (HttpContext c, LoginBody b) =>
 {
-    if (!StaffLoginNetwork.Allows(c.Connection.RemoteIpAddress)) return Results.StatusCode(403);
     var user = cafe.StaffLogin(b.Phone, b.Pin, b.Code);
     return Results.Ok(new { token = staffTokens.Issue(user) }); // shortcut: in memory, so a server restart logs staff out
 }).RequireRateLimiting("login");
