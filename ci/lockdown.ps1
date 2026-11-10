@@ -169,9 +169,11 @@ try {
     Set-Content "$data\wipe\request" ""
     Start-Sleep -Seconds 5
     $blocked = Test-Path "$data\wipe\request"
+    Stop-Service CafeWatchdog -Force
     Move-Item "$data\clean-profile.saved" "$data\clean-profile"
+    Start-Service CafeWatchdog
     $retryDone = WaitFor 45 { -not (Test-Path "$data\wipe\request") }
-    Check "B3.F1c" "A failed clean-up stays pending and retries successfully" ($blocked -and $retryDone) "blocked $blocked, retry $retryDone"
+    Check "B3.F1c" "A failed clean-up stays pending and succeeds after watchdog restart" ($blocked -and $retryDone) "blocked $blocked, retry $retryDone"
     # An unreachable counter server must also leave the request pending; reconnecting lets the next loop retry.
     Set-Content "$data\wipe\request" ""
     Stop-Process -Id $server.Id -Force
