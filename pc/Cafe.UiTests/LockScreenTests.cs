@@ -204,11 +204,26 @@ public sealed class OfflineLockTests
             var lockScreen = LockWindow();
             Rig.WaitFor(() => !Part(LockWindow(), "StaffUnlock").IsOffscreen, 15, "offline staff unlock button did not appear");
             Part(lockScreen, "StaffUnlock").AsButton().Invoke();
+            var code = Rig.AppCode(secret);
             Part(lockScreen, "StaffPhone").AsTextBox().Text = "9000000002";
-            Part(lockScreen, "StaffCode").AsTextBox().Text = Rig.AppCode(secret);
+            Part(lockScreen, "StaffCode").AsTextBox().Text = code;
             Part(lockScreen, "Minutes").AsTextBox().Text = "30";
             Part(lockScreen, "OfflineUnlockSubmit").AsButton().Invoke();
             Rig.WaitFor(() => Find() is null or { IsOffscreen: true }, 15, "offline staff unlock did not hide the lock screen");
+
+            Window? timer = null;
+            Rig.WaitFor(() => (timer = app.GetAllTopLevelWindows(rig.Ui).FirstOrDefault(w => w.Properties.AutomationId.ValueOrDefault == "TimerWidget")) is { IsOffscreen: false },
+                15, "offline timer did not appear");
+            Part(timer!, "SelfLock").AsButton().Invoke();
+            var lockedAgain = LockWindow();
+            Rig.WaitFor(() => !Part(lockedAgain, "StaffUnlock").IsOffscreen, 10, "offline staff unlock button did not return");
+            Part(lockedAgain, "StaffUnlock").AsButton().Invoke();
+            Part(lockedAgain, "StaffPhone").AsTextBox().Text = "9000000002";
+            Part(lockedAgain, "StaffCode").AsTextBox().Text = code;
+            Part(lockedAgain, "Minutes").AsTextBox().Text = "30";
+            Part(lockedAgain, "OfflineUnlockSubmit").AsButton().Invoke();
+            Rig.WaitFor(() => Part(lockedAgain, "Error").Name.Contains("Wrong phone number or code", StringComparison.OrdinalIgnoreCase),
+                10, "the same authenticator step was accepted twice on one PC");
 
             rig.StartServer();
             var staff = await rig.StaffToken();
@@ -229,7 +244,7 @@ public sealed class OfflineLockTests
         try
         {
             using var app = Application.Attach(agent.Id);
-            await rig.EnrollStaffTwoStep();
+            var secret = await rig.EnrollStaffTwoStep();
             var cacheAfterSetup = DateTime.UtcNow;
             Rig.WaitFor(() => File.Exists(rig.OfflineCacheFile)
                 && File.GetLastWriteTimeUtc(rig.OfflineCacheFile) > cacheAfterSetup, 20, "watchdog did not cache staff keys");
@@ -246,16 +261,18 @@ public sealed class OfflineLockTests
             var screen = LockWindow();
             Rig.WaitFor(() => Part(LockWindow(), "StaffUnlock").IsEnabled, 15, "offline staff unlock button did not appear");
             Part(screen, "StaffUnlock").AsButton().Invoke();
+            var valid = Rig.AppCode(secret);
+            var wrong = valid == "000000" ? "000001" : "000000";
             for (var i = 0; i < 3; i++)
             {
                 Part(screen, "StaffPhone").AsTextBox().Text = "9000000002";
-                Part(screen, "StaffCode").AsTextBox().Text = "000000";
+                Part(screen, "StaffCode").AsTextBox().Text = wrong;
                 Part(screen, "Minutes").AsTextBox().Text = "30";
                 Part(screen, "OfflineUnlockSubmit").AsButton().Invoke();
-                Rig.WaitFor(() => !Part(screen, "OfflineUnlockSubmit").AsButton().IsEnabled, 5, "offline unlock did not start");
-                Rig.WaitFor(() => Part(screen, "OfflineUnlockSubmit").AsButton().IsEnabled, 10, "offline unlock attempt did not finish");
+                Rig.WaitFor(() => Part(screen, "Error").Name.Contains("Wrong phone number or code", StringComparison.OrdinalIgnoreCase),
+                    10, "wrong offline code was not rejected");
             }
-            Part(screen, "StaffCode").AsTextBox().Text = "000000";
+            Part(screen, "StaffCode").AsTextBox().Text = wrong;
             Part(screen, "OfflineUnlockSubmit").AsButton().Invoke();
             Rig.WaitFor(() => Part(screen, "Error").Name.Contains("10 minutes", StringComparison.OrdinalIgnoreCase), 10,
                 "three wrong codes did not pause offline unlock for ten minutes");

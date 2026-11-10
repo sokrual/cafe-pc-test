@@ -101,21 +101,18 @@ sealed class Agent : ApplicationContext
     {
         try
         {
-            if (_state.Session == -1)
+            var serverState = await _watchdog.GetFromJsonAsync<PcState>("/pc/state");
+            var offlineInfo = await _watchdog.GetFromJsonAsync<OfflineUnlockInfo>("/local/offline-unlock-info");
+            if (offlineInfo?.PendingSales > 0)
             {
-                var info = await _watchdog.GetFromJsonAsync<OfflineUnlockInfo>("/local/offline-unlock-info");
-                if (info?.PendingSales > 0)
-                {
-                    _online = true;
-                    _lock.SetOffline(false);
-                    return; // reconcile the local walk-in first; only then replay a queued logout
-                }
-                if (await _watchdog.GetFromJsonAsync<PcState>("/pc/state") is { } reconciled)
-                {
-                    if (reconciled.Session is null) _queue.RemoveAll(item => item.path == "/pc/logout");
-                    Apply(reconciled); // the server decides whether the offline sale was accepted
-                }
+                _online = true;
+                _lock.SetOffline(false);
+                return; // never replay a logout or overwrite the local timer before the paid sale is reconciled
             }
+            if (_state.Session == -1 && serverState is { Session: null })
+                _queue.RemoveAll(item => item.path == "/pc/logout");
+            if (_state.Session == -1 && serverState is not null)
+                Apply(serverState); // the server decides whether the offline walk-in was accepted
             while (_queue.Count > 0) // replay in order; the admin PC is told how long ago each one happened
             {
                 var (path, since) = _queue[0];
@@ -132,7 +129,7 @@ sealed class Agent : ApplicationContext
             _online = true;
             _lock.SetOffline(false);
         }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException or System.Text.Json.JsonException)
         {
             if (_online) Program.Log($"admin PC unreachable, timing goes on here: {e.Message}");
             _online = false; // the session keeps running on the admin PC; this screen keeps counting from the last state
