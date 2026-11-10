@@ -99,8 +99,9 @@ public sealed class LockScreenTests : IDisposable
         var used = TimeSpan.Parse(_rig.Bill(staff, session)["used"]!.ToString()!);
         Assert.True(used >= loggedOutAt + TimeSpan.FromSeconds(123), $"billed {used}, but the server received the queued logout after at least {loggedOutAt + TimeSpan.FromSeconds(18)}");
         var review = _rig.Review(staff);
-        Assert.Contains(review, item => item.Contains("review_late_logout", StringComparison.Ordinal));
-        Assert.Contains(review, item => item.Contains("PC1", StringComparison.Ordinal));
+        Assert.Contains(review, item =>
+            item.Contains("PC1", StringComparison.Ordinal) &&
+            item.Contains("reported logout", StringComparison.Ordinal));
     }
 
     // ---------------- helpers ----------------
