@@ -31,6 +31,7 @@ public sealed class BillingTests : IDisposable
     [Fact]
     public void Time_lock_setting_is_owner_only_and_off_keeps_the_existing_logout_behaviour()
     {
+        _cafe.AddPc(_owner, "PC1");
         Assert.False(_cafe.LockWhenTimeRunsOut); // default is off
         Assert.Throws<CafeException>(() => _cafe.SetLockWhenTimeRunsOut(_staff, true));
         Assert.Throws<CafeException>(() => _cafe.SetLockWhenTimeRunsOut(_cust, true));
@@ -45,6 +46,7 @@ public sealed class BillingTests : IDisposable
     [Fact]
     public void Time_lock_on_ends_and_bills_a_prepaid_session_at_zero()
     {
+        _cafe.AddPc(_owner, "PC1");
         _cafe.SetLockWhenTimeRunsOut(_owner, true);
         Assert.True(_cafe.LockWhenTimeRunsOut);
         var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 30);
