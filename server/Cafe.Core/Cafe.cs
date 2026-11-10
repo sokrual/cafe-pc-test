@@ -39,7 +39,7 @@ public class CafeException(string message) : Exception(message);
 
 /// The admin PC's single source of truth: customers, sessions, money. Every public call is one transaction.
 /// Money rows (ledger) and the audit log are append-only: the database itself refuses UPDATE and DELETE on them.
-public sealed class CafeCore : IDisposable
+public sealed partial class CafeCore : IDisposable
 {
     readonly SqliteConnection _db;
     readonly Func<DateTime> _now;
@@ -52,7 +52,7 @@ public sealed class CafeCore : IDisposable
         _db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Password = key, Pooling = false }.ToString());
         _db.Open();
         // schema version: a newer program adds its changes as version 2, 3... and never reads a newer database by mistake
-        const int SchemaVersion = 1;
+        const int SchemaVersion = 2; // 2: owner two-step login
         if (Scalar<long>("PRAGMA user_version") > SchemaVersion) { _db.Dispose(); throw new CafeException("The cafe data comes from a newer version of this program. Install the newer version."); }
         Exec("""
             PRAGMA foreign_keys = ON;
@@ -79,6 +79,8 @@ public sealed class CafeCore : IDisposable
             CREATE INDEX IF NOT EXISTS ledger_user ON ledger(user_id, kind);
             CREATE INDEX IF NOT EXISTS sessions_open ON sessions(pc) WHERE ended IS NULL;
             """);
+        if (Scalar<long>("PRAGMA user_version") < 2) // totp: the app's secret; totp_step: last code used (no replay); recovery: hash of the printed code
+            Exec("ALTER TABLE users ADD COLUMN totp BLOB; ALTER TABLE users ADD COLUMN totp_step INTEGER; ALTER TABLE users ADD COLUMN recovery BLOB;");
         Exec($"PRAGMA user_version = {SchemaVersion}");
         _ready = true;
     }
@@ -123,7 +125,8 @@ public sealed class CafeCore : IDisposable
                 Audit(user, "login_failed", null);
                 return null;
             }
-            Exec("UPDATE users SET fails = 0, locked_until = NULL WHERE id = @p0", user);
+            // with two-step login the count is cleared only after the app code too (StaffLogin), so codes cannot be guessed endlessly
+            Exec("UPDATE users SET fails = 0, locked_until = NULL WHERE id = @p0 AND totp IS NULL", user);
             Audit(user, "login", null);
             return user;
         });
@@ -131,11 +134,35 @@ public sealed class CafeCore : IDisposable
     }
 
     /// Staff and owner only: a customer's PIN must never open the counter pages (other customers' bills).
-    public long StaffLogin(string phone, string pin)
+    public long StaffLogin(string phone, string pin, string? code = null)
     {
         var user = Login(phone, pin);
-        Tx(() => RequireStaff(user));
-        return user;
+        // a wrong code returns false instead of throwing, so the failed-try count is saved (same as a wrong PIN)
+        var ok = Tx(() =>
+        {
+            RequireStaff(user);
+            using var r = Query("SELECT totp, totp_step, recovery FROM users WHERE id = @p0", user);
+            r.Read();
+            if (r.IsDBNull(0)) return true;
+            var (key, last, recovery) = ((byte[])r[0], r.GetInt64(1), r.IsDBNull(2) ? null : (byte[])r[2]);
+            r.Close();
+            if (string.IsNullOrWhiteSpace(code)) throw new CafeException("Type the 6-digit code from the app on your phone.");
+            if (TotpStep(key, code) is long step && step > last)
+                Exec("UPDATE users SET totp_step = @p0, fails = 0, locked_until = NULL WHERE id = @p1", step, user);
+            else if (recovery is not null && CryptographicOperations.FixedTimeEquals(recovery, SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(code.Trim().ToUpperInvariant()))))
+            {
+                Exec("UPDATE users SET recovery = NULL, fails = 0, locked_until = NULL WHERE id = @p0", user); // works once only
+                Audit(user, "recovery_code_used", null);
+            }
+            else
+            {
+                Exec("UPDATE users SET fails = fails + 1, locked_until = CASE WHEN fails + 1 >= 5 THEN @p0 ELSE locked_until END WHERE id = @p1", Iso(_now().AddMinutes(15)), user);
+                Audit(user, "login_failed", "two-step code");
+                return false;
+            }
+            return true;
+        });
+        return ok ? user : throw new CafeException("Wrong code. Type the newest code from the app.");
     }
 
     // ---------------- sessions ----------------
@@ -273,6 +300,8 @@ public sealed class CafeCore : IDisposable
     public string AddPc(long by, string name) => Tx(() =>
     {
         RequireOwner(by);
+        if (name.Length is < 1 or > 20 || !name.All(c => char.IsAsciiLetterOrDigit(c) || c is ' ' or '-')) throw new CafeException("A PC name has 1 to 20 letters, numbers, spaces or dashes.");
+        if (Scalar<long>("SELECT count(*) FROM pcs WHERE name = @p0", name) > 0) throw new CafeException("A PC with this name already exists.");
         var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         Exec("INSERT INTO pcs(name, token, locked) VALUES(@p0, @p1, 0)", name, TokenHash(token));
         Audit(by, "add_pc", name);

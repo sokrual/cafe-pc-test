@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -33,7 +32,7 @@ builder.Services.AddRateLimiter(o =>
 builder.Logging.ClearProviders(); // our own log file below; never the request bodies (they carry PINs)
 var app = builder.Build();
 app.UseRateLimiter();
-var staffTokens = new ConcurrentDictionary<string, (long user, DateTime until)>();
+var staffTokens = new StaffTokens();
 
 app.Use(async (ctx, next) => // second wall behind the firewall rule: nothing from outside the shop network gets an answer
 {
@@ -48,11 +47,12 @@ app.Use(async (ctx, next) => // rule breaks become a 400 with a plain message, b
     catch (Exception e) { ctx.Response.StatusCode = 500; Log($"ERROR {ctx.Request.Path}: {e}"); }
 });
 
+string TokenOf(HttpContext c) => c.Request.Headers.Authorization.ToString().Replace("Bearer ", "");
+long Owner(HttpContext c) { var u = Staff(c); return cafe.IsOwner(u) ? u : throw new CafeException("Only the owner can do this."); }
 string Pc(HttpContext c) => cafe.PcByToken(c.Request.Headers["X-Pc-Token"].ToString()) ?? throw new UnauthorizedAccessException();
 long Staff(HttpContext c)
 {
-    var t = c.Request.Headers.Authorization.ToString().Replace("Bearer ", "");
-    return staffTokens.TryGetValue(t, out var s) && s.until > DateTime.UtcNow ? s.user : throw new UnauthorizedAccessException();
+    return staffTokens.Check(TokenOf(c)) ?? throw new UnauthorizedAccessException();
 }
 
 app.MapGet("/pc/state", (HttpContext c) => { var pc = Pc(c); var st = cafe.StateOf(pc); cafe.PcSeen(pc); return st; });
@@ -62,11 +62,23 @@ app.MapPost("/pc/logout", (HttpContext c, long? ago) => { var pc = Pc(c); var bi
 
 app.MapPost("/staff/login", (LoginBody b) =>
 {
-    var user = cafe.StaffLogin(b.Phone, b.Pin);
-    var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-    staffTokens[token] = (user, DateTime.UtcNow.AddHours(12)); // shortcut: in memory, so a server restart logs staff out
-    return new { token };
+    var user = cafe.StaffLogin(b.Phone, b.Pin, b.Code);
+    return new { token = staffTokens.Issue(user) }; // shortcut: in memory, so a server restart logs staff out
 }).RequireRateLimiting("login");
+app.MapPost("/staff/logout", (HttpContext c) => { staffTokens.End(TokenOf(c)); return Results.Ok(); });
+app.MapPost("/staff/users", (HttpContext c, UserBody b) => new { id = cafe.AddUser(Staff(c), b.Role, b.Name, b.Phone, b.Pin) });
+app.MapPost("/staff/users/pin", (HttpContext c, LoginBody b) => { cafe.ResetPin(Staff(c), b.Phone, b.Pin); return Results.Ok(); });
+app.MapGet("/staff/pcs", (HttpContext c) => cafe.Pcs(Staff(c)));
+// the reply is what the new gaming PC needs: its key (shown once) and the server's certificate fingerprint
+app.MapPost("/staff/pcs", (HttpContext c, PcBody b) => new { token = cafe.AddPc(Staff(c), b.Pc), pin = File.ReadAllText(Path.Combine(data, "server.pin")) });
+app.MapDelete("/staff/pcs/{pc}", (HttpContext c, string pc) => { cafe.RemovePc(Staff(c), pc); return Results.Ok(); });
+app.MapPost("/staff/two-step/start", (HttpContext c) =>
+{
+    Owner(c);
+    var secret = CafeCore.NewTwoStepSecret();
+    return new { secret, uri = $"otpauth://totp/Shinzx%20Cafe?secret={secret}&issuer=Shinzx%20Cafe" };
+});
+app.MapPost("/staff/two-step/on", (HttpContext c, TwoStepBody b) => new { recovery = cafe.TurnOnTwoStep(Owner(c), b.Secret, b.Code) });
 app.MapPost("/staff/lock", (HttpContext c, PcBody b) => { cafe.Lock(Staff(c), b.Pc, b.Message); return cafe.StateOf(b.Pc); });
 app.MapPost("/staff/unlock", (HttpContext c, PcBody b) => { cafe.Unlock(Staff(c), b.Pc); return cafe.StateOf(b.Pc); });
 app.MapGet("/staff/state/{pc}", (HttpContext c, string pc) => { Staff(c); return cafe.StateOf(pc); });
@@ -124,5 +136,7 @@ static void Seed(CafeCore cafe, string data)
     File.WriteAllText(Path.Combine(data, "pc1.token"), cafe.AddPc(owner, "PC1"));
 }
 
-record LoginBody(string Phone, string Pin);
+record LoginBody(string Phone, string Pin, string? Code = null);
+record UserBody(Role Role, string Name, string Phone, string Pin);
+record TwoStepBody(string Secret, string Code);
 record PcBody(string Pc, string? Message);
