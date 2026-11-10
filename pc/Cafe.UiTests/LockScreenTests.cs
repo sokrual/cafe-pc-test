@@ -182,11 +182,14 @@ public sealed class OfflineLockTests
         try
         {
             using var app = Application.Attach(agent.Id);
-            var enrolledAt = DateTime.UtcNow;
             var secret = await rig.EnrollStaffTwoStep();
+            var enrolledStep = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30;
+            var cacheAfterSetup = DateTime.UtcNow;
             Rig.WaitFor(() => File.Exists(rig.OfflineCacheFile)
-                && File.GetLastWriteTimeUtc(rig.OfflineCacheFile) > enrolledAt, 20,
+                && File.GetLastWriteTimeUtc(rig.OfflineCacheFile) > cacheAfterSetup, 20,
                 "watchdog did not refresh the enrolled staff key");
+            Rig.WaitFor(() => DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30 > enrolledStep, 35,
+                "authenticator did not advance to a fresh step after enrollment");
             rig.StopServer();
 
             Window? Find() => app.GetAllTopLevelWindows(rig.Ui).FirstOrDefault(w => w.Properties.AutomationId.ValueOrDefault == "LockScreen");
@@ -226,10 +229,10 @@ public sealed class OfflineLockTests
         try
         {
             using var app = Application.Attach(agent.Id);
-            var enrolledAt = DateTime.UtcNow;
             await rig.EnrollStaffTwoStep();
+            var cacheAfterSetup = DateTime.UtcNow;
             Rig.WaitFor(() => File.Exists(rig.OfflineCacheFile)
-                && File.GetLastWriteTimeUtc(rig.OfflineCacheFile) > enrolledAt, 20, "watchdog did not cache staff keys");
+                && File.GetLastWriteTimeUtc(rig.OfflineCacheFile) > cacheAfterSetup, 20, "watchdog did not cache staff keys");
             rig.StopServer();
             Window? Find() => app.GetAllTopLevelWindows(rig.Ui).FirstOrDefault(w => w.Properties.AutomationId.ValueOrDefault == "LockScreen");
             Window LockWindow()
@@ -249,6 +252,7 @@ public sealed class OfflineLockTests
                 Part(screen, "StaffCode").AsTextBox().Text = "000000";
                 Part(screen, "Minutes").AsTextBox().Text = "30";
                 Part(screen, "OfflineUnlockSubmit").AsButton().Invoke();
+                Rig.WaitFor(() => !Part(screen, "OfflineUnlockSubmit").AsButton().IsEnabled, 5, "offline unlock did not start");
                 Rig.WaitFor(() => Part(screen, "OfflineUnlockSubmit").AsButton().IsEnabled, 10, "offline unlock attempt did not finish");
             }
             Part(screen, "StaffCode").AsTextBox().Text = "000000";

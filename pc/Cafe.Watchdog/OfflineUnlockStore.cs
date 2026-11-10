@@ -13,7 +13,7 @@ sealed record OfflineUnlockRequest(string SaleId, string Phone, string Code, int
 sealed record OfflineUnlockSale(string SaleId, string Phone, string Code, long Step, int Minutes,
     string Method, string? UpiLast4, long? Session);
 sealed record OfflineUnlockResult(bool Success, string? Error, long? Step);
-sealed record OfflineUnlockInfo(OfflineUnlockRate? Rate, int EnabledAccounts, DateTime? LockedUntil);
+sealed record OfflineUnlockInfo(OfflineUnlockRate? Rate, int EnabledAccounts, DateTime? LockedUntil, int PendingSales);
 
 sealed class OfflineUnlockStore
 {
@@ -71,7 +71,7 @@ sealed class OfflineUnlockStore
         lock (_gate)
         {
             var state = Read();
-            return JsonSerializer.Serialize(new OfflineUnlockInfo(state.Rate, state.Accounts.Count, state.LockedUntil));
+            return JsonSerializer.Serialize(new OfflineUnlockInfo(state.Rate, state.Accounts.Count, state.LockedUntil, state.Pending.Count));
         }
     }
 

@@ -35,7 +35,7 @@ static class Program
 public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec, bool SelfLocked = false, bool LockWhenTimeRunsOut = false);
 record ErrorBody(string Error);
 record OfflineUnlockReply(bool Success, string? Error, long? Step);
-record OfflineUnlockInfo(OfflineUnlockRate? Rate, int EnabledAccounts, DateTime? LockedUntil);
+record OfflineUnlockInfo(OfflineUnlockRate? Rate, int EnabledAccounts, DateTime? LockedUntil, int PendingSales);
 record OfflineUnlockRate(long Paise30, long Paise60, long Paise90, long ExtraBlockPaise, int MinimumMin, int BlockMin);
 
 static class LockSetting
@@ -101,6 +101,21 @@ sealed class Agent : ApplicationContext
     {
         try
         {
+            if (_state.Session == -1)
+            {
+                var info = await _watchdog.GetFromJsonAsync<OfflineUnlockInfo>("/local/offline-unlock-info");
+                if (info?.PendingSales > 0)
+                {
+                    _online = true;
+                    _lock.SetOffline(false);
+                    return; // reconcile the local walk-in first; only then replay a queued logout
+                }
+                if (await _watchdog.GetFromJsonAsync<PcState>("/pc/state") is { } reconciled)
+                {
+                    if (reconciled.Session is null) _queue.RemoveAll(item => item.path == "/pc/logout");
+                    Apply(reconciled); // the server decides whether the offline sale was accepted
+                }
+            }
             while (_queue.Count > 0) // replay in order; the admin PC is told how long ago each one happened
             {
                 var (path, since) = _queue[0];
@@ -129,7 +144,7 @@ sealed class Agent : ApplicationContext
     {
         if (WipePending()) s = s with { Locked = true, Message = WipeMessage() };
         _lock.SetBusy(WipePending());
-        if (_state.Session is not null && s.Session is null) AskForWipe(); // logged out, here or at the counter
+        if (_state.Session is > 0 && s.Session is null) AskForWipe(); // a server session ended, here or at the counter
         if (s.Locked != _state.Locked) Program.Log(s.Locked ? $"locked: {s.Message}" : $"unlocked, session {s.Session} ({s.Mode})");
         (_state, _stateAt) = (s, DateTime.UtcNow);
         if (s.Locked) { _timer.Hide(); _lock.ShowLocked(s.Message); }
@@ -165,7 +180,7 @@ sealed class Agent : ApplicationContext
                 minutes,
                 method,
                 upiLast4,
-                session = _state.Session is > 0 ? _state.Session : null
+                session = _state.Session == -1 ? -1 : _state.Session is > 0 ? _state.Session : null
             };
             using var response = await _watchdog.PostAsJsonAsync("/local/offline-unlock", request);
             var result = await response.Content.ReadFromJsonAsync<OfflineUnlockReply>();
@@ -265,6 +280,7 @@ sealed class LockScreen : Form
         _submitOffline.Click += async (_, _) =>
         {
             _submitOffline.Enabled = false;
+            _error.Text = "";
             if (!int.TryParse(_minutes.Text.Trim(), out var minutes)) _error.Text = "Enter the minutes to add.";
             else _error.Text = await _offlineUnlock(_staffPhone.Text.Trim(), _staffCode.Text.Trim(), minutes,
                 _method.SelectedItem?.ToString() ?? "cash", _upi.Visible ? _upi.Text.Trim() : null) ?? "";

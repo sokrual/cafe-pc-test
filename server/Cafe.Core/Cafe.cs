@@ -497,7 +497,16 @@ public sealed partial class CafeCore : IDisposable
 
         long session;
         long user;
-        if (sale.Session is long existing)
+        long? existingSession = sale.Session switch
+        {
+            > 0 => sale.Session,
+            -1 => Scalar<long?>("SELECT id FROM sessions WHERE pc = @p0 AND ended IS NULL", pc),
+            null => null,
+            _ => throw new CafeException("The offline session reference is not valid.")
+        };
+        if (sale.Session == -1 && existingSession is null)
+            throw new CafeException("The offline walk-in session could not be found.");
+        if (existingSession is long existing)
         {
             if (Scalar<long?>( "SELECT id FROM sessions WHERE id = @p0 AND pc = @p1 AND ended IS NULL", existing, pc) is null)
                 throw new CafeException("The session on this PC has already ended.");

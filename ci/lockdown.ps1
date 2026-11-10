@@ -130,6 +130,9 @@ try {
     $tokenRead = CustomerPs "[IO.File]::ReadAllText('$data\keys\pc.token') | Out-Null"
     $pinRead = CustomerPs "[IO.File]::ReadAllText('$data\keys\server.pin') | Out-Null"
     Check "B3.C4b" "Customer cannot read the PC token or certificate pin" ($tokenRead -ne 0 -and $pinRead -ne 0 -and -not (Test-Path "$app\pc.token") -and -not (Test-Path "$app\server.pin") -and -not (Test-Path "$stage\pc.token") -and -not (Test-Path "$stage\server.pin")) "token read exit $tokenRead, pin read exit $pinRead; source copies removed"
+    $offlineCache = "$data\keys\offline-unlock.bin"
+    $offlineCacheRead = CustomerPs "try { [IO.File]::ReadAllBytes('$offlineCache') | Out-Null; exit 0 } catch { exit 1 }"
+    Check "B3.C4c" "Customer cannot read the machine-encrypted offline authenticator cache" ((Test-Path $offlineCache) -and $offlineCacheRead -ne 0) "cache exists $((Test-Path $offlineCache)); customer read exit $offlineCacheRead"
     Start-Sleep -Seconds 5
     Check "B3.C5" "Setup mode: no lock screen yet" ((Test-Path "$app\setup.flag") -and -not (Get-Process Cafe.Agent -ErrorAction SilentlyContinue)) "setup.flag present"
     $other = try { Resolve-DnsName example.com -Server 8.8.8.8 -DnsOnly -QuickTimeout -ErrorAction Stop | Out-Null; "answered" } catch { "blocked" }
