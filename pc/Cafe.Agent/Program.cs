@@ -134,7 +134,7 @@ sealed class Agent : ApplicationContext
     static void AskForWipe()
     {
         if (!Directory.Exists(Path.GetDirectoryName(WipeNote))) return; // not an installed cafe PC (tests, development)
-        try { File.WriteAllText(WipeNote, ""); Program.Log("asked for the logout clean-up"); }
+        try { using var request = new FileStream(WipeNote, FileMode.CreateNew, FileAccess.Write, FileShare.Read); Program.Log("asked for the logout clean-up"); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Program.Log($"could not ask for the logout clean-up (error code {e.HResult & 0xffff})"); }
     }
 
