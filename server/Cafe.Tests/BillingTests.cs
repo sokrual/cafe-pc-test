@@ -74,7 +74,7 @@ public sealed class BillingTests : IDisposable
         using var check = verify.CreateCommand();
         check.CommandText = "SELECT ended FROM sessions WHERE id = @id";
         check.Parameters.AddWithValue("@id", failed);
-        Assert.Null(check.ExecuteScalar());
+        Assert.True(check.ExecuteScalar() is null or DBNull);
     }
 
     [Fact]
