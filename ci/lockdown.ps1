@@ -173,7 +173,8 @@ try {
     $watchdogLog = Join-Path "$data\logs" "watchdog-$(Get-Date -Format yyyyMMdd).log"
     $beforeDeferred = if (Test-Path $watchdogLog) { @(Select-String -Path $watchdogLog -Pattern "cleanup deferred (session active)" -SimpleMatch).Count } else { 0 }
     Set-Content "$data\wipe\request" ""
-    $firstDeferred = WaitFor 15 {   # the arm test machine can take more than 5 s to reach the server check (Test-Path $watchdogLog) -and @(Select-String -Path $watchdogLog -Pattern "cleanup deferred (session active)" -SimpleMatch).Count -gt $beforeDeferred }
+    # the arm test machine can take more than 5 s to reach the server check
+    $firstDeferred = WaitFor 15 { (Test-Path $watchdogLog) -and @(Select-String -Path $watchdogLog -Pattern "cleanup deferred (session active)" -SimpleMatch).Count -gt $beforeDeferred }
     Start-Sleep -Seconds 32
     $afterDeferred = if (Test-Path $watchdogLog) { @(Select-String -Path $watchdogLog -Pattern "cleanup deferred (session active)" -SimpleMatch).Count } else { 0 }
     Check "B3.F0" "Fresh request is tried promptly and unchanged deferral is logged once" ((Test-Path "$data\wipe\request") -and $firstDeferred -and $afterDeferred -eq ($beforeDeferred + 1)) "log lines $beforeDeferred -> $afterDeferred"
