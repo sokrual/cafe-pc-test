@@ -48,7 +48,9 @@ B5  Owner features                                                  IN PROGRESS
     B5.4 Reports: revenue by day, week, month, PC, cash/UPI, staff, discounts and corrections; PDF and Excel
     B5.5 Daily encrypted backup, with a restore test
     B5.6 Messages to PCs read aloud, "Call staff" button
-    B5.7 Plans, offers, happy hours, reservations
+    B5.7 Plans, offers, happy hours, reservations. Rate cards are set by the owner after install, not in the code:
+         the first set-up asks for the rate card; the owner can add more rate cards, discounts and promotions,
+         edit them and delete them (other cafes will have their own). Today's rate card becomes the default.
     B5.8 Owner access from his phone (Tailscale) and a view-only screen view
     B5.9 Turning PCs on and off from the counter
 
