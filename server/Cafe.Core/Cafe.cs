@@ -426,23 +426,20 @@ public sealed partial class CafeCore : IDisposable
 
     /// End prepaid or plan sessions at zero when the owner has enabled automatic locking.
     /// This runs on the server timer even when a gaming PC is offline; StateOf also calls it on reconnect.
-    public void EnforceTimeLimits()
+    public void EnforceTimeLimits() => Tx(() =>
     {
-        if (!LockWhenTimeRunsOut) return;
-        var due = Tx(() =>
-        {
-            using var r = Query("SELECT id, user_id FROM sessions WHERE ended IS NULL AND (prepaid_min IS NOT NULL OR plan_id IS NOT NULL)");
-            var list = new List<(long session, long user)>();
-            while (r.Read()) list.Add((r.GetInt64(0), r.GetInt64(1)));
-            return list;
-        });
+        if (Scalar<long>("SELECT value FROM settings WHERE name = 'lock_when_time_runs_out'") != 1) return;
+        using var r = Query("SELECT id, user_id FROM sessions WHERE ended IS NULL AND (prepaid_min IS NOT NULL OR plan_id IS NOT NULL)");
+        var due = new List<(long session, long user)>();
+        while (r.Read()) due.Add((r.GetInt64(0), r.GetInt64(1)));
+        r.Close();
         foreach (var (session, user) in due)
         {
-            var (used, prepaid, plan, owner) = Tx(() => SessionUse(session));
+            var (used, prepaid, plan, owner) = SessionUse(session);
             var limitSeconds = prepaid is int bought ? bought * 60L : plan is not null ? PlanMinutesLeft(owner) * 60L : long.MaxValue;
             if (used.TotalSeconds >= limitSeconds) Stop(user, session, _now());
         }
-    }
+    });
 
     /// Called on every status check, so a queued logout knows when the PC was last online.
     public void PcSeen(string pc) => Tx(() => { Exec("UPDATE pcs SET last_seen = @p0 WHERE name = @p1", Iso(_now()), pc); });
