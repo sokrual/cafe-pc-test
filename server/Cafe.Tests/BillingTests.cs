@@ -112,6 +112,20 @@ public sealed class BillingTests : IDisposable
     }
 
     [Fact]
+    public void Staff_pages_are_only_allowed_on_the_counter_pc_or_tailscale()
+    {
+        foreach (var ok in new[] { "127.0.0.1", "::1", "100.64.0.1", "100.127.255.254", "::ffff:100.64.0.1", "fd7a:115c:a1e0::1", "fd7a:115c:a1e0:ffff::1" })
+            Assert.True(StaffLoginNetwork.Allows(System.Net.IPAddress.Parse(ok)), ok);
+        foreach (var no in new[] { "10.1.2.3", "172.16.0.9", "192.168.1.10", "169.254.3.4", "100.63.255.255", "100.128.0.1", "8.8.8.8", "fd7a:115c:a1e1::1", "fd7b:115c:a1e0::1" })
+            Assert.False(StaffLoginNetwork.Allows(System.Net.IPAddress.Parse(no)), no);
+        Assert.True(StaffLoginNetwork.Allows(System.Net.IPAddress.Parse("192.168.1.20"), System.Net.IPAddress.Parse("192.168.1.20")));
+        Assert.True(StaffLoginNetwork.Allows(System.Net.IPAddress.Parse("10.0.0.8"), System.Net.IPAddress.Parse("10.0.0.8")));
+        Assert.False(StaffLoginNetwork.Allows(System.Net.IPAddress.Parse("192.168.1.20"), System.Net.IPAddress.Parse("192.168.1.21")));
+        Assert.False(StaffLoginNetwork.Allows(null));
+        Assert.Equal("Counter pages open only on the counter PC.", StaffLoginNetwork.RefusalMessage);
+    }
+
+    [Fact]
     public void T2_5b_group_members_leaving_at_different_times_add_up()
     {
         var lead = _cafe.StartPostpaid(_staff, "PC1", _cust);
