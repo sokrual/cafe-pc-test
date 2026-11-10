@@ -91,7 +91,7 @@ static class Wipe
         {
             var (client, server) = _serverClient ??= CreateServerClient();
             using var response = client.GetAsync(new Uri(server, "/pc/state")).GetAwaiter().GetResult();
-            if (!response.IsSuccessStatusCode) { error = (int)response.StatusCode; return false; }
+            if (!response.IsSuccessStatusCode) throw new HttpRequestException(null, null, response.StatusCode); // e.g. an old PC key
             using var state = JsonDocument.Parse(response.Content.ReadAsStream());
             if (!state.RootElement.TryGetProperty("session", out var session)) { error = 13; return false; }
             return session.ValueKind == JsonValueKind.Null;
