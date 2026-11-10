@@ -306,7 +306,6 @@ static class Native
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
     [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool attach);
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
-    [DllImport("shell32.dll")] static extern int SHQueryUserNotificationState(out int state);
     [DllImport("user32.dll")] static extern IntPtr GetShellWindow();
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out Rect r);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int max);
@@ -327,7 +326,8 @@ static class Native
 
     public static bool GameInFront(IntPtr self)
     {
-        if (SHQueryUserNotificationState(out var st) == 0 && st is 2 or 3 or 4) return true; // full screen, D3D exclusive, presentation
+        // Use the actual foreground window's bounds. SHQueryUserNotificationState can report
+        // QUNS_BUSY for a runner/console desktop too, which must not hide the customer timer.
         var h = GetForegroundWindow();
         if (h == IntPtr.Zero || h == self || h == GetShellWindow()) return false;
         var cls = new System.Text.StringBuilder(64);
