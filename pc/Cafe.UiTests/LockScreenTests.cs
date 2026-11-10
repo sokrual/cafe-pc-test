@@ -226,7 +226,7 @@ public sealed class OfflineLockTests
                 10, "the same authenticator step was accepted twice on one PC");
 
             rig.StartServer();
-            var staff = await rig.StaffToken();
+            var staff = await rig.OwnerToken();
             long? session = null;
             Rig.WaitFor(() => (session = rig.State(staff)["session"] is { } value && value.ToString() != "null"
                 ? long.Parse(value.ToString()!) : null) is not null, 60, "offline sale was not reconciled to a server session");
