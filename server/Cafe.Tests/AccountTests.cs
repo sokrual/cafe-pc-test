@@ -18,7 +18,8 @@ public sealed class AccountTests : IDisposable
         _staff = _cafe.AddUser(_owner, Role.Staff, "Staff", "9000000002", "111111");
         _cust = _cafe.AddUser(_staff, Role.Customer, "Ravi", "9000000003", "2222");
     }
-    public void Dispose() { _cafe.Dispose(); SqliteConnection.ClearAllPools(); File.Delete(_file); }
+    // Windows sometimes holds the file a moment longer; a leftover temp file is harmless, a failed test here is not
+    public void Dispose() { _cafe.Dispose(); SqliteConnection.ClearAllPools(); try { File.Delete(_file); } catch (IOException) { } }
 
     string AppCode(string secret) => CafeCore.Totp(CafeCore.FromBase32(secret), new DateTimeOffset(_clock).ToUnixTimeSeconds() / 30);
 
