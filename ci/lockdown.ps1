@@ -32,6 +32,7 @@ $winlogon = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
 $autoBefore = (Get-ItemProperty $winlogon).AutoAdminLogon
 $ntpKey = "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters"
 $ntpOriginal = (Get-ItemProperty $ntpKey).NtpServer
+$screenKey = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Control Panel\Desktop"
 $dohOriginal = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -ErrorAction SilentlyContinue).DnsOverHttpsMode
 # control for C6: other DNS servers must answer BEFORE the install, or "blocked" afterwards proves nothing
 $googleBefore = try { Resolve-DnsName example.com -Server 8.8.8.8 -DnsOnly -QuickTimeout -ErrorAction Stop | Out-Null; "answered" } catch { "blocked" }
@@ -65,6 +66,8 @@ try {
     $wiz = WaitFor 20 { try { (Invoke-WebRequest http://127.0.0.1:3000 -UseBasicParsing).StatusCode -eq 200 } catch { $false } }
     Check "B3.A5" "Filter set-up page opens on the counter PC" $wiz "http://127.0.0.1:3000"
     Check "B3.A6" "Internet filter restarts by itself if it stops" ((sc.exe qfailure AdGuardHome) -match "RESTART") ""
+    $screen = Get-ItemProperty $screenKey
+    Check "B3.A7" "Counter screen locks after 10 idle minutes and requires Windows sign-in" ($screen.ScreenSaveActive -eq "1" -and $screen.ScreenSaveTimeOut -eq "600" -and $screen.ScreenSaverIsSecure -eq "1" -and $screen."SCRNSAVE.EXE" -eq "$env:WINDIR\System32\scrnsave.scr") "active $($screen.ScreenSaveActive), timeout $($screen.ScreenSaveTimeOut), secure $($screen.ScreenSaverIsSecure)"
     Stop-Service CafeServer   # the gaming-PC tests below use a test server with test users on the same port
 
     # ===== B. test server with test users =====
@@ -249,6 +252,15 @@ try {
     & "$stageA\install-admin.ps1" -Uninstall -Ci
     Check "B3.I4" "Counter PC uninstall: server and filter gone" (-not (Get-Service CafeServer, AdGuardHome -ErrorAction SilentlyContinue)) ""
     Check "B3.I4b" "Counter PC uninstall: clock settings back as before" ((Get-ItemProperty $ntpKey).NtpServer -eq $ntpOriginal) "$ntpOriginal"
+    $screenAfter = Get-ItemProperty $screenKey -ErrorAction SilentlyContinue
+    $saved = Get-Content "$env:ProgramData\Cafe\before-install.json" -Raw | ConvertFrom-Json
+    $screenRestored = $true
+    foreach ($name in "ScreenSaveActive", "ScreenSaveTimeOut", "ScreenSaverIsSecure", "SCRNSAVE.EXE") {
+        $before = $saved.("$screenKey|$name")
+        if ($null -eq $before) { if ($null -ne $screenAfter.$name) { $screenRestored = $false } }
+        elseif ($screenAfter.$name -ne $before) { $screenRestored = $false }
+    }
+    Check "B3.I4c" "Counter PC uninstall: previous idle-lock settings restored" $screenRestored "restored $screenRestored"
 }
 catch { Check "B3.X" "script error" $false "$_ (line $($_.InvocationInfo.ScriptLineNumber))" }
 finally {
