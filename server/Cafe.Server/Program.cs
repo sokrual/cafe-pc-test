@@ -60,10 +60,11 @@ app.MapPost("/pc/login", (HttpContext c, LoginBody b) => { var pc = Pc(c); var s
 app.MapPost("/pc/selflock", (HttpContext c) => cafe.PcSelfLock(Pc(c)));
 app.MapPost("/pc/logout", (HttpContext c, long? ago) => { var pc = Pc(c); var bill = cafe.PcLogout(pc, ago ?? 0); Log($"{pc} logout session {bill.SessionId} used {bill.Used} (sent {ago ?? 0}s late)"); return bill; });
 
-app.MapPost("/staff/login", (LoginBody b) =>
+app.MapPost("/staff/login", (HttpContext c, LoginBody b) =>
 {
+    if (!StaffLoginNetwork.Allows(c.Connection.RemoteIpAddress)) return Results.StatusCode(403);
     var user = cafe.StaffLogin(b.Phone, b.Pin, b.Code);
-    return new { token = staffTokens.Issue(user) }; // shortcut: in memory, so a server restart logs staff out
+    return Results.Ok(new { token = staffTokens.Issue(user) }); // shortcut: in memory, so a server restart logs staff out
 }).RequireRateLimiting("login");
 app.MapPost("/staff/logout", (HttpContext c) => { staffTokens.End(TokenOf(c)); return Results.Ok(); });
 app.MapPost("/staff/users", (HttpContext c, UserBody b) => new { id = cafe.AddUser(Staff(c), b.Role, b.Name, b.Phone, b.Pin) });

@@ -24,6 +24,20 @@ public static class ShopNetwork
     }
 }
 
+
+/// Staff and owner PINs may be entered only on the counter PC or over Tailscale.
+public static class StaffLoginNetwork
+{
+    public static bool Allows(System.Net.IPAddress? ip)
+    {
+        if (ip is null) return false;
+        if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
+        if (System.Net.IPAddress.IsLoopback(ip)) return true;
+        var b = ip.GetAddressBytes();
+        return ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && b[0] == 100 && b[1] is >= 64 and <= 127;
+    }
+}
+
 public record Rate(long PerHourPaise = 6000, int GraceMin = 2, int MinimumMin = 30, int BlockMin = 30, int BlockGraceMin = 5, int CarryOverDays = 30);
 
 public record Bill(long SessionId, TimeSpan Used, long Charged, long Adjusted, long Paid)
