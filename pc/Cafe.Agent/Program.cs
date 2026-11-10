@@ -135,7 +135,7 @@ sealed class Agent : ApplicationContext
     {
         if (!Directory.Exists(Path.GetDirectoryName(WipeNote))) return; // not an installed cafe PC (tests, development)
         try { File.WriteAllText(WipeNote, ""); Program.Log("asked for the logout clean-up"); }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Program.Log($"could not ask for the logout clean-up: {e.Message}"); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Program.Log($"could not ask for the logout clean-up (error code {e.HResult & 0xffff})"); }
     }
 
     // logout and customer lock: done now if the admin PC answers, otherwise queued and the screen locks anyway
