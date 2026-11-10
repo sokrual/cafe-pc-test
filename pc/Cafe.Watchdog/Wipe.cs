@@ -126,7 +126,7 @@ static class Wipe
                 && !Watchdog.WritableByNonAdmins(f) && !Watchdog.WritableByNonAdmins(Path.GetDirectoryName(f)!)) continue;
             try { p.Kill(); closed.Add(p); } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { } // already gone
         }
-        foreach (var p in closed) p.WaitForExit(5000); // Explorer comes back by itself (Windows restarts it)
+        foreach (var p in closed) if (!p.WaitForExit(5000)) throw new TimeoutException("customer process did not exit"); // Explorer comes back by itself (Windows restarts it)
 
         var report = $"closed={closed.Count}";
         var profile = Registry.LocalMachine.OpenSubKey($@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\{sid}")?.GetValue("ProfileImagePath") as string;
@@ -196,7 +196,13 @@ static class Wipe
             try { xml = File.ReadAllText(f); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { continue; }
             if (!xml.Contains($">{sid}<") && !xml.Contains($"\\{User}<") && !xml.Contains($">{User}<")) continue; // the task runs as Customer
             using var d = Process.Start(new ProcessStartInfo("schtasks.exe", $"/delete /tn \"{f[tasks.Length..]}\" /f") { UseShellExecute = false, CreateNoWindow = true })!;
-            d.WaitForExit(10_000);
+            if (!d.WaitForExit(10_000))
+            {
+                d.Kill(true);
+                d.WaitForExit();
+                throw new TimeoutException("task removal timed out");
+            }
+            if (d.ExitCode != 0) throw new InvalidOperationException("task removal failed");
             removed++;
         }
         return report + $"; tasks={removed}";
