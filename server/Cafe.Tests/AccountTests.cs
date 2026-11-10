@@ -69,6 +69,9 @@ public sealed class AccountTests : IDisposable
         Assert.Throws<CafeException>(() => _cafe.StartTwoStepFor(_staff, "9000000002"));
         Assert.Throws<CafeException>(() => _cafe.TurnOnTwoStepFor(_staff, "9000000002", secret, code));
         Assert.Throws<CafeException>(() => _cafe.StartTwoStepFor(_owner, "9000000003"));
+        var cached = _cafe.OfflineUnlockAccounts();
+        Assert.Contains(cached, x => x.Phone == "9000000002" && x.Secret == secret);
+        Assert.DoesNotContain(cached, x => x.Phone == "9000000003");
     }
 
     [Fact]

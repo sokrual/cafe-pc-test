@@ -5,6 +5,8 @@ using System.Text;
 
 namespace Cafe;
 
+public record OfflineUnlockAccount(string Phone, string Secret);
+
 public record PcInfo(string Name, bool InUse, bool Locked, string? LastSeen);
 
 public sealed partial class CafeCore
@@ -52,6 +54,16 @@ public sealed partial class CafeCore
     // That also gives a one-time recovery code to print and keep: it replaces the app code once, if the phone is lost.
 
     public static string NewTwoStepSecret() => Base32(RandomNumberGenerator.GetBytes(20));
+
+    /// Only enabled owner and staff accounts are shared with a PC authenticated by its own device token.
+    public List<OfflineUnlockAccount> OfflineUnlockAccounts() => Tx(() =>
+    {
+        using var r = Query("SELECT phone, totp FROM users WHERE role IN (@p0, @p1) AND totp IS NOT NULL ORDER BY id",
+            (int)Role.Owner, (int)Role.Staff);
+        var accounts = new List<OfflineUnlockAccount>();
+        while (r.Read()) accounts.Add(new OfflineUnlockAccount(r.GetString(0), Base32((byte[])r[1])));
+        return accounts;
+    });
 
     public string TurnOnTwoStep(long owner, string secret, string code) => Tx(() =>
     {

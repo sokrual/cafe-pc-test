@@ -68,6 +68,11 @@ long Staff(HttpContext c)
 }
 
 app.MapGet("/pc/state", (HttpContext c) => { var pc = Pc(c); var st = cafe.StateOf(pc); cafe.PcSeen(pc); return st; });
+app.MapGet("/pc/offline-unlock-data", (HttpContext c) =>
+{
+    Pc(c); // a PC token, never a staff/customer login, is required to retrieve authenticator secrets
+    return new { rate = cafe.Rate, accounts = cafe.OfflineUnlockAccounts() };
+});
 app.MapPost("/pc/login", (HttpContext c, LoginBody b) => { var pc = Pc(c); var st = cafe.PcLogin(pc, b.Phone, b.Pin); Log($"{pc} login session {st.Session}"); return st; }).RequireRateLimiting("login");
 app.MapPost("/pc/selflock", (HttpContext c) => cafe.PcSelfLock(Pc(c)));
 app.MapPost("/pc/logout", (HttpContext c, long? ago) => { var pc = Pc(c); var bill = cafe.PcLogout(pc, ago ?? 0); Log($"{pc} logout session {bill.SessionId} used {bill.Used} (sent {ago ?? 0}s late)"); return bill; });
