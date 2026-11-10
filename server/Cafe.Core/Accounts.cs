@@ -78,11 +78,45 @@ public sealed partial class CafeCore
         return recovery;
     });
 
-    /// Only enrolled owner and staff accounts are shared with a PC authenticated by its own device token.
+    /// Each account has a second authenticator dedicated to offline unlock, separate from counter login.
+    public string StartOfflineUnlockFor(long owner, string phone) => Tx(() =>
+    {
+        RequireOwner(owner);
+        _ = Scalar<long?>("SELECT id FROM users WHERE phone = @p0 AND role IN (@p1, @p2) AND totp IS NOT NULL",
+            phone, (int)Role.Owner, (int)Role.Staff)
+            ?? throw new CafeException("Turn on counter two-step before setting up offline unlock.");
+        return NewTwoStepSecret();
+    });
+
+    public void TurnOnOfflineUnlockFor(long owner, string phone, string secret, string code) => Tx(() =>
+    {
+        RequireOwner(owner);
+        using var r = Query("SELECT id, totp FROM users WHERE phone = @p0 AND role IN (@p1, @p2) AND totp IS NOT NULL",
+            phone, (int)Role.Owner, (int)Role.Staff);
+        if (!r.Read() || r.IsDBNull(1)) throw new CafeException("Turn on counter two-step before setting up offline unlock.");
+        var user = r.GetInt64(0);
+        r.Close();
+        var key = FromBase32(secret);
+        if (key.Length < 10 || TotpStep(key, code) is null)
+            throw new CafeException("That offline unlock code does not match. Type the 6 digits the app shows now.");
+        if (Scalar<long?>("SELECT id FROM users WHERE totp = @p0", key) is not null)
+            throw new CafeException("Offline unlock must use a different authenticator from every counter two-step account.");
+        if (Scalar<long?>("SELECT id FROM users WHERE offline_totp = @p0 AND id <> @p1", key, user) is not null)
+            throw new CafeException("Each account must have its own offline unlock authenticator.");
+        Exec("UPDATE users SET offline_totp = @p0 WHERE id = @p1", key, user);
+        Audit(owner, "offline_unlock_on", $"user {user}");
+    });
+
+    /// PCs receive only the dedicated offline-unlock secret, never the counter-login secret.
     public List<OfflineUnlockAccount> OfflineUnlockAccounts() => Tx(() =>
     {
-        using var r = Query("SELECT phone, totp, coalesce(totp_step, -1) FROM users WHERE role IN (@p0, @p1) AND totp IS NOT NULL ORDER BY id",
-            (int)Role.Owner, (int)Role.Staff);
+        using var r = Query("""
+            SELECT u.phone, u.offline_totp,
+                coalesce((SELECT max(s.step) FROM offline_sales s WHERE s.staff_id = u.id), -1)
+            FROM users u
+            WHERE u.role IN (@p0, @p1) AND u.offline_totp IS NOT NULL
+            ORDER BY u.id
+            """, (int)Role.Owner, (int)Role.Staff);
         var accounts = new List<OfflineUnlockAccount>();
         while (r.Read()) accounts.Add(new OfflineUnlockAccount(r.GetString(0), Base32((byte[])r[1]), r.GetInt64(2)));
         return accounts;

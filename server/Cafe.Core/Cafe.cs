@@ -79,7 +79,7 @@ public sealed partial class CafeCore : IDisposable
         _db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Password = key, Pooling = false }.ToString());
         _db.Open();
         // schema version: a newer program adds its changes as version 2, 3... and never reads a newer database by mistake
-        const int SchemaVersion = 4; // 2: owner two-step login; 3: time-expiry setting; 4: idempotent offline sales
+        const int SchemaVersion = 5; // 2: owner two-step login; 3: time-expiry setting; 4: offline sales; 5: separate offline secrets and per-person replay
         if (Scalar<long>("PRAGMA user_version") > SchemaVersion) { _db.Dispose(); throw new CafeException("The cafe data comes from a newer version of this program. Install the newer version."); }
         Exec("""
             PRAGMA foreign_keys = ON;
@@ -109,8 +109,10 @@ public sealed partial class CafeCore : IDisposable
             CREATE INDEX IF NOT EXISTS ledger_user ON ledger(user_id, kind);
             CREATE INDEX IF NOT EXISTS sessions_open ON sessions(pc) WHERE ended IS NULL;
             """);
-        if (Scalar<long>("PRAGMA user_version") < 2) // totp: the app's secret; totp_step: last code used (no replay); recovery: hash of the printed code
+        if (Scalar<long>("PRAGMA user_version") < 2) // counter two-step secret, last counter-login step and recovery hash
             Exec("ALTER TABLE users ADD COLUMN totp BLOB; ALTER TABLE users ADD COLUMN totp_step INTEGER; ALTER TABLE users ADD COLUMN recovery BLOB;");
+        if (Scalar<long>("PRAGMA user_version") < 5)
+            Exec("ALTER TABLE users ADD COLUMN offline_totp BLOB; CREATE UNIQUE INDEX IF NOT EXISTS offline_sales_person_step ON offline_sales(staff_id, step);");
         Exec($"PRAGMA user_version = {SchemaVersion}");
         _ready = true;
     }
@@ -486,16 +488,18 @@ public sealed partial class CafeCore : IDisposable
         if (sale.Minutes < Rate.MinimumMin || sale.Minutes % Math.Max(1, Rate.BlockMin) != 0)
             throw new CafeException($"Minutes must be a {Rate.BlockMin}-minute block from the rate card.");
         CashOrUpi(sale.Method, sale.UpiLast4);
-        using var r = Query("SELECT id, totp, totp_step FROM users WHERE phone = @p0 AND role IN (@p1, @p2)", sale.Phone, (int)Role.Owner, (int)Role.Staff);
-        if (!r.Read() || r.IsDBNull(1)) throw new CafeException("This account has not turned on two-step.");
+        using var r = Query("SELECT id, offline_totp FROM users WHERE phone = @p0 AND role IN (@p1, @p2)", sale.Phone, (int)Role.Owner, (int)Role.Staff);
+        if (!r.Read() || r.IsDBNull(1)) throw new CafeException("This account has not set up offline unlock.");
         var staff = r.GetInt64(0);
         var key = (byte[])r[1];
-        var lastStep = r.IsDBNull(2) ? -1 : r.GetInt64(2);
         r.Close();
-        if (sale.Step <= lastStep || sale.Step > new DateTimeOffset(_now()).ToUnixTimeSeconds() / 30 + 1
-            || sale.Code.Length != 6 || !sale.Code.All(char.IsAsciiDigit)
+        var nowStep = new DateTimeOffset(_now()).ToUnixTimeSeconds() / 30;
+        if (sale.Step < nowStep - 7 * 24 * 60 * 60 / 30 || sale.Step > nowStep + 1
+            || string.IsNullOrEmpty(sale.Code) || sale.Code.Length != 6 || !sale.Code.All(char.IsAsciiDigit)
             || !CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(Totp(key, sale.Step)), Encoding.ASCII.GetBytes(sale.Code)))
-            throw new CafeException("That authenticator code was already used or does not match.");
+            throw new CafeException("That offline authenticator code does not match or is outside the 7-day window.");
+        if (Scalar<long?>("SELECT 1 FROM offline_sales WHERE staff_id = @p0 AND step = @p1", staff, sale.Step) is not null)
+            throw new CafeException("That offline authenticator step was already used for a sale.");
 
         long session;
         long user;
@@ -551,7 +555,6 @@ public sealed partial class CafeCore : IDisposable
         var amount = Price(sale.Minutes);
         Ledger(staff, "charge", amount, session: session, user: user, reference: $"offline sale {sale.SaleId} {sale.Minutes} min");
         Ledger(staff, "pay", amount, session: session, user: user, method: sale.Method, reference: sale.UpiLast4);
-        Exec("UPDATE users SET totp_step = @p0, fails = 0, locked_until = NULL WHERE id = @p1 AND (totp_step IS NULL OR totp_step < @p0)", sale.Step, staff);
         Exec("UPDATE pcs SET locked = 0, self_locked = 0, message = NULL WHERE name = @p0", pc);
         Exec("INSERT INTO offline_sales(pc, sale_id, session_id, staff_id, step, created) VALUES(@p0, @p1, @p2, @p3, @p4, @p5)", pc, sale.SaleId, session, staff, sale.Step, Iso(_now()));
         Audit(staff, "offline sale", $"PC {pc}, session {session}, {sale.Minutes} min, {sale.Method}");

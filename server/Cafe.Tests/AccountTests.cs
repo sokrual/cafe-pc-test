@@ -21,7 +21,9 @@ public sealed class AccountTests : IDisposable
     // Windows sometimes holds the file a moment longer; a leftover temp file is harmless, a failed test here is not
     public void Dispose() { _cafe.Dispose(); SqliteConnection.ClearAllPools(); try { File.Delete(_file); } catch (IOException) { } }
 
-    string AppCode(string secret) => CafeCore.Totp(CafeCore.FromBase32(secret), new DateTimeOffset(_clock).ToUnixTimeSeconds() / 30);
+    long CurrentStep => new DateTimeOffset(_clock).ToUnixTimeSeconds() / 30;
+    string AppCode(string secret) => AppCode(secret, CurrentStep);
+    string AppCode(string secret, long step) => CafeCore.Totp(CafeCore.FromBase32(secret), step);
 
     [Fact]
     public void Codes_match_the_published_test_values()
@@ -55,22 +57,38 @@ public sealed class AccountTests : IDisposable
     }
 
     [Fact]
-    public void Owner_can_enroll_staff_two_step_and_staff_login_requires_a_fresh_code()
+    public void Owner_can_enroll_separate_counter_and_offline_authenticators_for_owner_and_staff()
     {
-        var secret = _cafe.StartTwoStepFor(_owner, "9000000002");
-        Assert.Equal(32, secret.Length);
-        var recovery = _cafe.TurnOnTwoStepFor(_owner, "9000000002", secret, AppCode(secret));
+        var ownerCounter = CafeCore.NewTwoStepSecret();
+        _cafe.TurnOnTwoStep(_owner, ownerCounter, AppCode(ownerCounter));
+        var ownerOffline = _cafe.StartOfflineUnlockFor(_owner, "9000000001");
+        Assert.NotEqual(ownerCounter, ownerOffline);
+        Assert.Throws<CafeException>(() => _cafe.TurnOnOfflineUnlockFor(_owner, "9000000001", ownerCounter, AppCode(ownerCounter)));
+        _cafe.TurnOnOfflineUnlockFor(_owner, "9000000001", ownerOffline, AppCode(ownerOffline));
+
+        var staffCounter = _cafe.StartTwoStepFor(_owner, "9000000002");
+        Assert.Equal(32, staffCounter.Length);
+        var recovery = _cafe.TurnOnTwoStepFor(_owner, "9000000002", staffCounter, AppCode(staffCounter));
         Assert.Equal(16, recovery.Length);
+        var staffOffline = _cafe.StartOfflineUnlockFor(_owner, "9000000002");
+        Assert.NotEqual(staffCounter, staffOffline);
+        Assert.Throws<CafeException>(() => _cafe.TurnOnOfflineUnlockFor(_owner, "9000000002", staffCounter, AppCode(staffCounter)));
+        Assert.Throws<CafeException>(() => _cafe.TurnOnOfflineUnlockFor(_owner, "9000000002", ownerOffline, AppCode(ownerOffline)));
+        _cafe.TurnOnOfflineUnlockFor(_owner, "9000000002", staffOffline, AppCode(staffOffline));
+
         Assert.Throws<CafeException>(() => _cafe.StaffLogin("9000000002", "111111"));
         _clock = _clock.AddSeconds(30);
-        var code = AppCode(secret);
+        var code = AppCode(staffCounter);
         Assert.Equal(_staff, _cafe.StaffLogin("9000000002", "111111", code));
         Assert.Throws<CafeException>(() => _cafe.StaffLogin("9000000002", "111111", code));
         Assert.Throws<CafeException>(() => _cafe.StartTwoStepFor(_staff, "9000000002"));
-        Assert.Throws<CafeException>(() => _cafe.TurnOnTwoStepFor(_staff, "9000000002", secret, code));
-        Assert.Throws<CafeException>(() => _cafe.StartTwoStepFor(_owner, "9000000003"));
+        Assert.Throws<CafeException>(() => _cafe.TurnOnTwoStepFor(_staff, "9000000002", staffCounter, code));
+        Assert.Throws<CafeException>(() => _cafe.StartOfflineUnlockFor(_owner, "9000000003"));
+
         var cached = _cafe.OfflineUnlockAccounts();
-        Assert.Contains(cached, x => x.Phone == "9000000002" && x.Secret == secret);
+        Assert.Contains(cached, x => x.Phone == "9000000001" && x.Secret == ownerOffline);
+        Assert.Contains(cached, x => x.Phone == "9000000002" && x.Secret == staffOffline);
+        Assert.DoesNotContain(cached, x => x.Secret == ownerCounter || x.Secret == staffCounter);
         Assert.DoesNotContain(cached, x => x.Phone == "9000000003");
     }
 
@@ -79,11 +97,13 @@ public sealed class AccountTests : IDisposable
     {
         _cafe.AddPc(_owner, "PC1");
         _cafe.AddPc(_owner, "PC2");
-        var secret = _cafe.StartTwoStepFor(_owner, "9000000002");
-        _cafe.TurnOnTwoStepFor(_owner, "9000000002", secret, AppCode(secret));
+        var counterSecret = _cafe.StartTwoStepFor(_owner, "9000000002");
+        _cafe.TurnOnTwoStepFor(_owner, "9000000002", counterSecret, AppCode(counterSecret));
+        var offlineSecret = _cafe.StartOfflineUnlockFor(_owner, "9000000002");
+        _cafe.TurnOnOfflineUnlockFor(_owner, "9000000002", offlineSecret, AppCode(offlineSecret));
         _clock = _clock.AddSeconds(30);
-        var step = new DateTimeOffset(_clock).ToUnixTimeSeconds() / 30;
-        var code = AppCode(secret);
+        var step = CurrentStep;
+        var code = AppCode(offlineSecret, step);
         var active = _cafe.StartPrepaid(_staff, "PC1", _cust, 30);
         var saleId = Guid.NewGuid().ToString("N");
         var sale = new OfflineSaleRequest(saleId, "9000000002", code, step, 30, "cash", null, active);
@@ -97,7 +117,7 @@ public sealed class AccountTests : IDisposable
         _clock = _clock.AddSeconds(30);
         var walkInStep = new DateTimeOffset(_clock).ToUnixTimeSeconds() / 30;
         var walkInSale = new OfflineSaleRequest(Guid.NewGuid().ToString("N"),
-            "9000000002", AppCode(secret), walkInStep, 60, "upi", "1234", null);
+            "9000000002", AppCode(offlineSecret, walkInStep), walkInStep, 60, "upi", "1234", null);
         Assert.Throws<CafeException>(() => _cafe.ProcessOfflineSale("PC2", walkInSale with { UpiLast4 = null }));
         var walkIn = _cafe.ProcessOfflineSale("PC2", walkInSale);
         Assert.Equal(walkIn, _cafe.StateOf("PC2").Session);
@@ -105,7 +125,7 @@ public sealed class AccountTests : IDisposable
         _clock = _clock.AddSeconds(30);
         var extensionStep = new DateTimeOffset(_clock).ToUnixTimeSeconds() / 30;
         var extended = _cafe.ProcessOfflineSale("PC2", new OfflineSaleRequest(Guid.NewGuid().ToString("N"),
-            "9000000002", AppCode(secret), extensionStep, 30, "cash", null, -1));
+            "9000000002", AppCode(offlineSecret, extensionStep), extensionStep, 30, "cash", null, -1));
         Assert.Equal(walkIn, extended);
         Assert.Equal(10000, _cafe.BillFor(walkIn).Paid);
         using var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = _file, Password = "test-key-123", Pooling = false }.ToString());
@@ -117,6 +137,80 @@ public sealed class AccountTests : IDisposable
         Assert.True(rows.Read()); Assert.Contains("PC2", rows.GetString(1));
         Assert.True(rows.Read()); Assert.Contains("PC2", rows.GetString(1));
         Assert.False(rows.Read());
+    }
+
+
+    [Fact]
+    public void Offline_sales_ignore_counter_login_order_and_are_unique_per_person_and_step_across_PCs()
+    {
+        _cafe.AddPc(_owner, "PC1");
+        _cafe.AddPc(_owner, "PC2");
+        var counterSecret = _cafe.StartTwoStepFor(_owner, "9000000002");
+        _cafe.TurnOnTwoStepFor(_owner, "9000000002", counterSecret, AppCode(counterSecret));
+        var offlineSecret = _cafe.StartOfflineUnlockFor(_owner, "9000000002");
+        _cafe.TurnOnOfflineUnlockFor(_owner, "9000000002", offlineSecret, AppCode(offlineSecret));
+
+        var oldStep = CurrentStep;
+        _clock = _clock.AddSeconds(30);
+        var laterLoginStep = CurrentStep;
+        Assert.Equal(_staff, _cafe.StaffLogin("9000000002", "111111", AppCode(counterSecret, laterLoginStep)));
+        var olderSale = new OfflineSaleRequest(Guid.NewGuid().ToString("N"), "9000000002",
+            AppCode(offlineSecret, oldStep), oldStep, 30, "cash", null, null);
+        var firstSession = _cafe.ProcessOfflineSale("PC1", olderSale);
+        Assert.Equal(firstSession, _cafe.StateOf("PC1").Session);
+
+        _clock = _clock.AddSeconds(30);
+        var sameStep = CurrentStep;
+        var sameStepSale = new OfflineSaleRequest(Guid.NewGuid().ToString("N"), "9000000002",
+            AppCode(offlineSecret, sameStep), sameStep, 30, "cash", null, -1);
+        _cafe.ProcessOfflineSale("PC1", sameStepSale);
+        // An offline sale must not consume the separate counter-login step.
+        Assert.Equal(_staff, _cafe.StaffLogin("9000000002", "111111", AppCode(counterSecret, sameStep)));
+
+        _clock = _clock.AddSeconds(30);
+        var earlierPcStep = CurrentStep;
+        var saleFromPc1 = new OfflineSaleRequest(Guid.NewGuid().ToString("N"), "9000000002",
+            AppCode(offlineSecret, earlierPcStep), earlierPcStep, 30, "cash", null, -1);
+        _clock = _clock.AddSeconds(30);
+        var laterPcStep = CurrentStep;
+        var saleFromPc2 = new OfflineSaleRequest(Guid.NewGuid().ToString("N"), "9000000002",
+            AppCode(offlineSecret, laterPcStep), laterPcStep, 30, "cash", null, null);
+
+        var secondSession = _cafe.ProcessOfflineSale("PC2", saleFromPc2);
+        var thirdSession = _cafe.ProcessOfflineSale("PC1", saleFromPc1);
+        Assert.Equal(secondSession, _cafe.StateOf("PC2").Session);
+        Assert.Equal(firstSession, thirdSession);
+
+        var reusedStep = saleFromPc2 with { SaleId = Guid.NewGuid().ToString("N"), Session = -1 };
+        Assert.Throws<CafeException>(() => _cafe.ProcessOfflineSale("PC1", reusedStep));
+    }
+
+    [Fact]
+    public void Offline_sales_reject_codes_more_than_seven_days_old_or_two_steps_in_the_future()
+    {
+        _cafe.AddPc(_owner, "PC1");
+        var counterSecret = _cafe.StartTwoStepFor(_owner, "9000000002");
+        _cafe.TurnOnTwoStepFor(_owner, "9000000002", counterSecret, AppCode(counterSecret));
+        var offlineSecret = _cafe.StartOfflineUnlockFor(_owner, "9000000002");
+        _cafe.TurnOnOfflineUnlockFor(_owner, "9000000002", offlineSecret, AppCode(offlineSecret));
+        var nowStep = CurrentStep;
+        var oldestValidStep = nowStep - 7 * 24 * 60 * 60 / 30;
+        var oldestValid = new OfflineSaleRequest(Guid.NewGuid().ToString("N"), "9000000002",
+            AppCode(offlineSecret, oldestValidStep), oldestValidStep, 30, "cash", null, null);
+        var session = _cafe.ProcessOfflineSale("PC1", oldestValid);
+        var oneAheadStep = nowStep + 1;
+        var oneAhead = new OfflineSaleRequest(Guid.NewGuid().ToString("N"), "9000000002",
+            AppCode(offlineSecret, oneAheadStep), oneAheadStep, 30, "cash", null, -1);
+        _cafe.ProcessOfflineSale("PC1", oneAhead);
+
+        var tooOldStep = nowStep - 7 * 24 * 60 * 60 / 30 - 1;
+        var tooOld = new OfflineSaleRequest(Guid.NewGuid().ToString("N"), "9000000002",
+            AppCode(offlineSecret, tooOldStep), tooOldStep, 30, "cash", null, -1);
+        Assert.Throws<CafeException>(() => _cafe.ProcessOfflineSale("PC1", tooOld));
+        var futureStep = nowStep + 2;
+        var tooFarAhead = new OfflineSaleRequest(Guid.NewGuid().ToString("N"), "9000000002",
+            AppCode(offlineSecret, futureStep), futureStep, 30, "cash", null, -1);
+        Assert.Throws<CafeException>(() => _cafe.ProcessOfflineSale("PC1", tooFarAhead));
     }
 
     [Fact]

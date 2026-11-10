@@ -1,6 +1,7 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text.Json;
 using System.Threading.RateLimiting;
 using Cafe;
 
@@ -13,7 +14,7 @@ AdminsOnly(data);
 void Log(string line) { lock (data) File.AppendAllText(Path.Combine(data, "logs", $"server-{DateTime.Now:yyyyMMdd}.log"), $"{DateTime.Now:HH:mm:ss} {line}{Environment.NewLine}"); }
 
 using var cafe = new CafeCore(Path.Combine(data, "cafe.db"), DbKey(data), log: Log);
-if (args.Contains("--seed-test")) Seed(cafe, data, args.Contains("--seed-offline-lock"));
+if (args.Contains("--seed-test")) Seed(cafe, data, args.Contains("--seed-offline-lock"), args.Contains("--seed-offline-secret-test"));
 var cert = Cert(data);
 
 var builder = WebApplication.CreateBuilder();
@@ -115,6 +116,16 @@ app.MapPost("/staff/two-step/staff/start", (HttpContext c, PhoneBody b) =>
 });
 app.MapPost("/staff/two-step/staff/on", (HttpContext c, StaffTwoStepBody b) =>
     new { recovery = cafe.TurnOnTwoStepFor(Owner(c), b.Phone, b.Secret, b.Code) });
+app.MapPost("/staff/two-step/offline/start", (HttpContext c, PhoneBody b) =>
+{
+    var secret = cafe.StartOfflineUnlockFor(Owner(c), b.Phone);
+    return new { secret, uri = $"otpauth://totp/Shinzx%20Cafe%20Offline?secret={secret}&issuer=Shinzx%20Cafe%20Offline" };
+});
+app.MapPost("/staff/two-step/offline/on", (HttpContext c, StaffTwoStepBody b) =>
+{
+    cafe.TurnOnOfflineUnlockFor(Owner(c), b.Phone, b.Secret, b.Code);
+    return Results.Ok();
+});
 app.MapPost("/staff/lock", (HttpContext c, PcBody b) => { cafe.Lock(Staff(c), b.Pc, b.Message); return cafe.StateOf(b.Pc); });
 app.MapPost("/staff/unlock", (HttpContext c, PcBody b) => { cafe.Unlock(Staff(c), b.Pc); return cafe.StateOf(b.Pc); });
 app.MapGet("/staff/state/{pc}", (HttpContext c, string pc) => { Staff(c); return cafe.StateOf(pc); });
@@ -176,13 +187,27 @@ static X509Certificate2 Cert(string data)
     return cert;
 }
 
-static void Seed(CafeCore cafe, string data, bool offlineLockTest)
+static void Seed(CafeCore cafe, string data, bool offlineLockTest, bool offlineSecretTest)
 {
     if (File.Exists(Path.Combine(data, "pc1.token"))) return; // already seeded
     var owner = cafe.AddUser(null, Role.Owner, "Owner", "9000000001", "432100");
     var staff = cafe.AddUser(owner, Role.Staff, "Staff", "9000000002", "111111");
     var customer = cafe.AddUser(staff, Role.Customer, "Test Customer", "9000000003", "2222");
     if (offlineLockTest) cafe.BuyPlan(staff, customer, 1, 7, 0, "cash");
+    if (offlineSecretTest)
+    {
+        var ownerCounter = CafeCore.NewTwoStepSecret();
+        var ownerOffline = CafeCore.NewTwoStepSecret();
+        var staffCounter = CafeCore.NewTwoStepSecret();
+        var staffOffline = CafeCore.NewTwoStepSecret();
+        var step = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30;
+        cafe.TurnOnTwoStepFor(owner, "9000000001", ownerCounter, CafeCore.Totp(CafeCore.FromBase32(ownerCounter), step));
+        cafe.TurnOnOfflineUnlockFor(owner, "9000000001", ownerOffline, CafeCore.Totp(CafeCore.FromBase32(ownerOffline), step));
+        cafe.TurnOnTwoStepFor(owner, "9000000002", staffCounter, CafeCore.Totp(CafeCore.FromBase32(staffCounter), step));
+        cafe.TurnOnOfflineUnlockFor(owner, "9000000002", staffOffline, CafeCore.Totp(CafeCore.FromBase32(staffOffline), step));
+        File.WriteAllText(Path.Combine(data, "offline-secret-fixture.json"),
+            JsonSerializer.Serialize(new { ownerCounter, ownerOffline, staffCounter, staffOffline }));
+    }
     File.WriteAllText(Path.Combine(data, "pc1.token"), cafe.AddPc(owner, "PC1"));
 }
 

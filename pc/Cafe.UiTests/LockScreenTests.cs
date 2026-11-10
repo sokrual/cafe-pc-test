@@ -566,7 +566,20 @@ sealed class Rig : IDisposable
         confirm.Headers.Authorization = new("Bearer", token);
         using var enabled = await _http.SendAsync(confirm);
         enabled.EnsureSuccessStatusCode();
-        return secret;
+
+        using var offlineStart = new HttpRequestMessage(HttpMethod.Post, "/staff/two-step/offline/start")
+        { Content = JsonContent.Create(new { phone = "9000000002" }) };
+        offlineStart.Headers.Authorization = new("Bearer", token);
+        using var offlineStarted = await _http.SendAsync(offlineStart);
+        offlineStarted.EnsureSuccessStatusCode();
+        var offlineSecret = (await offlineStarted.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["secret"];
+        Assert.NotEqual(secret, offlineSecret);
+        using var offlineConfirm = new HttpRequestMessage(HttpMethod.Post, "/staff/two-step/offline/on")
+        { Content = JsonContent.Create(new { phone = "9000000002", secret = offlineSecret, code = AppCode(offlineSecret) }) };
+        offlineConfirm.Headers.Authorization = new("Bearer", token);
+        using var offlineEnabled = await _http.SendAsync(offlineConfirm);
+        offlineEnabled.EnsureSuccessStatusCode();
+        return offlineSecret;
     }
     public static string AppCode(string secret)
     {

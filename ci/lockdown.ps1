@@ -11,6 +11,33 @@ function Check($id, $test, $ok, $detail) {
     Write-Host "[$res] $id $test - $detail"
 }
 function WaitFor($seconds, $test) { for ($i = 0; $i -lt $seconds * 2; $i++) { if (& $test) { return $true }; Start-Sleep -Milliseconds 500 }; $false }
+if (-not ("CafeDpapiProbe" -as [type])) {
+    Add-Type @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class CafeDpapiProbe {
+    [StructLayout(LayoutKind.Sequential)] struct DataBlob { public int Length; public IntPtr Data; }
+    [DllImport("crypt32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern bool CryptUnprotectData(ref DataBlob input, out IntPtr description, IntPtr entropy, IntPtr reserved,
+        IntPtr prompt, uint flags, out DataBlob output);
+    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
+    public static byte[] Unprotect(byte[] protectedBytes) {
+        var handle = GCHandle.Alloc(protectedBytes, GCHandleType.Pinned);
+        try {
+            var input = new DataBlob { Length = protectedBytes.Length, Data = handle.AddrOfPinnedObject() };
+            IntPtr description;
+            DataBlob output;
+            if (!CryptUnprotectData(ref input, out description, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0, out output))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (description != IntPtr.Zero) LocalFree(description);
+            try { var clear = new byte[output.Length]; Marshal.Copy(output.Data, clear, 0, clear.Length); return clear; }
+            finally { LocalFree(output.Data); }
+        } finally { handle.Free(); }
+    }
+}
+'@
+}
 function AsCustomer($exe, $argList) { # start a program as Customer (password read from where auto sign-in keeps it)
     $pw = New-Object Security.SecureString; foreach ($c in ([Shinzx.Lsa]::Read("DefaultPassword")).ToCharArray()) { $pw.AppendChar($c) }
     $cred = [pscredential]::new("Customer", $pw)
@@ -105,7 +132,7 @@ try {
 
     # ===== B. test server with test users =====
     $tdata = "C:\cafe-test"
-    $server = Start-Process "$out\server\Cafe.Server.exe" -ArgumentList "--data $tdata --seed-test" -PassThru -WindowStyle Hidden
+    $server = Start-Process "$out\server\Cafe.Server.exe" -ArgumentList "--data $tdata --seed-test --seed-offline-secret-test" -PassThru -WindowStyle Hidden
     if (-not (WaitFor 30 { (Test-Path "$tdata\pc1.token") -and (Test-Path "$tdata\server.pin") })) { throw "test server did not start" }
     $token = (Get-Content "$tdata\pc1.token" -Raw).Trim()
     function Pc($path, $body) { Invoke-RestMethod "https://127.0.0.1:5443$path" -Method Post -Headers @{ "X-Pc-Token" = $token } -ContentType "application/json" -Body ($body | ConvertTo-Json) }
@@ -134,6 +161,16 @@ try {
     for ($i = 0; $i -lt 30 -and -not (Test-Path $offlineCache); $i++) { Start-Sleep -Seconds 1 }
     $offlineCacheRead = CustomerPs "try { [IO.File]::ReadAllBytes('$offlineCache') | Out-Null; exit 0 } catch { exit 1 }"
     Check "B3.C4c" "Customer cannot read the machine-encrypted offline authenticator cache" ((Test-Path $offlineCache) -and $offlineCacheRead -ne 0) "cache exists $((Test-Path $offlineCache)); customer read exit $offlineCacheRead"
+    $fixture = Get-Content "$tdata\offline-secret-fixture.json" -Raw | ConvertFrom-Json
+    $clearOffline = [CafeDpapiProbe]::Unprotect([IO.File]::ReadAllBytes($offlineCache))
+    $offlineState = [Text.Encoding]::UTF8.GetString($clearOffline) | ConvertFrom-Json
+    $cachedSecrets = @($offlineState.Accounts | ForEach-Object { $_.Secret })
+    $expectedOffline = @($fixture.ownerOffline, $fixture.staffOffline)
+    $counterSecrets = @($fixture.ownerCounter, $fixture.staffCounter)
+    $offlineOnly = ($cachedSecrets.Count -eq 2) -and
+        (@($cachedSecrets | Where-Object { $_ -notin $expectedOffline -or $_ -in $counterSecrets }).Count -eq 0) -and
+        (@($expectedOffline | Where-Object { $_ -notin $cachedSecrets }).Count -eq 0)
+    Check "B3.C4d" "Offline cache contains only separate offline-unlock secrets, never counter two-step secrets" $offlineOnly "cached $($cachedSecrets.Count) offline secrets; counter secrets excluded"
     Start-Sleep -Seconds 5
     Check "B3.C5" "Setup mode: no lock screen yet" ((Test-Path "$app\setup.flag") -and -not (Get-Process Cafe.Agent -ErrorAction SilentlyContinue)) "setup.flag present"
     $other = try { Resolve-DnsName example.com -Server 8.8.8.8 -DnsOnly -QuickTimeout -ErrorAction Stop | Out-Null; "answered" } catch { "blocked" }

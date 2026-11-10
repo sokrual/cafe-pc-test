@@ -20,6 +20,7 @@ sealed class OfflineUnlockStore
     sealed class State
     {
         public State() { }
+        public int Version { get; set; } = 2;
         public OfflineUnlockRate? Rate { get; set; }
         public List<OfflineUnlockAccount> Accounts { get; set; } = [];
         public Dictionary<string, long> UsedSteps { get; set; } = new(StringComparer.Ordinal);
@@ -39,7 +40,17 @@ sealed class OfflineUnlockStore
         if (!File.Exists(_path)) return new State();
         var protectedBytes = File.ReadAllBytes(_path);
         var clear = Unprotect(protectedBytes);
-        return JsonSerializer.Deserialize<State>(clear, Json) ?? throw new InvalidDataException("offline unlock cache is empty");
+        using var document = JsonDocument.Parse(clear);
+        var state = JsonSerializer.Deserialize<State>(clear, Json) ?? throw new InvalidDataException("offline unlock cache is empty");
+        if (!document.RootElement.TryGetProperty(nameof(State.Version), out var version) || version.GetInt32() < 2)
+        {
+            // Previous releases cached the counter-login secret. Never use it for offline unlock after this upgrade.
+            state.Accounts = [];
+            state.UsedSteps.Clear();
+            state.Version = 2;
+            Write(state);
+        }
+        return state;
     }
 
     void Write(State state)
@@ -60,8 +71,12 @@ sealed class OfflineUnlockStore
             var state = Read();
             state.Rate = data.Rate;
             state.Accounts = data.Accounts ?? [];
+            // The cache-version migration clears old counter-login steps. Preserve every locally consumed
+            // offline step, including refused sales, and merge the server's reconciled offline-sale steps.
             foreach (var account in state.Accounts)
                 state.UsedSteps[account.Phone] = Math.Max(state.UsedSteps.GetValueOrDefault(account.Phone, -1), account.LastStep);
+            foreach (var sale in state.Pending)
+                state.UsedSteps[sale.Phone] = Math.Max(state.UsedSteps.GetValueOrDefault(sale.Phone, -1), sale.Step);
             Write(state);
         }
     }
