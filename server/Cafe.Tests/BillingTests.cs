@@ -66,13 +66,13 @@ public sealed class BillingTests : IDisposable
         _cafe.SetLockWhenTimeRunsOut(_owner, true);
         var started = _cafe.PcLogin("PC1", "9000000003", "2222");
         var session = started.Session!.Value;
-        Wait(31); // no PC status checks: it is offline
+        Wait(36); // no PC status checks: it is offline
 
         _cafe.EnforceTimeLimits(); // the counter server ends it without a PC request
         Assert.Null(_cafe.StateOf("PC1").Session); // on reconnect, the PC receives the lock screen state
         Assert.True(_cafe.StateOf("PC1").Locked);
-        Assert.Equal(TimeSpan.FromMinutes(31), _cafe.BillFor(session).Used);
-        Assert.Equal(0, _cafe.BillFor(session).Charged); // plan time is billed through the normal stop path
+        Assert.Equal(TimeSpan.FromMinutes(36), _cafe.BillFor(session).Used);
+        Assert.Equal(3000, _cafe.BillFor(session).Charged); // six minutes past the plan: one normal overtime block
     }
 
     [Fact] public void T2_1_inside_grace_is_free() => Assert.Equal(0, PlayFor(1));
