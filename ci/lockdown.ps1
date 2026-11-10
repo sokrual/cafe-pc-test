@@ -70,7 +70,7 @@ try {
     # ===== B. test server with test users =====
     $tdata = "C:\cafe-test"
     $server = Start-Process "$out\server\Cafe.Server.exe" -ArgumentList "--data $tdata --seed-test" -PassThru -WindowStyle Hidden
-    if (-not (WaitFor 30 { Test-Path "$tdata\pc1.token" })) { throw "test server did not start" }
+    if (-not (WaitFor 30 { (Test-Path "$tdata\pc1.token") -and (Test-Path "$tdata\server.pin") })) { throw "test server did not start" }
     $token = (Get-Content "$tdata\pc1.token" -Raw).Trim()
     function Pc($path, $body) { Invoke-RestMethod "https://127.0.0.1:5443$path" -Method Post -Headers @{ "X-Pc-Token" = $token } -ContentType "application/json" -Body ($body | ConvertTo-Json) }
 
