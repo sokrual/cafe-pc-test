@@ -18,6 +18,7 @@ static class PcProxy
     static Action<string> _log = message => Console.Error.WriteLine(message);
     static int _refusalLogged;
     static OfflineUnlockStore? _offline;
+    static DateTime _lastOfflineRefresh = DateTime.MinValue;
     sealed record Request(string Method, string Path, string? Body);
     sealed record Response(int Status, string Content);
     [StructLayout(LayoutKind.Sequential)]
@@ -282,6 +283,11 @@ static class PcProxy
                 requestTimeout.CancelAfter(TimeSpan.FromSeconds(3));
                 using var response = await (_http ?? throw new InvalidOperationException("PC proxy is not initialized")).SendAsync(message, requestTimeout.Token);
                 var content = await response.Content.ReadAsStringAsync(stop);
+                if (request.Method == "GET" && request.Path == "/pc/state" && DateTime.UtcNow - _lastOfflineRefresh > TimeSpan.FromSeconds(5))
+                {
+                    _lastOfflineRefresh = DateTime.UtcNow;
+                    _ = Task.Run(RefreshOfflineUnlockData);
+                }
                 await writer.WriteLineAsync(JsonSerializer.Serialize(new Response((int)response.StatusCode, content))).WaitAsync(TimeSpan.FromSeconds(2));
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { }

@@ -17,6 +17,7 @@ sealed class OfflineUnlockStore
 {
     sealed class State
     {
+        public State() { }
         public OfflineUnlockRate? Rate { get; set; }
         public List<OfflineUnlockAccount> Accounts { get; set; } = [];
         public Dictionary<string, long> UsedSteps { get; set; } = new(StringComparer.Ordinal);
