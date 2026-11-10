@@ -29,13 +29,15 @@ static class Wipe
 
     // The request folder is writable by Customer. Replace directories and links with a plain marker file,
     // deleting only the objects themselves and never traversing a reparse point.
-    public static bool PrepareRequest(out int error)
+    public static bool PrepareRequest(out int error, out bool normalized)
     {
         error = 0;
+        normalized = false;
         try
         {
             var attributes = File.GetAttributes(Request);
             if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) == 0) return true;
+            normalized = true;
             RemoveEntryNoFollow(Request);
             using var marker = new FileStream(Request, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
             return true;
