@@ -53,23 +53,18 @@ New-Item $keep -ItemType Directory -Force | Out-Null
 icacls $keep /inheritance:r /grant "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" | Out-Null
 $timeKeys = @("HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters|NtpServer", "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters|Type",
     "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpClient|SpecialPollInterval",
-    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Control Panel\Desktop|ScreenSaveActive",
-    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Control Panel\Desktop|ScreenSaveTimeOut",
-    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Control Panel\Desktop|ScreenSaverIsSecure",
-    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Control Panel\Desktop|SCRNSAVE.EXE")
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System|InactivityTimeoutSecs",
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System|InactivityTimeoutSecs")
 if (-not (Test-Path "$keep\before-install.json")) {
     $before = [ordered]@{}
     foreach ($t in $timeKeys) { $k, $n = $t -split '\|'; $before[$t] = (Get-ItemProperty $k -Name $n -ErrorAction SilentlyContinue).$n }
     $before | ConvertTo-Json | Set-Content "$keep\before-install.json" -Encoding utf8
 }
 
-# --- counter screen: lock after 10 idle minutes and require the Windows sign-in credential ---
-$screenKey = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Control Panel\Desktop"
-New-Item $screenKey -Force | Out-Null
-Set-ItemProperty $screenKey ScreenSaveActive "1"
-Set-ItemProperty $screenKey ScreenSaveTimeOut "600"
-Set-ItemProperty $screenKey ScreenSaverIsSecure "1"
-Set-ItemProperty $screenKey "SCRNSAVE.EXE" "$env:WINDIR\System32\scrnsave.scr"
+# --- counter screen: Windows locks after 10 idle minutes and requires the Windows sign-in credential ---
+$idleKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+New-Item $idleKey -Force | Out-Null
+New-ItemProperty $idleKey InactivityTimeoutSecs -PropertyType DWord -Value 600 -Force | Out-Null
 
 # --- clock: synced every hour with India's official time servers (NIC and NPL), as CERT-In asks; logs need the right time ---
 $w32 = "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time"
