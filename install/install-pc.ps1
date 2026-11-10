@@ -207,7 +207,8 @@ foreach ($m in "Minimal", "Network") { New-Item "HKLM:\SYSTEM\CurrentControlSet\
 
 # --- which step is this? ---
 $profilePath = (Get-CimInstance Win32_UserProfile | Where-Object SID -eq (Get-LocalUser $user).SID.Value).LocalPath   # empty before Customer's first sign-in
-if ($Setup -or (-not (Test-Path "$data\clean-profile") -and -not (Test-Path $flag))) {
+# Older installs have a file baseline but no clean registry-hive snapshot; run the owner's setup again before enabling resets.
+if ($Setup -or (-not (Test-Path $flag) -and (-not (Test-Path "$data\clean-profile") -or -not (Test-Path "$data\clean-profile-hive\NTUSER.DAT")))) {
     New-Item $flag -ItemType File -Force | Out-Null
     Start-Service $svc
     Restart-Now "Step 1 is done.`n`nThe PC restarts now and signs in to the Customer account by itself (no lock screen yet).`nThere: install Discord, add the game shortcuts, set up the mouse, keyboard and headset apps.`nDo NOT sign in to Discord, Steam or any other app.`n`nThen double-click INSTALL-PC again (it asks for the admin password)."
@@ -251,6 +252,23 @@ if (Test-Path $flag) {
             if ($item) { foreach ($n in $item.GetValueNames()) { "$k`t$n`t$($item.GetValue($n, $null, 'DoNotExpandEnvironmentNames'))" } }
         }
         [IO.File]::WriteAllLines("$data\run-keys.txt", [string[]]@($runs))
+        # Save the complete owner registry hive while it is mounted; a full profile reset restores this clean baseline.
+        $hiveSnapshot = "$data\clean-profile-hive"
+        if (Test-Path $hiveSnapshot) { Remove-Item $hiveSnapshot -Recurse -Force }
+        New-Item $hiveSnapshot -ItemType Directory -Force | Out-Null
+        icacls $hiveSnapshot /inheritance:r /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not protect the clean registry hive snapshot." }
+        $hiveName = if ($loaded) { $sid } else { "ShinzxCustomer" }
+        reg.exe save "HKU\$hiveName" "$hiveSnapshot\NTUSER.DAT" /y | Out-Null
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$hiveSnapshot\NTUSER.DAT")) { throw "Could not save the Customer registry hive." }
+        $classSid = "${sid}_Classes"
+        $usrClass = "$profilePath\AppData\Local\Microsoft\Windows\UsrClass.dat"
+        if (Test-Path "Registry::HKEY_USERS\$classSid") {
+            reg.exe save "HKU\$classSid" "$hiveSnapshot\UsrClass.dat" /y | Out-Null
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$hiveSnapshot\UsrClass.dat")) { throw "Could not save the Customer class registry hive." }
+        } elseif (Test-Path $usrClass) {
+            Copy-Item $usrClass "$hiveSnapshot\UsrClass.dat" -Force
+        }
         Remove-Variable item -ErrorAction SilentlyContinue
     } finally {
         if (-not $loaded) { [gc]::Collect(); Start-Sleep -Milliseconds 500; reg.exe unload "HKU\ShinzxCustomer" | Out-Null }

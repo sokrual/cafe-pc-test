@@ -28,7 +28,9 @@ B3  Lockdown and installers                                         BUILT - fina
       #5 owner's login rules: 3 wrong PINs lock 10 min, only the owner resets PINs, counter
          logins last until logout, counter PC locks after 10 idle minutes            DONE (merged)
       #6 PC key held by the SYSTEM watchdog, not readable by the customer account   DONE (merged)
-      #7 full Windows customer account reset between customers (only if under ~1 min)
+      #7 full Windows customer account reset between customers (only if under ~1 min)   DONE (merged;
+         CI time 5-28 s without the Windows sign-out and sign-in; time the full cycle on a cafe PC in Phase 0,
+         and undo the change if it takes over 1 minute there)
       #8 offline lock: the PC locks itself at zero with no connection; owner and staff
          unlock it with their own authenticator codes and add time for a new payment,
          which reaches the money records on reconnect. Also: one failing session must
