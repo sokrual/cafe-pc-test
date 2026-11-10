@@ -27,7 +27,7 @@ B3  Lockdown and installers                                         BUILT - fina
          server says the PC is free, a failed clean-up keeps the PC blocked          DONE (merged)
       #5 owner's login rules: 3 wrong PINs lock 10 min, only the owner resets PINs, counter
          logins last until logout, counter PC locks after 10 idle minutes            DONE (merged)
-      #6 PC key held by the SYSTEM watchdog, not readable by the customer account
+      #6 PC key held by the SYSTEM watchdog, not readable by the customer account   DONE (merged)
       #7 full Windows customer account reset between customers (only if under ~1 min)
       #8 offline lock: the PC locks itself at zero with no connection; owner and staff
          unlock it with their own authenticator codes and add time for a new payment,
