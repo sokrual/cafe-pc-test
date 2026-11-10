@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Input;
@@ -32,7 +33,7 @@ public sealed class LockScreenTests : IDisposable
         {
             Assert.False(File.Exists(note), "a clean-up request was already present before the test");
             Directory.CreateDirectory(wipeDirectory);
-            _agent = Process.Start(new ProcessStartInfo(Rig.Env("CAFE_AGENT_EXE"), _rig.AgentArgs) { UseShellExecute = false })!;
+            _agent = _rig.StartAgent();
             _app = Application.Attach(_agent.Id);
             LogIn("9000000003", "2222");
             Rig.WaitFor(() => Hidden("LockScreen"), 10, "login did not unlock the PC");
@@ -72,7 +73,12 @@ public sealed class LockScreenTests : IDisposable
 
     async Task Scenario()
     {
-        _agent = Process.Start(new ProcessStartInfo(Rig.Env("CAFE_AGENT_EXE"), _rig.AgentArgs) { UseShellExecute = false })!;
+        _agent = _rig.StartAgent();
+        using (var nonAgent = Process.Start(new ProcessStartInfo(Rig.Env("CAFE_WATCHDOG_EXE"), "--test-pipe-probe") { UseShellExecute = false })!)
+        {
+            Assert.True(nonAgent.WaitForExit(5000), "a non-agent pipe client was not refused promptly");
+            Assert.Equal(0, nonAgent.ExitCode); // 1 means it received a response; 0 means the pipe rejected it
+        }
         _app = Application.Attach(_agent.Id);
         var lockWin = Window("LockScreen");
         var desk = _rig.Ui.GetDesktop().BoundingRectangle;
@@ -180,12 +186,50 @@ public sealed class WatchdogTests : IDisposable
     }
 
     [Fact]
+    public void Missing_key_keeps_the_lock_screen_running()
+    {
+        var args = Path.Combine(Path.GetDirectoryName(_exe)!, "watchdog.args");
+        var backup = _rig.TokenFile + ".missing-test-backup";
+        try
+        {
+            Sc("stop CafeWatchdog"); Sc("delete CafeWatchdog");
+            File.WriteAllText(args, $"\"{Rig.Env("CAFE_AGENT_EXE")}\" {_rig.AgentArgs} --pipe-sid {WindowsIdentity.GetCurrent().User!.Value}");
+            foreach (var dir in new[] { Path.GetDirectoryName(_exe)!, Path.GetDirectoryName(Rig.Env("CAFE_AGENT_EXE"))! })
+            {
+                Grant(dir, "/inheritance:r", "/grant:r", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX");
+                Grant(dir, "/remove:g", "*S-1-5-11", "*S-1-1-0", "*S-1-5-4");
+                Grant(Path.Combine(dir, "*"), "/reset", "/T");
+            }
+            File.Move(_rig.TokenFile, backup);
+            Assert.Equal(0, Sc($"create CafeWatchdog binPath= \"{_exe}\" start= demand"));
+            Assert.Equal(0, Sc("start CafeWatchdog"));
+            Process? agent = null;
+            Rig.WaitFor(() => (agent = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault()) is not null, 20,
+                "watchdog did not start Cafe.Agent when the PC token was missing");
+            var app = Application.Attach(agent!.Id);
+            Rig.WaitFor(() => app.GetAllTopLevelWindows(_rig.Ui).Any(w =>
+                w.Properties.AutomationId.ValueOrDefault == "LockScreen" && !w.IsOffscreen),
+                15, "lock screen did not remain visible without the PC token");
+            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ShinzxCafe", "logs");
+            var log = Directory.GetFiles(logs, "watchdog-*").Select(File.ReadAllText).LastOrDefault() ?? "";
+            Assert.Contains("PC pipe proxy start failed", log);
+            Assert.Contains("retrying in 30 seconds", log);
+        }
+        finally
+        {
+            Sc("stop CafeWatchdog"); Thread.Sleep(1000); Sc("delete CafeWatchdog");
+            foreach (var p in Process.GetProcessesByName("Cafe.Agent")) Rig.Kill(p);
+            if (File.Exists(backup)) File.Move(backup, _rig.TokenFile, true);
+        }
+    }
+
+    [Fact]
     public void T1_2_killed_pc_program_is_back_within_5_seconds_and_locked()
     {
         try
         {
             var args = Path.Combine(Path.GetDirectoryName(_exe)!, "watchdog.args");
-            File.WriteAllText(args, $"\"{Rig.Env("CAFE_AGENT_EXE")}\" {_rig.AgentArgs}");
+            File.WriteAllText(args, $"\"{Rig.Env("CAFE_AGENT_EXE")}\" {_rig.AgentArgs} --pipe-sid {WindowsIdentity.GetCurrent().User!.Value}");
             Assert.Equal(0, Sc($"create CafeWatchdog binPath= \"{_exe}\" start= demand"));
             // a careless install (settings file writable by customers): the watchdog must refuse to run anything
             Grant(args, "*S-1-5-32-545:(M)");
@@ -280,10 +324,12 @@ sealed class Rig : IDisposable
     public readonly UIA3Automation Ui = new();
     readonly System.Text.StringBuilder _serverLog = new();
     Process? _server;
+    Process? _watchdogProxy;
     HttpClient _http = null!;
 
     public Rig() => StartServer();
-    public string AgentArgs => $"--server {Url} --token-file \"{Path.Combine(_pcDir, "pc.token")}\" --pin-file \"{Path.Combine(_pcDir, "server.pin")}\" --name \"Test Cafe\" --logs \"{Path.Combine(_pcDir, "logs")}\"";
+    public string TokenFile => Path.Combine(_pcDir, "pc.token");
+    public string AgentArgs => $"--server {Url} --token-file \"{TokenFile}\" --pin-file \"{Path.Combine(_pcDir, "server.pin")}\" --name \"Test Cafe\" --logs \"{Path.Combine(_pcDir, "logs")}\"";
 
     public void StartServer()
     {
@@ -296,11 +342,32 @@ sealed class Rig : IDisposable
         File.Copy(Path.Combine(Data, "pc1.token"), Path.Combine(_pcDir, "pc.token"), true);
         File.Copy(Path.Combine(Data, "server.pin"), Path.Combine(_pcDir, "server.pin"), true);
     }
+    public Process StartAgent()
+    {
+        var sid = WindowsIdentity.GetCurrent().User!.Value;
+        var proxy = new ProcessStartInfo(Env("CAFE_WATCHDOG_EXE")) { UseShellExecute = false };
+        foreach (var a in new[] { "--test-proxy", "--server", Url, "--token-file", Path.Combine(_pcDir, "pc.token"),
+            "--pin-file", Path.Combine(_pcDir, "server.pin"), "--pipe-sid", sid,
+            "--agent-path", Env("CAFE_AGENT_EXE") }) proxy.ArgumentList.Add(a);
+        proxy.RedirectStandardError = true;
+        proxy.RedirectStandardOutput = true;
+        _watchdogProxy = Process.Start(proxy)!;
+        _watchdogProxy.ErrorDataReceived += (_, e) => { if (e.Data is not null) Console.WriteLine("watchdog proxy: " + e.Data); };
+        _watchdogProxy.OutputDataReceived += (_, e) => { if (e.Data is not null) Console.WriteLine("watchdog proxy: " + e.Data); };
+        _watchdogProxy.BeginErrorReadLine();
+        _watchdogProxy.BeginOutputReadLine();
+        Thread.Sleep(500);
+        if (_watchdogProxy.HasExited) throw new InvalidOperationException("watchdog proxy exited with code " + _watchdogProxy.ExitCode);
+        var agent = new ProcessStartInfo(Env("CAFE_AGENT_EXE")) { UseShellExecute = false };
+        foreach (var a in new[] { "--name", "Test Cafe", "--logs", Path.Combine(_pcDir, "logs") }) agent.ArgumentList.Add(a);
+        return Process.Start(agent)!;
+    }
+
     public void StopServer() => Kill(_server);
 
     public void Dispose()
     {
-        Kill(_server); Ui.Dispose(); _http.Dispose();
+        Kill(_watchdogProxy); Kill(_server); Ui.Dispose(); _http.Dispose();
         foreach (var dir in new[] { Path.Combine(Data, "logs"), Path.Combine(_pcDir, "logs") }) // logs end up in the test output
             if (Directory.Exists(dir)) foreach (var f in Directory.GetFiles(dir)) Console.WriteLine($"--- {Path.GetFileName(f)}\n{File.ReadAllText(f)}");
         foreach (var dir in new[] { Data, _pcDir }) try { Directory.Delete(dir, true); } catch (IOException) { }
