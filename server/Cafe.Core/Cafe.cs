@@ -56,6 +56,7 @@ public record Bill(long SessionId, TimeSpan Used, long Charged, long Adjusted, l
 /// What a PC should show right now. Locked = lock screen (no session, or the admin locked it).
 /// SelfLocked: the customer locked it (time keeps running; their PIN or staff unlocks it).
 public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec, bool SelfLocked = false, bool LockWhenTimeRunsOut = false);
+public record OfflineSaleRequest(string SaleId, string Phone, string Code, long Step, int Minutes, string Method, string? UpiLast4, long? Session);
 
 public class CafeException(string message) : Exception(message);
 
@@ -77,7 +78,7 @@ public sealed partial class CafeCore : IDisposable
         _db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Password = key, Pooling = false }.ToString());
         _db.Open();
         // schema version: a newer program adds its changes as version 2, 3... and never reads a newer database by mistake
-        const int SchemaVersion = 3; // 2: owner two-step login; 3: time-expiry setting
+        const int SchemaVersion = 4; // 2: owner two-step login; 3: time-expiry setting; 4: idempotent offline sales
         if (Scalar<long>("PRAGMA user_version") > SchemaVersion) { _db.Dispose(); throw new CafeException("The cafe data comes from a newer version of this program. Install the newer version."); }
         Exec("""
             PRAGMA foreign_keys = ON;
@@ -96,6 +97,7 @@ public sealed partial class CafeCore : IDisposable
             CREATE TABLE IF NOT EXISTS pcs(name TEXT PRIMARY KEY, token BLOB NOT NULL UNIQUE, locked INTEGER NOT NULL DEFAULT 0, message TEXT,
                 self_locked INTEGER NOT NULL DEFAULT 0, last_seen TEXT);
             CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, at TEXT NOT NULL, by_user INTEGER, action TEXT NOT NULL, detail TEXT);
+            CREATE TABLE IF NOT EXISTS offline_sales(pc TEXT NOT NULL, sale_id TEXT NOT NULL, session_id INTEGER NOT NULL, staff_id INTEGER NOT NULL, step INTEGER NOT NULL, created TEXT NOT NULL, PRIMARY KEY(pc, sale_id));
             CREATE TABLE IF NOT EXISTS settings(name TEXT PRIMARY KEY, value TEXT NOT NULL);
             INSERT OR IGNORE INTO settings(name, value) VALUES('lock_when_time_runs_out', '0');
             CREATE TRIGGER IF NOT EXISTS ledger_no_update BEFORE UPDATE ON ledger BEGIN SELECT RAISE(ABORT, 'ledger is append-only'); END;
@@ -472,6 +474,81 @@ public sealed partial class CafeCore : IDisposable
             }
         }
     });
+
+    /// Verify and post a counter sale recorded by the watchdog while this PC was offline.
+    /// The PC token authenticates the device; the staff TOTP proves who took the payment.
+    public long ProcessOfflineSale(string pc, OfflineSaleRequest sale) => Tx(() =>
+    {
+        if (!Guid.TryParseExact(sale.SaleId, "N", out _)) throw new CafeException("The offline sale reference is not valid.");
+        if (Scalar<long?>( "SELECT session_id FROM offline_sales WHERE pc = @p0 AND sale_id = @p1", pc, sale.SaleId) is long prior) return prior;
+        Minutes(sale.Minutes);
+        CashOrUpi(sale.Method, sale.UpiLast4);
+        using var r = Query("SELECT id, totp, totp_step FROM users WHERE phone = @p0 AND role IN (@p1, @p2)", sale.Phone, (int)Role.Owner, (int)Role.Staff);
+        if (!r.Read() || r.IsDBNull(1)) throw new CafeException("This account has not turned on two-step.");
+        var staff = r.GetInt64(0);
+        var key = (byte[])r[1];
+        var lastStep = r.IsDBNull(2) ? -1 : r.GetInt64(2);
+        r.Close();
+        if (sale.Step <= lastStep || sale.Step > new DateTimeOffset(_now()).ToUnixTimeSeconds() / 30 + 1
+            || sale.Code.Length != 6 || !sale.Code.All(char.IsAsciiDigit)
+            || !CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(Totp(key, sale.Step)), Encoding.ASCII.GetBytes(sale.Code)))
+            throw new CafeException("That authenticator code was already used or does not match.");
+
+        long session;
+        long user;
+        if (sale.Session is long existing)
+        {
+            if (Scalar<long?>( "SELECT id FROM sessions WHERE id = @p0 AND pc = @p1 AND ended IS NULL", existing, pc) is null)
+                throw new CafeException("The session on this PC has already ended.");
+            var (used, prepaid, plan, customer) = SessionUse(existing);
+            user = customer;
+            if (prepaid is int bought)
+                Exec("UPDATE sessions SET prepaid_min = @p0 WHERE id = @p1", checked(bought + sale.Minutes), existing);
+            else
+            {
+                var usedMin = (int)Math.Ceiling(used.TotalMinutes);
+                if (plan is long planId)
+                {
+                    var available = (int)Scalar<long>("SELECT minutes_left FROM plans WHERE id = @p0", planId);
+                    var take = Math.Min(usedMin, available);
+                    if (take > 0)
+                    {
+                        Exec("UPDATE plans SET minutes_left = minutes_left - @p0 WHERE id = @p1", take, planId);
+                        Audit(staff, "plan_use", $"plan {planId} -{take} min");
+                    }
+                    if (usedMin > take) ChargeOvertime(staff, existing, user, used - TimeSpan.FromMinutes(take), "before offline sale");
+                }
+                else
+                {
+                    var billed = BillableMinutes(used);
+                    if (billed > 0) Ledger(staff, "charge", Price(billed), session: existing, user: user, reference: $"{billed} min before offline sale");
+                    if (billed > usedMin) CarryOver(staff, user, billed - usedMin);
+                }
+                Exec("UPDATE sessions SET prepaid_min = @p0, plan_id = NULL WHERE id = @p1", checked(usedMin + sale.Minutes), existing);
+            }
+            if (Scalar<string?>("SELECT pause_from FROM sessions WHERE id = @p0", existing) is not null) Resume(staff, existing);
+            session = existing;
+        }
+        else
+        {
+            user = Scalar<long?>("SELECT id FROM users WHERE phone = 'WALKIN' AND role = @p0", (int)Role.Customer)
+                ?? Insert("INSERT INTO users(role, name, phone, pin) VALUES(@p0, 'Walk-in', 'WALKIN', @p1)", (int)Role.Customer, HashPin(Convert.ToHexString(RandomNumberGenerator.GetBytes(16))));
+            session = Start(staff, pc, user, sale.Minutes, null);
+        }
+
+        var amount = Price(sale.Minutes);
+        Ledger(staff, "charge", amount, session: session, user: user, reference: $"offline sale {sale.SaleId} {sale.Minutes} min");
+        Ledger(staff, "pay", amount, session: session, user: user, method: sale.Method, reference: sale.UpiLast4);
+        Exec("UPDATE users SET totp_step = @p0, fails = 0, locked_until = NULL WHERE id = @p1 AND (totp_step IS NULL OR totp_step < @p0)", sale.Step, staff);
+        Exec("UPDATE pcs SET locked = 0, self_locked = 0, message = NULL WHERE name = @p0", pc);
+        Exec("INSERT INTO offline_sales(pc, sale_id, session_id, staff_id, step, created) VALUES(@p0, @p1, @p2, @p3, @p4, @p5)", pc, sale.SaleId, session, staff, sale.Step, Iso(_now()));
+        Audit(staff, "offline sale", $"PC {pc}, session {session}, {sale.Minutes} min, {sale.Method}");
+        return session;
+    });
+
+    /// Refused offline sales are retained in the owner's review list; never include the authenticator code.
+    public void ReviewOfflineSale(string pc, string saleId, string phone, string reason) => Tx(() =>
+        Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'review_offline_sale', @p1)", Iso(_now()), $"PC {pc}, sale {saleId}, account {phone}: {reason}"));
 
     /// Called on every status check, so a queued logout knows when the PC was last online.
     public void PcSeen(string pc) => Tx(() => { Exec("UPDATE pcs SET last_seen = @p0 WHERE name = @p1", Iso(_now()), pc); });

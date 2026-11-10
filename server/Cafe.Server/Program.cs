@@ -73,6 +73,16 @@ app.MapGet("/pc/offline-unlock-data", (HttpContext c) =>
     Pc(c); // a PC token, never a staff/customer login, is required to retrieve authenticator secrets
     return new { rate = cafe.Rate, accounts = cafe.OfflineUnlockAccounts() };
 });
+app.MapPost("/pc/offline-sales", (HttpContext c, OfflineSaleBody b) =>
+{
+    var pc = Pc(c);
+    try { return Results.Ok(new { session = cafe.ProcessOfflineSale(pc, new OfflineSaleRequest(b.SaleId, b.Phone, b.Code, b.Step, b.Minutes, b.Method, b.UpiLast4, b.Session)) }); }
+    catch (CafeException e)
+    {
+        cafe.ReviewOfflineSale(pc, b.SaleId, b.Phone, e.Message);
+        throw;
+    }
+});
 app.MapPost("/pc/login", (HttpContext c, LoginBody b) => { var pc = Pc(c); var st = cafe.PcLogin(pc, b.Phone, b.Pin); Log($"{pc} login session {st.Session}"); return st; }).RequireRateLimiting("login");
 app.MapPost("/pc/selflock", (HttpContext c) => cafe.PcSelfLock(Pc(c)));
 app.MapPost("/pc/logout", (HttpContext c, long? ago) => { var pc = Pc(c); var bill = cafe.PcLogout(pc, ago ?? 0); Log($"{pc} logout session {bill.SessionId} used {bill.Used} (sent {ago ?? 0}s late)"); return bill; });
@@ -181,5 +191,6 @@ record UserBody(Role Role, string Name, string Phone, string Pin);
 record TwoStepBody(string Secret, string Code);
 record PhoneBody(string Phone);
 record StaffTwoStepBody(string Phone, string Secret, string Code);
+record OfflineSaleBody(string SaleId, string Phone, string Code, long Step, int Minutes, string Method, string? UpiLast4, long? Session);
 record PcBody(string Pc, string? Message);
 record TimeLockBody(bool Enabled);

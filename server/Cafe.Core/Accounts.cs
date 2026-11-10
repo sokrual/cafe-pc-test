@@ -5,8 +5,6 @@ using System.Text;
 
 namespace Cafe;
 
-public record OfflineUnlockAccount(string Phone, string Secret);
-
 public record PcInfo(string Name, bool InUse, bool Locked, string? LastSeen);
 
 public sealed partial class CafeCore
@@ -55,16 +53,6 @@ public sealed partial class CafeCore
 
     public static string NewTwoStepSecret() => Base32(RandomNumberGenerator.GetBytes(20));
 
-    /// Only enabled owner and staff accounts are shared with a PC authenticated by its own device token.
-    public List<OfflineUnlockAccount> OfflineUnlockAccounts() => Tx(() =>
-    {
-        using var r = Query("SELECT phone, totp FROM users WHERE role IN (@p0, @p1) AND totp IS NOT NULL ORDER BY id",
-            (int)Role.Owner, (int)Role.Staff);
-        var accounts = new List<OfflineUnlockAccount>();
-        while (r.Read()) accounts.Add(new OfflineUnlockAccount(r.GetString(0), Base32((byte[])r[1])));
-        return accounts;
-    });
-
     public string TurnOnTwoStep(long owner, string secret, string code) => Tx(() =>
     {
         RequireOwner(owner);
@@ -73,31 +61,6 @@ public sealed partial class CafeCore
         var recovery = Convert.ToHexString(RandomNumberGenerator.GetBytes(8)); // 16 letters and numbers, to print
         Exec("UPDATE users SET totp = @p0, totp_step = @p1, recovery = @p2 WHERE id = @p3", key, step, SHA256.HashData(Encoding.UTF8.GetBytes(recovery)), owner);
         Audit(owner, "two_step_on", null);
-        return recovery;
-    });
-
-    /// Owner enrollment for a staff account; staff use the same TOTP login and replay protection as the owner.
-    public string StartTwoStepFor(long owner, string phone) => Tx(() =>
-    {
-        RequireOwner(owner);
-        var user = Scalar<long?>( "SELECT id FROM users WHERE phone = @p0 AND role IN (@p1, @p2)", phone, (int)Role.Owner, (int)Role.Staff)
-            ?? throw new CafeException("No owner or staff account has this phone number.");
-        _ = user;
-        return NewTwoStepSecret();
-    });
-
-    public string TurnOnTwoStepFor(long owner, string phone, string secret, string code) => Tx(() =>
-    {
-        RequireOwner(owner);
-        var user = Scalar<long?>( "SELECT id FROM users WHERE phone = @p0 AND role IN (@p1, @p2)", phone, (int)Role.Owner, (int)Role.Staff)
-            ?? throw new CafeException("No owner or staff account has this phone number.");
-        var key = FromBase32(secret);
-        if (key.Length < 10 || TotpStep(key, code) is not long step)
-            throw new CafeException("That code does not match. Type the 6 digits the app shows now.");
-        var recovery = Convert.ToHexString(RandomNumberGenerator.GetBytes(8));
-        Exec("UPDATE users SET totp = @p0, totp_step = @p1, recovery = @p2, fails = 0, locked_until = NULL WHERE id = @p3",
-            key, step, SHA256.HashData(Encoding.UTF8.GetBytes(recovery)), user);
-        Audit(owner, "two_step_on", $"user {user}");
         return recovery;
     });
 

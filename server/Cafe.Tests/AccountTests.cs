@@ -75,6 +75,39 @@ public sealed class AccountTests : IDisposable
     }
 
     [Fact]
+    public void Offline_sales_are_verified_once_and_extend_or_start_a_session()
+    {
+        _cafe.AddPc(_owner, "PC1");
+        _cafe.AddPc(_owner, "PC2");
+        var secret = _cafe.StartTwoStepFor(_owner, "9000000002");
+        _cafe.TurnOnTwoStepFor(_owner, "9000000002", secret, AppCode(secret));
+        _clock = _clock.AddSeconds(30);
+        var step = new DateTimeOffset(_clock).ToUnixTimeSeconds() / 30;
+        var code = AppCode(secret);
+        var active = _cafe.StartPrepaid(_staff, "PC1", _cust, 30);
+        var saleId = Guid.NewGuid().ToString("N");
+        var sale = new OfflineSaleRequest(saleId, "9000000002", code, step, 30, "cash", null, active);
+        Assert.Equal(active, _cafe.ProcessOfflineSale("PC1", sale));
+        Assert.Equal(active, _cafe.ProcessOfflineSale("PC1", sale));
+        Assert.Equal(4000, _cafe.BillFor(active).Paid);
+        Assert.Throws<CafeException>(() => _cafe.ProcessOfflineSale("PC1", sale with { SaleId = Guid.NewGuid().ToString("N") }));
+        _clock = _clock.AddSeconds(30);
+        var walkInStep = new DateTimeOffset(_clock).ToUnixTimeSeconds() / 30;
+        var walkIn = _cafe.ProcessOfflineSale("PC2", new OfflineSaleRequest(Guid.NewGuid().ToString("N"),
+            "9000000002", AppCode(secret), walkInStep, 60, "upi", "1234", null));
+        Assert.Equal(walkIn, _cafe.StateOf("PC2").Session);
+        Assert.Equal(6000, _cafe.BillFor(walkIn).Paid);
+        using var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = _file, Password = "test-key-123", Pooling = false }.ToString());
+        db.Open();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "SELECT action, detail FROM audit WHERE action = 'offline sale'";
+        using var rows = cmd.ExecuteReader();
+        Assert.True(rows.Read()); Assert.Contains("PC1", rows.GetString(1));
+        Assert.True(rows.Read()); Assert.Contains("PC2", rows.GetString(1));
+        Assert.False(rows.Read());
+    }
+
+    [Fact]
     public void Guessing_app_codes_locks_the_owner_out_even_with_the_right_PIN()
     {
         var secret = CafeCore.NewTwoStepSecret();
