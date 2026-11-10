@@ -164,6 +164,10 @@ try {
     New-Item -ItemType Junction -Path "$data\wipe\request" -Target "C:\ShinzxCanary" | Out-Null
     $linkDone = WaitFor 30 { -not (Test-Path "$data\wipe\request") }
     Check "B3.F1b" "A junction at the request path is removed without following it" ($linkDone -and (Test-Path "C:\ShinzxCanary\keep.txt")) "done $linkDone"
+    # A hard link is still a file, but it must not make the lock screen overwrite its target.
+    New-Item -ItemType HardLink -Path "$data\wipe\request" -Target "C:\ShinzxCanary\keep.txt" -Force | Out-Null
+    $hardLinkDone = WaitFor 30 { -not (Test-Path "$data\wipe\request") }
+    Check "B3.F1c" "A hard-linked request is replaced without changing its target" ($hardLinkDone -and (Get-Content "C:\ShinzxCanary\keep.txt" -Raw) -eq "must stay`r`n") "done $hardLinkDone"
     # A failed clean-up keeps the request and the lock screen blocked; restoring the clean copy lets the next loop retry.
     Move-Item "$data\clean-profile" "$data\clean-profile.saved"
     Set-Content "$data\wipe\request" ""
@@ -173,7 +177,7 @@ try {
     Move-Item "$data\clean-profile.saved" "$data\clean-profile"
     Start-Service CafeWatchdog
     $retryDone = WaitFor 45 { -not (Test-Path "$data\wipe\request") }
-    Check "B3.F1c" "A failed clean-up stays pending and succeeds after watchdog restart" ($blocked -and $retryDone) "blocked $blocked, retry $retryDone"
+    Check "B3.F1d" "A failed clean-up stays pending and succeeds after watchdog restart" ($blocked -and $retryDone) "blocked $blocked, retry $retryDone"
     # An unreachable counter server must also leave the request pending; reconnecting lets the next loop retry.
     Set-Content "$data\wipe\request" ""
     Stop-Process -Id $server.Id -Force
