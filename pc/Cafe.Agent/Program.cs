@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 
 namespace Cafe.Agent;
 
@@ -34,12 +35,33 @@ static class Program
 public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec, bool SelfLocked = false, bool LockWhenTimeRunsOut = false);
 record ErrorBody(string Error);
 
+static class LockSetting
+{
+    const string KeyPath = @"Software\ShinzxCafe\Agent";
+    public static bool Read()
+    {
+        try { using var key = Registry.CurrentUser.OpenSubKey(KeyPath); return key?.GetValue("LockWhenTimeRunsOut") is int value && value == 1; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException) { return false; }
+    }
+    public static void Save(bool enabled)
+    {
+        try
+        {
+            if (Read() == enabled) return;
+            using var key = Registry.CurrentUser.CreateSubKey(KeyPath);
+            key?.SetValue("LockWhenTimeRunsOut", enabled ? 1 : 0, RegistryValueKind.DWord);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        { Program.Log($"could not remember the time-lock setting (error code {e.HResult & 0xffff})"); }
+    }
+}
+
 sealed class Agent : ApplicationContext
 {
     readonly WatchdogPipeClient _watchdog = new();
     readonly LockScreen _lock;
     readonly TimerWidget _timer;
-    PcState _state = new(true, null, null, null, 0, null); // locked until the admin PC says otherwise
+    PcState _state = new(true, null, null, null, 0, null, LockWhenTimeRunsOut: LockSetting.Read()); // locked until the admin PC says otherwise
     DateTime _stateAt = DateTime.UtcNow;
     readonly List<(string path, Stopwatch since)> _queue = []; // actions made while the admin PC was unreachable
     bool _online = true;
@@ -49,7 +71,7 @@ sealed class Agent : ApplicationContext
     public Agent(string name)
     {
         _lock = new LockScreen(name, Login);
-        _timer = new TimerWidget(Now, () => Send("/pc/logout", lockNow: true), () => Send("/pc/selflock", lockNow: true));
+        _timer = new TimerWidget(Now, () => Send("/pc/logout", lockNow: true), () => Send("/pc/selflock", lockNow: true), () => Apply(_state with { Locked = true, Message = "Time is up. Please ask at the counter." }));
         KeyBlocker.Install(() => _lock.Visible);
         var poll = new System.Windows.Forms.Timer { Interval = 2000 };
         poll.Tick += async (_, _) =>
@@ -83,7 +105,11 @@ sealed class Agent : ApplicationContext
                 Program.Log($"sent queued {path} ({(long)since.Elapsed.TotalSeconds}s late): {(int)r.StatusCode}");
                 _queue.RemoveAt(0); // a 400 (e.g. already logged out at the counter) is final too
             }
-            if (await _watchdog.GetFromJsonAsync<PcState>("/pc/state") is { } s) Apply(s);
+            if (await _watchdog.GetFromJsonAsync<PcState>("/pc/state") is { } s)
+            {
+                LockSetting.Save(s.LockWhenTimeRunsOut);
+                Apply(s);
+            }
             if (!_online) Program.Log("admin PC reachable again");
             _online = true;
         }
@@ -112,7 +138,9 @@ sealed class Agent : ApplicationContext
         {
             using var r = await _watchdog.PostAsJsonAsync("/pc/login", new { phone, pin });
             if (!r.IsSuccessStatusCode) return (await r.Content.ReadFromJsonAsync<ErrorBody>())?.Error ?? "Could not log in. Please try again.";
-            Apply((await r.Content.ReadFromJsonAsync<PcState>())!);
+            var state = (await r.Content.ReadFromJsonAsync<PcState>())!;
+            LockSetting.Save(state.LockWhenTimeRunsOut);
+            Apply(state);
             return null;
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { return "This PC cannot reach the counter right now. Please ask at the counter."; }
@@ -214,12 +242,14 @@ sealed class TimerWidget : Form
     readonly Label _text = new() { Name = "TimerText", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Font = new Font("Segoe UI", 18, FontStyle.Bold), ForeColor = Color.White };
     readonly NotifyIcon _tray = new() { Icon = SystemIcons.Application, Visible = true, Text = "Cafe timer" };
     readonly Func<(PcState state, long elapsed, long? left)> _now;
+    readonly Action _timeExpired;
     readonly HashSet<int> _warned = [];
     DateTime _peekUntil;
 
-    public TimerWidget(Func<(PcState, long, long?)> now, Action logout, Action selfLock)
+    public TimerWidget(Func<(PcState, long, long?)> now, Action logout, Action selfLock, Action timeExpired)
     {
         _now = now;
+        _timeExpired = timeExpired;
         Name = "TimerWidget"; Text = "Cafe timer";
         FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true;
         BackColor = Color.FromArgb(20, 20, 28); Opacity = 0.9; Size = new Size(190, 84); StartPosition = FormStartPosition.Manual;
@@ -243,6 +273,11 @@ sealed class TimerWidget : Form
     {
         var (state, elapsed, left) = _now();
         if (state.Locked) { if (Visible) Hide(); return; }
+        if (state.LockWhenTimeRunsOut && left is long remaining && remaining <= 0)
+        {
+            _timeExpired();
+            return;
+        }
         var shown = left is long l ? (l > 0 ? Program.Fmt(l) + " left" : "Time over") : Program.Fmt(elapsed);
         _text.Text = shown; _tray.Text = "Cafe timer " + shown;
         var warningMinutes = state.LockWhenTimeRunsOut ? new[] { 5, 1 } : new[] { 10, 5, 1 };

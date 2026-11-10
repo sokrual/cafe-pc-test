@@ -12,8 +12,8 @@ Directory.CreateDirectory(Path.Combine(data, "logs"));
 AdminsOnly(data);
 void Log(string line) { lock (data) File.AppendAllText(Path.Combine(data, "logs", $"server-{DateTime.Now:yyyyMMdd}.log"), $"{DateTime.Now:HH:mm:ss} {line}{Environment.NewLine}"); }
 
-using var cafe = new CafeCore(Path.Combine(data, "cafe.db"), DbKey(data));
-if (args.Contains("--seed-test")) Seed(cafe, data);
+using var cafe = new CafeCore(Path.Combine(data, "cafe.db"), DbKey(data), log: Log);
+if (args.Contains("--seed-test")) Seed(cafe, data, args.Contains("--seed-offline-lock"));
 var cert = Cert(data);
 
 var builder = WebApplication.CreateBuilder();
@@ -154,12 +154,13 @@ static X509Certificate2 Cert(string data)
     return cert;
 }
 
-static void Seed(CafeCore cafe, string data)
+static void Seed(CafeCore cafe, string data, bool offlineLockTest)
 {
     if (File.Exists(Path.Combine(data, "pc1.token"))) return; // already seeded
     var owner = cafe.AddUser(null, Role.Owner, "Owner", "9000000001", "432100");
     var staff = cafe.AddUser(owner, Role.Staff, "Staff", "9000000002", "111111");
-    cafe.AddUser(staff, Role.Customer, "Test Customer", "9000000003", "2222");
+    var customer = cafe.AddUser(staff, Role.Customer, "Test Customer", "9000000003", "2222");
+    if (offlineLockTest) cafe.BuyPlan(staff, customer, 1, 7, 0, "cash");
     File.WriteAllText(Path.Combine(data, "pc1.token"), cafe.AddPc(owner, "PC1"));
 }
 

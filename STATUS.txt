@@ -32,7 +32,7 @@ B3  Lockdown and installers                                         BUILT - fina
          CI time 5-28 s without the Windows sign-out and sign-in; time the full cycle on a cafe PC in Phase 0,
          and undo the change if it takes over 1 minute there)
       #8a offline lock: with "lock when time runs out" on, the PC locks itself at zero even with no
-          connection; one failing session must not stop the other sessions from ending      in progress
+          connection; one failing session must not stop the other sessions from ending      DONE (merged)
       #8b offline unlock codes: owner and staff unlock an offline PC with their own authenticator
           codes and add time for a new payment, which reaches the money records on reconnect
       #9 final end-to-end security pass against CHECKS.txt
