@@ -65,7 +65,7 @@ static class Wipe
         try
         {
             var line = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "watchdog.args"));
-            var match = Regex.Match(line, @"--server\\s+(https://[^\\s\""]+)");
+            var match = Regex.Match(line, @"--server\s+(https://[^\s""]+)");
             if (!match.Success) { error = 87; return false; }
             var server = new Uri(match.Groups[1].Value);
             var token = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "pc.token")).Trim();
