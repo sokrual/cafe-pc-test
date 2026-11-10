@@ -128,10 +128,14 @@ try {
     "`"InstallConfigStore`"`n{`n`t`"Software`" { `"x`" `"1`" }`n`t`"ConnectCache`"`n`t{`n`t`t`"7a2b`" `"secret`"`n`t}`n}" | Set-Content "C:\FakeSteam\config\config.vdf"
     $steamKey = "HKLM:\SOFTWARE\WOW6432Node\Valve\Steam"; New-Item $steamKey -Force | Out-Null; Set-ItemProperty $steamKey InstallPath "C:\FakeSteam"
     Pc "/pc/login" @{ phone = "9000000003"; pin = "2222" } | Out-Null
-    # A request must wait while the counter server still reports an active session.
+    # A fresh request is handled promptly; an unchanged active-session reason is logged only once across retries.
+    $watchdogLog = Join-Path "$data\logs" "watchdog-$(Get-Date -Format yyyyMMdd).log"
+    $beforeDeferred = if (Test-Path $watchdogLog) { @(Select-String $watchdogLog -SimpleMatch "cleanup deferred (session active)").Count } else { 0 }
     Set-Content "$data\wipe\request" ""
-    Start-Sleep -Seconds 4
-    Check "B3.F0" "Watchdog keeps a clean-up request while a session is running" (Test-Path "$data\wipe\request") ""
+    $firstDeferred = WaitFor 5 { (Test-Path $watchdogLog) -and @(Select-String $watchdogLog -SimpleMatch "cleanup deferred (session active)").Count -gt $beforeDeferred }
+    Start-Sleep -Seconds 32
+    $afterDeferred = if (Test-Path $watchdogLog) { @(Select-String $watchdogLog -SimpleMatch "cleanup deferred (session active)").Count } else { 0 }
+    Check "B3.F0" "Fresh request is tried promptly and unchanged deferral is logged once" ((Test-Path "$data\wipe\request") -and $firstDeferred -and $afterDeferred -eq ($beforeDeferred + 1)) "log lines $beforeDeferred -> $afterDeferred"
     Remove-Item "$data\wipe\request" -Force -ErrorAction SilentlyContinue
     $p1 = AsCustomer "$env:WINDIR\System32\PING.EXE" "-t 127.0.0.1"
     $p2 = AsCustomer "$env:ProgramFiles\FakeGame\game.exe" "-t 127.0.0.1"
