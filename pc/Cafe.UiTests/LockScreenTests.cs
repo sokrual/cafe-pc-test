@@ -22,6 +22,27 @@ public sealed class LockScreenTests : IDisposable
     public void Dispose() { Rig.Kill(_agent); _rig.Dispose(); }
 
     [Fact]
+    public async Task Pending_cleanup_keeps_the_lock_screen_blocked_with_counter_message()
+    {
+        var note = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ShinzxCafe", "wipe", "request");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(note)!);
+            _agent = Process.Start(new ProcessStartInfo(Rig.Env("CAFE_AGENT_EXE"), _rig.AgentArgs) { UseShellExecute = false })!;
+            _app = Application.Attach(_agent.Id);
+            LogIn("9000000003", "2222");
+            Rig.WaitFor(() => Hidden("LockScreen"), 10, "login did not unlock the PC");
+            File.WriteAllText(note, "");
+            Rig.WaitFor(() => !Hidden("LockScreen") && Text(Window("LockScreen"), "Message") == "Please ask at the counter.", 10,
+                "pending clean-up did not block the PC with the counter message");
+            Assert.False(Part(Window("LockScreen"), "Login").AsButton().IsEnabled, "login stayed enabled during clean-up");
+            File.Delete(note);
+            Rig.WaitFor(() => Hidden("LockScreen"), 10, "PC did not return to its active session after the request cleared");
+        }
+        finally { try { File.Delete(note); } catch (IOException) { } }
+    }
+
+    [Fact]
     public async Task T1_1_to_T1_6_escape_login_locks_offline_logout()
     {
         try { await Scenario(); }
