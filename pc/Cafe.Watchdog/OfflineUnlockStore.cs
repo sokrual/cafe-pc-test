@@ -85,21 +85,26 @@ sealed class OfflineUnlockStore
                 return new(false, "Offline unlock is paused for 10 minutes after three wrong attempts.", null);
             if (state.LockedUntil is not null) { state.LockedUntil = null; state.WrongTries = 0; }
 
-            bool Fail(string message)
+            string Fail(string message)
             {
                 state.WrongTries++;
-                if (state.WrongTries >= 3) state.LockedUntil = now.AddMinutes(10);
+                if (state.WrongTries >= 3)
+                {
+                    state.LockedUntil = now.AddMinutes(10);
+                    Write(state);
+                    return "Offline unlock is paused for 10 minutes after three wrong attempts.";
+                }
                 Write(state);
-                return false;
+                return message;
             }
 
             if (state.Rate is null || state.Accounts.Count == 0)
                 return new(false, "Offline staff unlock is not set up on this PC.", null);
             if (!Guid.TryParseExact(request.SaleId, "N", out _))
                 return new(false, "The offline sale reference is not valid.", null);
-            if (request.Phone.Length is < 10 or > 13 || !request.Phone.All(char.IsAsciiDigit)
-                || request.Code.Length != 6 || !request.Code.All(char.IsAsciiDigit))
-                return new(Fail("Enter the staff phone number and six-digit app code."), "Wrong phone number or code.", null);
+            if (string.IsNullOrEmpty(request.Phone) || request.Phone.Length is < 10 or > 13 || !request.Phone.All(char.IsAsciiDigit)
+                || string.IsNullOrEmpty(request.Code) || request.Code.Length != 6 || !request.Code.All(char.IsAsciiDigit))
+                return new(false, Fail("Wrong phone number or code."), null);
             if (request.Minutes < state.Rate.MinimumMin || request.Minutes > 10080
                 || request.Minutes % Math.Max(1, state.Rate.BlockMin) != 0)
                 return new(false, $"Minutes must be a {state.Rate.BlockMin}-minute block from the last rate card.", null);
@@ -124,7 +129,7 @@ sealed class OfflineUnlockStore
                 }
             }
             if (matched is null)
-                return new(Fail("Wrong phone number or code."), "Wrong phone number or code.", null);
+                return new(false, Fail("Wrong phone number or code."), null);
 
             var sale = new OfflineUnlockSale(request.SaleId, request.Phone, request.Code, matched.Value,
                 request.Minutes, request.Method, request.UpiLast4, request.Session);

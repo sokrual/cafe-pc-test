@@ -483,6 +483,8 @@ public sealed partial class CafeCore : IDisposable
         if (!Guid.TryParseExact(sale.SaleId, "N", out _)) throw new CafeException("The offline sale reference is not valid.");
         if (Scalar<long?>( "SELECT session_id FROM offline_sales WHERE pc = @p0 AND sale_id = @p1", pc, sale.SaleId) is long prior) return prior;
         Minutes(sale.Minutes);
+        if (sale.Minutes < Rate.MinimumMin || sale.Minutes % Math.Max(1, Rate.BlockMin) != 0)
+            throw new CafeException($"Minutes must be a {Rate.BlockMin}-minute block from the rate card.");
         CashOrUpi(sale.Method, sale.UpiLast4);
         using var r = Query("SELECT id, totp, totp_step FROM users WHERE phone = @p0 AND role IN (@p1, @p2)", sale.Phone, (int)Role.Owner, (int)Role.Staff);
         if (!r.Read() || r.IsDBNull(1)) throw new CafeException("This account has not turned on two-step.");

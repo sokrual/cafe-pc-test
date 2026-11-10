@@ -90,13 +90,24 @@ public sealed class AccountTests : IDisposable
         Assert.Equal(active, _cafe.ProcessOfflineSale("PC1", sale));
         Assert.Equal(active, _cafe.ProcessOfflineSale("PC1", sale));
         Assert.Equal(4000, _cafe.BillFor(active).Paid);
-        Assert.Throws<CafeException>(() => _cafe.ProcessOfflineSale("PC1", sale with { SaleId = Guid.NewGuid().ToString("N") }));
+        var refusedId = Guid.NewGuid().ToString("N");
+        Assert.Throws<CafeException>(() => _cafe.ProcessOfflineSale("PC1", sale with { SaleId = refusedId }));
+        _cafe.ReviewOfflineSale("PC1", refusedId, "9000000002", "authenticator code already used");
+        Assert.Contains(_cafe.ForReview(), item => item.Contains(refusedId, StringComparison.Ordinal));
         _clock = _clock.AddSeconds(30);
         var walkInStep = new DateTimeOffset(_clock).ToUnixTimeSeconds() / 30;
-        var walkIn = _cafe.ProcessOfflineSale("PC2", new OfflineSaleRequest(Guid.NewGuid().ToString("N"),
-            "9000000002", AppCode(secret), walkInStep, 60, "upi", "1234", null));
+        var walkInSale = new OfflineSaleRequest(Guid.NewGuid().ToString("N"),
+            "9000000002", AppCode(secret), walkInStep, 60, "upi", "1234", null);
+        Assert.Throws<CafeException>(() => _cafe.ProcessOfflineSale("PC2", walkInSale with { UpiLast4 = null }));
+        var walkIn = _cafe.ProcessOfflineSale("PC2", walkInSale);
         Assert.Equal(walkIn, _cafe.StateOf("PC2").Session);
         Assert.Equal(6000, _cafe.BillFor(walkIn).Paid);
+        _clock = _clock.AddSeconds(30);
+        var extensionStep = new DateTimeOffset(_clock).ToUnixTimeSeconds() / 30;
+        var extended = _cafe.ProcessOfflineSale("PC2", new OfflineSaleRequest(Guid.NewGuid().ToString("N"),
+            "9000000002", AppCode(secret), extensionStep, 30, "cash", null, -1));
+        Assert.Equal(walkIn, extended);
+        Assert.Equal(10000, _cafe.BillFor(walkIn).Paid);
         using var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = _file, Password = "test-key-123", Pooling = false }.ToString());
         db.Open();
         using var cmd = db.CreateCommand();

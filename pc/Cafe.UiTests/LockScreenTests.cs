@@ -269,13 +269,13 @@ public sealed class OfflineLockTests
                 Part(screen, "StaffCode").AsTextBox().Text = wrong;
                 Part(screen, "Minutes").AsTextBox().Text = "30";
                 Part(screen, "OfflineUnlockSubmit").AsButton().Invoke();
-                Rig.WaitFor(() => Part(screen, "Error").Name.Contains("Wrong phone number or code", StringComparison.OrdinalIgnoreCase),
+                var expected = i == 2 ? "10 minutes" : "Wrong phone number or code";
+                Rig.WaitFor(() => Part(screen, "Error").Name.Contains(expected, StringComparison.OrdinalIgnoreCase),
                     10, "wrong offline code was not rejected");
             }
             Part(screen, "StaffCode").AsTextBox().Text = wrong;
-            Part(screen, "OfflineUnlockSubmit").AsButton().Invoke();
             Rig.WaitFor(() => Part(screen, "Error").Name.Contains("10 minutes", StringComparison.OrdinalIgnoreCase), 10,
-                "three wrong codes did not pause offline unlock for ten minutes");
+                "third wrong code did not pause offline unlock for ten minutes");
         }
         finally { Rig.Kill(agent); }
     }
