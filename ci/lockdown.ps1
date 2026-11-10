@@ -130,11 +130,11 @@ try {
     Pc "/pc/login" @{ phone = "9000000003"; pin = "2222" } | Out-Null
     # A fresh request is handled promptly; an unchanged active-session reason is logged only once across retries.
     $watchdogLog = Join-Path "$data\logs" "watchdog-$(Get-Date -Format yyyyMMdd).log"
-    $beforeDeferred = if (Test-Path $watchdogLog) { @(Select-String $watchdogLog -SimpleMatch "cleanup deferred (session active)").Count } else { 0 }
+    $beforeDeferred = if (Test-Path $watchdogLog) { @(Select-String -Path $watchdogLog -Pattern "cleanup deferred (session active)" -SimpleMatch).Count } else { 0 }
     Set-Content "$data\wipe\request" ""
-    $firstDeferred = WaitFor 5 { (Test-Path $watchdogLog) -and @(Select-String $watchdogLog -SimpleMatch "cleanup deferred (session active)").Count -gt $beforeDeferred }
+    $firstDeferred = WaitFor 5 { (Test-Path $watchdogLog) -and @(Select-String -Path $watchdogLog -Pattern "cleanup deferred (session active)" -SimpleMatch).Count -gt $beforeDeferred }
     Start-Sleep -Seconds 32
-    $afterDeferred = if (Test-Path $watchdogLog) { @(Select-String $watchdogLog -SimpleMatch "cleanup deferred (session active)").Count } else { 0 }
+    $afterDeferred = if (Test-Path $watchdogLog) { @(Select-String -Path $watchdogLog -Pattern "cleanup deferred (session active)" -SimpleMatch).Count } else { 0 }
     Check "B3.F0" "Fresh request is tried promptly and unchanged deferral is logged once" ((Test-Path "$data\wipe\request") -and $firstDeferred -and $afterDeferred -eq ($beforeDeferred + 1)) "log lines $beforeDeferred -> $afterDeferred"
     Remove-Item "$data\wipe\request" -Force -ErrorAction SilentlyContinue
     $p1 = AsCustomer "$env:WINDIR\System32\PING.EXE" "-t 127.0.0.1"

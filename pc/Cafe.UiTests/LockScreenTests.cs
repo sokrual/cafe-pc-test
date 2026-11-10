@@ -25,14 +25,19 @@ public sealed class LockScreenTests : IDisposable
     public async Task Pending_cleanup_keeps_the_lock_screen_blocked_with_counter_message()
     {
         var note = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ShinzxCafe", "wipe", "request");
+        var wipeDirectory = Path.GetDirectoryName(note)!;
+        var createdWipeDirectory = !Directory.Exists(wipeDirectory);
+        var createdNote = false;
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(note)!);
+            Assert.False(File.Exists(note), "a clean-up request was already present before the test");
+            Directory.CreateDirectory(wipeDirectory);
             _agent = Process.Start(new ProcessStartInfo(Rig.Env("CAFE_AGENT_EXE"), _rig.AgentArgs) { UseShellExecute = false })!;
             _app = Application.Attach(_agent.Id);
             LogIn("9000000003", "2222");
             Rig.WaitFor(() => Hidden("LockScreen"), 10, "login did not unlock the PC");
             File.WriteAllText(note, "");
+            createdNote = true;
             Rig.WaitFor(() => !Hidden("LockScreen") && Text(Window("LockScreen"), "Message") == "Getting this PC ready for the next customer. Please wait.", 10,
                 "new clean-up did not show the normal waiting message");
             Assert.False(Part(Window("LockScreen"), "Login").AsButton().IsEnabled, "login stayed enabled during clean-up");
@@ -42,7 +47,20 @@ public sealed class LockScreenTests : IDisposable
             File.Delete(note);
             Rig.WaitFor(() => Hidden("LockScreen"), 10, "PC did not return to its active session after the request cleared");
         }
-        finally { try { File.Delete(note); } catch (IOException) { } }
+        finally
+        {
+            Rig.Kill(_agent);
+            if (createdNote) { try { File.Delete(note); } catch (IOException) { } }
+            if (createdWipeDirectory)
+            {
+                try
+                {
+                    if (Directory.Exists(wipeDirectory) && !Directory.EnumerateFileSystemEntries(wipeDirectory).Any())
+                        Directory.Delete(wipeDirectory);
+                }
+                catch (IOException) { }
+            }
+        }
     }
 
     [Fact]
