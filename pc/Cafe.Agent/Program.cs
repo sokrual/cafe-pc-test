@@ -174,7 +174,10 @@ sealed class LockScreen : Form
         Name = "LockScreen"; Text = cafeName;
         FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true;
         StartPosition = FormStartPosition.Manual; BackColor = Color.FromArgb(14, 14, 22);
-        var title = new Label { Text = cafeName, AutoSize = false, Width = 520, Height = 70, ForeColor = Color.White, Font = new Font("Segoe UI", 28, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter };
+        // the cafe's logo (built into the program); the name in text if it is ever missing
+        Control title = typeof(LockScreen).Assembly.GetManifestResourceStream("logo.png") is { } logo
+            ? new PictureBox { Image = Image.FromStream(logo), SizeMode = PictureBoxSizeMode.Zoom, Width = 520, Height = 300, AccessibleName = cafeName }
+            : new Label { Text = cafeName, AutoSize = false, Width = 520, Height = 70, ForeColor = Color.White, Font = new Font("Segoe UI", 28, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter };
         var box = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
         foreach (Control c in new Control[] { title, _message, _phone, _pin, _go, _error }) { c.Margin = new Padding(100, 8, 100, 8); box.Controls.Add(c); }
         Controls.Add(box);
