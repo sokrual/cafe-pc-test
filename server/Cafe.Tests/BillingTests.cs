@@ -11,10 +11,11 @@ public sealed class BillingTests : IDisposable
     readonly string _file = Path.Combine(Path.GetTempPath(), $"cafe-test-{Guid.NewGuid():N}.db");
     readonly CafeCore _cafe;
     readonly long _owner, _staff, _cust;
+    readonly StringWriter _expiryLog = new();
 
     public BillingTests()
     {
-        _cafe = new CafeCore(_file, "test-key-123", () => _clock);
+        _cafe = new CafeCore(_file, "test-key-123", () => _clock, line => _expiryLog.WriteLine(line));
         _owner = _cafe.AddUser(null, Role.Owner, "Owner", "9000000001", "432100");
         _staff = _cafe.AddUser(_owner, Role.Staff, "Staff", "9000000002", "111111");
         _cust = _cafe.AddUser(_staff, Role.Customer, "Ravi", "9000000003", "2222");
@@ -42,6 +43,38 @@ public sealed class BillingTests : IDisposable
         _cafe.EnforceTimeLimits(); // off: the server does not end the session
         Assert.Equal(s, _cafe.StateOf("PC1").Session);
         Assert.Equal(4000, _cafe.Stop(_staff, s).Charged); // normal manual logout still bills as before
+    }
+
+    [Fact]
+    public void Time_limit_failure_does_not_stop_other_sessions_and_is_logged_once()
+    {
+        _cafe.AddPc(_owner, "PC1");
+        _cafe.AddPc(_owner, "PC2");
+        _cafe.SetLockWhenTimeRunsOut(_owner, true);
+        var failed = _cafe.StartPrepaid(_staff, "PC1", _cust, 30);
+        _cafe.StartPrepaid(_staff, "PC2", _cust, 30);
+        Wait(31);
+
+        using (var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = _file, Password = "test-key-123", Pooling = false }.ToString()))
+        {
+            db.Open();
+            using var command = db.CreateCommand();
+            command.CommandText = "UPDATE sessions SET started = 'not-a-date' WHERE id = @id";
+            command.Parameters.AddWithValue("@id", failed);
+            Assert.Equal(1, command.ExecuteNonQuery());
+        }
+
+        _cafe.EnforceTimeLimits();
+        _cafe.EnforceTimeLimits();
+
+        Assert.Equal(1, _expiryLog.ToString().Split($"session {failed}", StringSplitOptions.None).Length - 1);
+        Assert.Null(_cafe.StateOf("PC2").Session);
+        using var verify = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = _file, Password = "test-key-123", Pooling = false }.ToString());
+        verify.Open();
+        using var check = verify.CreateCommand();
+        check.CommandText = "SELECT ended FROM sessions WHERE id = @id";
+        check.Parameters.AddWithValue("@id", failed);
+        Assert.Null(check.ExecuteScalar());
     }
 
     [Fact]

@@ -65,11 +65,14 @@ public sealed partial class CafeCore : IDisposable
 {
     readonly SqliteConnection _db;
     readonly Func<DateTime> _now;
+    readonly Action<string> _log;
     public Rate Rate { get; set; } = new();
+    readonly HashSet<long> _timeLimitFailures = [];
 
-    public CafeCore(string path, string key, Func<DateTime>? now = null)
+    public CafeCore(string path, string key, Func<DateTime>? now = null, Action<string>? log = null)
     {
         _now = now ?? (() => DateTime.UtcNow);
+        _log = log ?? (line => Console.Error.WriteLine(line));
         // Password makes Microsoft.Data.Sqlite send PRAGMA key; SQLite3 Multiple Ciphers encrypts the whole file
         _db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Password = key, Pooling = false }.ToString());
         _db.Open();
@@ -451,9 +454,22 @@ public sealed partial class CafeCore : IDisposable
         r.Close();
         foreach (var (session, user) in due)
         {
-            var (used, prepaid, plan, owner) = SessionUse(session);
-            var limitSeconds = prepaid is int bought ? bought * 60L : plan is not null ? PlanMinutesLeft(owner) * 60L : long.MaxValue;
-            if (used.TotalSeconds >= limitSeconds) Stop(user, session, _now());
+            var savepoint = $"time_limit_{session}";
+            Exec($"SAVEPOINT {savepoint}");
+            try
+            {
+                var (used, prepaid, plan, owner) = SessionUse(session);
+                var limitSeconds = prepaid is int bought ? bought * 60L : plan is not null ? PlanMinutesLeft(owner) * 60L : long.MaxValue;
+                if (used.TotalSeconds >= limitSeconds) Stop(user, session, _now());
+                Exec($"RELEASE SAVEPOINT {savepoint}");
+            }
+            catch (Exception e)
+            {
+                Exec($"ROLLBACK TO SAVEPOINT {savepoint}");
+                Exec($"RELEASE SAVEPOINT {savepoint}");
+                if (_timeLimitFailures.Add(session))
+                    _log($"time expiry failed for session {session}: {e.Message}");
+            }
         }
     });
 

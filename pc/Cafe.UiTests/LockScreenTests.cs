@@ -171,6 +171,51 @@ public sealed class LockScreenTests : IDisposable
     }
 }
 
+[Collection("desktop")]
+public sealed class OfflineLockTests
+{
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Offline_time_limit_locks_only_when_the_last_owner_setting_is_on(bool enabled)
+    {
+        using var rig = new Rig(offlineLockTest: true);
+        var agent = rig.StartAgent();
+        try
+        {
+            using var app = Application.Attach(agent.Id);
+            var owner = await rig.OwnerToken();
+            await rig.Post("/staff/settings/time-lock", new { enabled }, owner);
+
+            Window? Find() => app.GetAllTopLevelWindows(rig.Ui).FirstOrDefault(w => w.Properties.AutomationId.ValueOrDefault == "LockScreen");
+            Window LockWindow()
+            {
+                Window? window = null;
+                Rig.WaitFor(() => (window = Find()) is { IsOffscreen: false }, 20, "lock screen never appeared");
+                return window!;
+            }
+            static AutomationElement Part(AutomationElement root, string id) =>
+                root.FindFirstDescendant(c => c.ByAutomationId(id)) ?? throw new InvalidOperationException($"no {id} on screen");
+
+            var lockScreen = LockWindow();
+            Part(lockScreen, "Phone").AsTextBox().Text = "9000000003";
+            Part(lockScreen, "Pin").AsTextBox().Text = "2222";
+            Part(lockScreen, "Login").AsButton().Invoke();
+
+            var staff = await rig.StaffToken();
+            Rig.WaitFor(() => rig.State(staff)["session"] is not null, 10, "customer session did not start");
+            Rig.WaitFor(() => Find() is null or { IsOffscreen: true }, 10, "login did not unlock the PC");
+            rig.StopServer();
+
+            Thread.Sleep(TimeSpan.FromSeconds(70));
+            Assert.Equal(enabled, Find() is { IsOffscreen: false });
+            if (enabled)
+                Assert.Equal("Time is up. Please ask at the counter.", Part(Find()!, "Message").Name);
+        }
+        finally { Rig.Kill(agent); }
+    }
+}
+
 // T1.2: a customer kills the PC program; the SYSTEM watchdog service brings it back.
 [Collection("desktop")]
 public sealed class WatchdogTests : IDisposable
@@ -327,13 +372,21 @@ sealed class Rig : IDisposable
     Process? _watchdogProxy;
     HttpClient _http = null!;
 
-    public Rig() => StartServer();
+    public Rig(bool offlineLockTest = false) => StartServer(offlineLockTest);
     public string TokenFile => Path.Combine(_pcDir, "pc.token");
     public string AgentArgs => $"--server {Url} --token-file \"{TokenFile}\" --pin-file \"{Path.Combine(_pcDir, "server.pin")}\" --name \"Test Cafe\" --logs \"{Path.Combine(_pcDir, "logs")}\"";
 
-    public void StartServer()
+    public void StartServer(bool offlineLockTest = false)
     {
-        _server = new Process { StartInfo = new(Env("CAFE_SERVER_EXE"), $"--data \"{Data}\" --seed-test --port 5443") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true } };
+        var start = new ProcessStartInfo(Env("CAFE_SERVER_EXE"))
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        foreach (var a in new[] { "--data", Data, "--seed-test", "--port", "5443" }) start.ArgumentList.Add(a);
+        if (offlineLockTest) start.ArgumentList.Add("--seed-offline-lock");
+        _server = new Process { StartInfo = start };
         _server.OutputDataReceived += (_, e) => { lock (_serverLog) _serverLog.AppendLine(e.Data); };
         _server.ErrorDataReceived += (_, e) => { lock (_serverLog) _serverLog.AppendLine(e.Data); };
         _server.Start(); _server.BeginOutputReadLine(); _server.BeginErrorReadLine();
@@ -385,6 +438,12 @@ sealed class Rig : IDisposable
     public async Task<string> StaffToken()
     {
         var r = await _http.PostAsJsonAsync("/staff/login", new { phone = "9000000002", pin = "111111" });
+        r.EnsureSuccessStatusCode();
+        return (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["token"];
+    }
+    public async Task<string> OwnerToken()
+    {
+        var r = await _http.PostAsJsonAsync("/staff/login", new { phone = "9000000001", pin = "432100" });
         r.EnsureSuccessStatusCode();
         return (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["token"];
     }
