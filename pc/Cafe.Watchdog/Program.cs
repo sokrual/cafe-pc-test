@@ -60,6 +60,7 @@ static class Watchdog
         HashSet<(int, DateTime)> trusted = [];
         string? cleanupReason = null;
         var nextCleanup = DateTime.MinValue;
+        var nextOfflineRefresh = DateTime.MinValue;
         while (!stop.IsCancellationRequested)
         {
             try
@@ -77,6 +78,12 @@ static class Watchdog
                         Log($"PC pipe proxy start failed: {e.Message}; lock screen remains guarded; retrying in 30 seconds");
                         nextProxyAttempt = DateTime.UtcNow.AddSeconds(30);
                     }
+                }
+                if (proxyStarted && DateTime.UtcNow >= nextOfflineRefresh)
+                {
+                    PcProxy.RefreshOfflineUnlockData();
+                    PcProxy.SyncOfflineSales();
+                    nextOfflineRefresh = DateTime.UtcNow.AddSeconds(30);
                 }
                 if (Wipe.RequestExists())
                 {
