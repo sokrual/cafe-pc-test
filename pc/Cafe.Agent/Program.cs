@@ -62,7 +62,7 @@ sealed class Agent : ApplicationContext
         {
             var pending = WipePending();
             _lock.SetBusy(pending);
-            if (pending) Apply(_state with { Locked = true, Message = "Please ask at the counter." });
+            if (pending) Apply(_state with { Locked = true, Message = WipeMessage() });
             await Refresh();
         };
         poll.Start();
@@ -102,7 +102,8 @@ sealed class Agent : ApplicationContext
 
     void Apply(PcState s)
     {
-        if (WipePending()) s = s with { Locked = true, Message = "Please ask at the counter." };
+        if (WipePending()) s = s with { Locked = true, Message = WipeMessage() };
+        _lock.SetBusy(WipePending());
         if (_state.Session is not null && s.Session is null) AskForWipe(); // logged out, here or at the counter
         if (s.Locked != _state.Locked) Program.Log(s.Locked ? $"locked: {s.Message}" : $"unlocked, session {s.Session} ({s.Mode})");
         (_state, _stateAt) = (s, DateTime.UtcNow);
@@ -112,7 +113,7 @@ sealed class Agent : ApplicationContext
 
     async Task<string?> Login(string phone, string pin)
     {
-        if (WipePending()) return "Please ask at the counter.";
+        if (WipePending()) return WipeMessage();
         try
         {
             using var r = await _http.PostAsJsonAsync("/pc/login", new { phone, pin });
@@ -129,6 +130,17 @@ sealed class Agent : ApplicationContext
         catch (FileNotFoundException) { return false; }
         catch (DirectoryNotFoundException) { return false; }
         catch { return true; }
+    }
+
+    static string WipeMessage()
+    {
+        try
+        {
+            return File.GetCreationTimeUtc(WipeNote) < DateTime.UtcNow.AddMinutes(-2)
+                ? "Please ask at the counter."
+                : "Getting this PC ready for the next customer. Please wait.";
+        }
+        catch { return "Please ask at the counter."; }
     }
 
     static void AskForWipe()
@@ -172,7 +184,7 @@ sealed class LockScreen : Form
         {
             _go.Enabled = false;
             _error.Text = await login(_phone.Text.Trim(), _pin.Text) ?? "";
-            _pin.Text = ""; _go.Enabled = true;
+            _pin.Text = ""; _go.Enabled = !_busy;
         };
         // anything that jumps in front (a popup, a hotkey we could not block) loses the foreground again within 0.5 s
         var keepFront = new System.Windows.Forms.Timer { Interval = 500 };
@@ -190,13 +202,11 @@ sealed class LockScreen : Form
         _phone.Focus();
     }
 
-    const string Cleaning = "Please ask at the counter.";
     // nobody logs in while the last customer's apps and logins are being cleared
     public void SetBusy(bool busy)
     {
-        if (busy == _busy) return;
         _busy = busy;
-        _go.Enabled = !busy; _error.Text = busy ? Cleaning : "";
+        _go.Enabled = !busy;
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e) { if (e.CloseReason == CloseReason.UserClosing) e.Cancel = true; base.OnFormClosing(e); }
