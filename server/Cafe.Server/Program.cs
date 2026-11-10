@@ -81,6 +81,8 @@ app.MapPost("/staff/logout", (HttpContext c) => { staffTokens.End(TokenOf(c)); r
 app.MapPost("/staff/users", (HttpContext c, UserBody b) => new { id = cafe.AddUser(Staff(c), b.Role, b.Name, b.Phone, b.Pin) });
 app.MapPost("/staff/users/pin", (HttpContext c, LoginBody b) => { cafe.ResetPin(Staff(c), b.Phone, b.Pin); return Results.Ok(); });
 app.MapGet("/staff/pcs", (HttpContext c) => cafe.Pcs(Staff(c)));
+app.MapGet("/staff/settings/time-lock", (HttpContext c) => { Owner(c); return new { lockWhenTimeRunsOut = cafe.LockWhenTimeRunsOut }; });
+app.MapPost("/staff/settings/time-lock", (HttpContext c, TimeLockBody b) => { cafe.SetLockWhenTimeRunsOut(Owner(c), b.Enabled); return new { lockWhenTimeRunsOut = cafe.LockWhenTimeRunsOut }; });
 // the reply is what the new gaming PC needs: its key (shown once) and the server's certificate fingerprint
 app.MapPost("/staff/pcs", (HttpContext c, PcBody b) => new { token = cafe.AddPc(Staff(c), b.Pc), pin = File.ReadAllText(Path.Combine(data, "server.pin")) });
 app.MapDelete("/staff/pcs/{pc}", (HttpContext c, string pc) => { cafe.RemovePc(Staff(c), pc); return Results.Ok(); });
@@ -98,6 +100,19 @@ app.MapGet("/staff/bill/{session:long}", (HttpContext c, long session) => { Staf
 app.MapGet("/staff/review", (HttpContext c) => { Staff(c); return cafe.ForReview(); });
 
 Log($"started v{System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version}, certificate {cert.Thumbprint}");
+app.Lifetime.ApplicationStarted.Register(() => _ = Task.Run(async () =>
+{
+    using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+    try
+    {
+        while (await timer.WaitForNextTickAsync(app.Lifetime.ApplicationStopping))
+        {
+            try { cafe.EnforceTimeLimits(); }
+            catch (Exception e) { Log($"time expiry check failed: {e.Message}"); }
+        }
+    }
+    catch (OperationCanceledException) { }
+}));
 app.Run();
 
 string? Arg(string name) => Array.IndexOf(args, name) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
@@ -152,3 +167,4 @@ record LoginBody(string Phone, string Pin, string? Code = null);
 record UserBody(Role Role, string Name, string Phone, string Pin);
 record TwoStepBody(string Secret, string Code);
 record PcBody(string Pc, string? Message);
+record TimeLockBody(bool Enabled);
