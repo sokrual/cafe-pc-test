@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text.Json;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text.RegularExpressions;
@@ -14,6 +17,94 @@ static class Wipe
     public const string User = "Customer";
     static readonly string Data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ShinzxCafe");
     public static readonly string Request = Path.Combine(Data, "wipe", "request");
+
+    // Any object at the request path is a request. Errors are treated as pending so the PC stays blocked.
+    public static bool RequestExists()
+    {
+        try { _ = File.GetAttributes(Request); return true; }
+        catch (FileNotFoundException) { return false; }
+        catch (DirectoryNotFoundException) { return false; }
+        catch { return true; }
+    }
+
+    // The request folder is writable by Customer. Replace directories and links with a plain marker file,
+    // deleting only the objects themselves and never traversing a reparse point.
+    public static bool PrepareRequest(out int error, out bool normalized)
+    {
+        error = 0;
+        normalized = false;
+        try
+        {
+            var attributes = File.GetAttributes(Request);
+            if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) == 0 && LinkCount(Request) <= 1) return true;
+            normalized = true;
+            RemoveEntryNoFollow(Request);
+            using var marker = new FileStream(Request, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
+            return true;
+        }
+        catch (Exception e) { error = ErrorCode(e); return false; }
+    }
+
+    static void RemoveEntryNoFollow(string path)
+    {
+        var attributes = File.GetAttributes(path);
+        if ((attributes & FileAttributes.ReparsePoint) != 0)
+        {
+            if ((attributes & FileAttributes.Directory) != 0) Directory.Delete(path);
+            else File.Delete(path);
+            return;
+        }
+        if ((attributes & FileAttributes.Directory) == 0) { File.Delete(path); return; }
+        foreach (var child in Directory.EnumerateFileSystemEntries(path)) RemoveEntryNoFollow(child);
+        Directory.Delete(path);
+    }
+
+    // Keep one pinned connection for repeated status checks. Rebuilding the handler for every
+    // retry forces a fresh TLS handshake each time, which can exceed the timeout on busy ARM PCs.
+    static readonly Lazy<(HttpClient Client, Uri Server)> ServerClient = new(CreateServerClient);
+
+    static (HttpClient Client, Uri Server) CreateServerClient()
+    {
+        var line = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "watchdog.args"));
+        var match = Regex.Match(line, @"--server\s+(https://[^\s""]+)");
+        if (!match.Success) throw new InvalidOperationException("watchdog server URL is missing");
+        var server = new Uri(match.Groups[1].Value);
+        var token = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "pc.token")).Trim();
+        var pin = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "server.pin")).Trim();
+        var handler = new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback = (_, cert, _, _) =>
+                cert is not null && Convert.ToHexString(SHA256.HashData(cert.RawData)).Equals(pin, StringComparison.OrdinalIgnoreCase)
+        };
+        var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
+        client.DefaultRequestHeaders.Add("X-Pc-Token", token);
+        return (client, server);
+    }
+
+    // The watchdog has the same PC token and certificate pin as the lock screen. A missing answer,
+    // invalid response, or non-null session all mean "do not clean".
+    public static bool ServerHasNoSession(out int error)
+    {
+        error = 0;
+        try
+        {
+            var (client, server) = ServerClient.Value;
+            using var response = client.GetAsync(new Uri(server, "/pc/state")).GetAwaiter().GetResult();
+            if (!response.IsSuccessStatusCode) { error = (int)response.StatusCode; return false; }
+            using var state = JsonDocument.Parse(response.Content.ReadAsStream());
+            if (!state.RootElement.TryGetProperty("session", out var session)) { error = 13; return false; }
+            return session.ValueKind == JsonValueKind.Null;
+        }
+        catch (Exception e) { error = ErrorCode(e); return false; }
+    }
+
+    public static int ErrorCode(Exception e)
+    {
+        if (e is HttpRequestException { StatusCode: { } status }) return (int)status;
+        if (e.InnerException is SocketException socket) return socket.ErrorCode;
+        if (e is System.ComponentModel.Win32Exception win32) return win32.NativeErrorCode;
+        return e.HResult & 0xffff;
+    }
     static readonly string Windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows) + "\\";
 
     // Windows' own programs already running in the Customer session before any customer could log in
@@ -45,27 +136,38 @@ static class Wipe
                 && !Watchdog.WritableByNonAdmins(f) && !Watchdog.WritableByNonAdmins(Path.GetDirectoryName(f)!)) continue;
             try { p.Kill(); closed.Add(p); } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { } // already gone
         }
-        foreach (var p in closed) p.WaitForExit(5000); // Explorer comes back by itself (Windows restarts it)
+        foreach (var p in closed) if (!p.WaitForExit(5000)) throw new TimeoutException("customer process did not exit"); // Explorer comes back by itself (Windows restarts it)
 
-        var report = $"closed {closed.Count} programs";
+        var report = $"closed={closed.Count}";
         var profile = Registry.LocalMachine.OpenSubKey($@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\{sid}")?.GetValue("ProfileImagePath") as string;
         var clean = Path.Combine(Data, "clean-profile");
-        if (profile is null || !Directory.Exists(clean)) report += "; no clean copy, files not reset";
-        else
+        if (profile is null || !Directory.Exists(clean)) throw new InvalidOperationException("clean profile unavailable");
+        // graphics driver caches stay between customers (games load faster). robocopy /MIR deletes them even with
+        // /XD (tested on CI), so they wait in an admin-only folder during the copy and come back after it
+        string[] caches = [@"AppData\Local\NVIDIA", @"AppData\LocalLow\NVIDIA", @"AppData\Local\AMD", @"AppData\Local\D3DSCache"];
+        var hold = Path.Combine(Data, "caches");
+        if (Directory.Exists(hold)) Directory.Delete(hold, true); // left over from a clean-up that was cut off
+        Directory.CreateDirectory(hold);
+        var links = RemoveLinks(profile, profile, clean); // before any copy or delete here (no customer program runs any more)
+        for (var i = 0; i < caches.Length; i++) Move(Path.Combine(profile, caches[i]), Path.Combine(hold, $"{i}"));
+        int exitCode;
+        try
         {
-            // graphics driver caches stay between customers (games load faster). robocopy /MIR deletes them even with
-            // /XD (tested on CI), so they wait in an admin-only folder during the copy and come back after it
-            string[] caches = [@"AppData\Local\NVIDIA", @"AppData\LocalLow\NVIDIA", @"AppData\Local\AMD", @"AppData\Local\D3DSCache"];
-            var hold = Path.Combine(Data, "caches");
-            if (Directory.Exists(hold)) Directory.Delete(hold, true); // left over from a clean-up that was cut off
-            Directory.CreateDirectory(hold);
-            var links = RemoveLinks(profile, profile, clean); // before any copy or delete here (no customer program runs any more)
-            for (var i = 0; i < caches.Length; i++) Move(Path.Combine(profile, caches[i]), Path.Combine(hold, $"{i}"));
             using var rc = Process.Start(new ProcessStartInfo("robocopy.exe", $"\"{clean}\" \"{profile}\" /MIR /XJ /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.* UsrClass.dat*") { UseShellExecute = false, CreateNoWindow = true })!;
-            if (!rc.WaitForExit(300_000)) rc.Kill();
-            for (var i = 0; i < caches.Length; i++) Move(Path.Combine(hold, $"{i}"), Path.Combine(profile, caches[i]));
-            report += $"; {links} links removed; files reset (robocopy {(rc.HasExited ? rc.ExitCode : -1)})"; // 0-7 = fine; files Windows keeps open are skipped
+            if (!rc.WaitForExit(300_000))
+            {
+                rc.Kill(true);
+                rc.WaitForExit();
+                throw new TimeoutException("profile copy timed out");
+            }
+            exitCode = rc.ExitCode;
+            if (exitCode >= 8) throw new InvalidOperationException("profile copy failed");
         }
+        finally
+        {
+            for (var i = 0; i < caches.Length; i++) Move(Path.Combine(hold, $"{i}"), Path.Combine(profile, caches[i]));
+        }
+        report += $"; links={links}; robocopy={exitCode}"; // 0-7 = fine; files Windows keeps open are skipped
 
         if (Registry.LocalMachine.OpenSubKey(@"SOFTWARE\WOW6432Node\Valve\Steam")?.GetValue("InstallPath") is string steam)
         {
@@ -78,7 +180,7 @@ static class Wipe
                 var text = File.Exists(main) ? File.ReadAllText(main) : "";
                 var cleaned = Regex.Replace(text, @"\s*""ConnectCache""\s*\{[^{}]*\}", ""); // saved login keys
                 if (cleaned != text) File.WriteAllText(main, cleaned);
-                report += "; Steam logins cleared";
+                report += "; steam=1";
             }
         }
         // ways to start a program again for the next customer: autostart entries and scheduled tasks
@@ -94,7 +196,7 @@ static class Wipe
                 foreach (var n in key.GetValueNames()) key.DeleteValue(n);
                 foreach (var p in saved.Where(p => p[0] == k)) key.SetValue(p[1], p[2], p[2].Contains('%') ? RegistryValueKind.ExpandString : RegistryValueKind.String);
             }
-            report += "; autostart list reset";
+            report += "; autostart=1";
         }
         var tasks = Path.Combine(Environment.SystemDirectory, "Tasks");
         var removed = 0;
@@ -104,10 +206,16 @@ static class Wipe
             try { xml = File.ReadAllText(f); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { continue; }
             if (!xml.Contains($">{sid}<") && !xml.Contains($"\\{User}<") && !xml.Contains($">{User}<")) continue; // the task runs as Customer
             using var d = Process.Start(new ProcessStartInfo("schtasks.exe", $"/delete /tn \"{f[tasks.Length..]}\" /f") { UseShellExecute = false, CreateNoWindow = true })!;
-            d.WaitForExit(10_000);
+            if (!d.WaitForExit(10_000))
+            {
+                d.Kill(true);
+                d.WaitForExit();
+                throw new TimeoutException("task removal timed out");
+            }
+            if (d.ExitCode != 0) throw new InvalidOperationException("task removal failed");
             removed++;
         }
-        return report + $"; {removed} customer tasks removed";
+        return report + $"; tasks={removed}";
     }
 
     // A customer can leave links in the account: folder links (junctions) and hard links to files they cannot change
@@ -122,7 +230,8 @@ static class Wipe
             {
                 var target = e.LinkTarget is string t ? Path.GetFullPath(t, Path.GetDirectoryName(e.FullName)!) : null;
                 if (target is not null && target.StartsWith(profile + "\\", StringComparison.OrdinalIgnoreCase)) continue;
-                try { if (e is DirectoryInfo d) d.Delete(); else e.Delete(); n++; } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                if (e is DirectoryInfo d) d.Delete(); else e.Delete();
+                n++;
             }
             else if (e is DirectoryInfo d) n += RemoveLinks(d.FullName, profile, clean);
             // only files the copy will write over matter: deleting an extra file removes just that name

@@ -35,14 +35,55 @@ static class Watchdog
         var sid = Wipe.CustomerSid();
         uint? watched = null;
         HashSet<(int, DateTime)> trusted = [];
+        string? cleanupReason = null;
+        var nextCleanup = DateTime.MinValue;
         while (!stop.IsCancellationRequested)
         {
             try
             {
-                if (File.Exists(Wipe.Request))
+                if (Wipe.RequestExists())
                 {
-                    Log(sid is null ? "wipe asked for, but there is no Customer account" : $"wipe: {Wipe.Run(sid, path, trusted)}");
-                    File.Delete(Wipe.Request); // the lock screen lets the next customer log in once this is gone
+                    if (DateTime.UtcNow >= nextCleanup)
+                    {
+                        string? reason = null;
+                        if (!Wipe.PrepareRequest(out var requestError, out var normalized))
+                            reason = $"cleanup request path could not be made safe (error code {requestError})";
+                        else
+                        {
+                            if (normalized) Log("unsafe cleanup request object removed without following it");
+                            if (!Wipe.ServerHasNoSession(out var serverError))
+                                reason = serverError == 0 ? "cleanup deferred (session active)" : $"cleanup deferred (server error code {serverError})";
+                            else if (sid is null)
+                                reason = "cleanup failed (error code 2)";
+                            else
+                            {
+                                try
+                                {
+                                    var report = Wipe.Run(sid, path, trusted);
+                                    File.Delete(Wipe.Request); // only a completed clean-up releases the lock screen
+                                    Log($"cleanup complete: {report}");
+                                    cleanupReason = null;
+                                    nextCleanup = DateTime.MinValue;
+                                }
+                                catch (Exception e) { reason = $"cleanup failed (error code {Wipe.ErrorCode(e)})"; }
+                            }
+                        }
+                        if (reason is not null)
+                        {
+                            if (reason != cleanupReason) Log(reason);
+                            cleanupReason = reason;
+                            // A server error may be transient (for example, while its listener is restarting).
+                            // Retry it promptly; an active session or local cleanup failure keeps the 30-second backoff.
+                            nextCleanup = DateTime.UtcNow.AddSeconds(reason.StartsWith("cleanup deferred (server error", StringComparison.Ordinal) ? 5 : 30);
+                            if (reason.StartsWith("cleanup failed", StringComparison.Ordinal))
+                                try { File.SetCreationTimeUtc(Wipe.Request, DateTime.UtcNow.AddMinutes(-3)); } catch { }
+                        }
+                    }
+                }
+                else
+                {
+                    cleanupReason = null;
+                    nextCleanup = DateTime.MinValue;
                 }
                 // match the full path, not just the name: a customer's renamed copy of some other program must not count
                 if (!File.Exists(setup) && ActiveSession() is uint s && !Process.GetProcessesByName(exe).Any(p => p.SessionId == s && Native.PathOf(p) == path))

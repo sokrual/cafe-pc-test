@@ -58,8 +58,15 @@ sealed class Agent : ApplicationContext
         _timer = new TimerWidget(Now, () => Send("/pc/logout", lockNow: true), () => Send("/pc/selflock", lockNow: true));
         KeyBlocker.Install(() => _lock.Visible);
         var poll = new System.Windows.Forms.Timer { Interval = 2000 };
-        poll.Tick += async (_, _) => { _lock.SetBusy(File.Exists(WipeNote)); await Refresh(); };
+        poll.Tick += async (_, _) =>
+        {
+            var pending = WipePending();
+            _lock.SetBusy(pending);
+            if (pending) Apply(_state with { Locked = true, Message = WipeMessage() });
+            await Refresh();
+        };
         poll.Start();
+        _lock.SetBusy(WipePending()); // a pending request must stay blocked immediately after a restart
         Apply(_state);
         _ = Refresh();
     }
@@ -95,6 +102,8 @@ sealed class Agent : ApplicationContext
 
     void Apply(PcState s)
     {
+        if (WipePending()) s = s with { Locked = true, Message = WipeMessage() };
+        _lock.SetBusy(WipePending());
         if (_state.Session is not null && s.Session is null) AskForWipe(); // logged out, here or at the counter
         if (s.Locked != _state.Locked) Program.Log(s.Locked ? $"locked: {s.Message}" : $"unlocked, session {s.Session} ({s.Mode})");
         (_state, _stateAt) = (s, DateTime.UtcNow);
@@ -104,6 +113,7 @@ sealed class Agent : ApplicationContext
 
     async Task<string?> Login(string phone, string pin)
     {
+        if (WipePending()) return WipeMessage();
         try
         {
             using var r = await _http.PostAsJsonAsync("/pc/login", new { phone, pin });
@@ -114,11 +124,30 @@ sealed class Agent : ApplicationContext
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { return "This PC cannot reach the counter right now. Please ask at the counter."; }
     }
 
+    static bool WipePending()
+    {
+        try { _ = File.GetAttributes(WipeNote); return true; }
+        catch (FileNotFoundException) { return false; }
+        catch (DirectoryNotFoundException) { return false; }
+        catch { return true; }
+    }
+
+    static string WipeMessage()
+    {
+        try
+        {
+            return File.GetCreationTimeUtc(WipeNote) < DateTime.UtcNow.AddMinutes(-2)
+                ? "Please ask at the counter."
+                : "Getting this PC ready for the next customer. Please wait.";
+        }
+        catch { return "Please ask at the counter."; }
+    }
+
     static void AskForWipe()
     {
         if (!Directory.Exists(Path.GetDirectoryName(WipeNote))) return; // not an installed cafe PC (tests, development)
-        try { File.WriteAllText(WipeNote, ""); Program.Log("asked for the logout clean-up"); }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Program.Log($"could not ask for the logout clean-up: {e.Message}"); }
+        try { using var request = new FileStream(WipeNote, FileMode.CreateNew, FileAccess.Write, FileShare.Read); Program.Log("asked for the logout clean-up"); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Program.Log($"could not ask for the logout clean-up (error code {e.HResult & 0xffff})"); }
     }
 
     // logout and customer lock: done now if the admin PC answers, otherwise queued and the screen locks anyway
@@ -138,6 +167,7 @@ sealed class LockScreen : Form
     readonly TextBox _pin = new() { Name = "Pin", Width = 320, Font = new Font("Segoe UI", 16), PlaceholderText = "PIN", UseSystemPasswordChar = true };
     readonly Button _go = new() { Name = "Login", Text = "Log in", Width = 320, Height = 48, Font = new Font("Segoe UI", 14, FontStyle.Bold), BackColor = Color.FromArgb(0, 120, 215), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
     readonly Label _error = new() { Name = "Error", AutoSize = false, Width = 520, Height = 40, ForeColor = Color.Salmon, Font = new Font("Segoe UI", 12), TextAlign = ContentAlignment.MiddleCenter };
+    bool _busy;
 
     public LockScreen(string cafeName, Func<string, string, Task<string?>> login)
     {
@@ -154,7 +184,7 @@ sealed class LockScreen : Form
         {
             _go.Enabled = false;
             _error.Text = await login(_phone.Text.Trim(), _pin.Text) ?? "";
-            _pin.Text = ""; _go.Enabled = true;
+            _pin.Text = ""; _go.Enabled = !_busy;
         };
         // anything that jumps in front (a popup, a hotkey we could not block) loses the foreground again within 0.5 s
         var keepFront = new System.Windows.Forms.Timer { Interval = 500 };
@@ -172,12 +202,11 @@ sealed class LockScreen : Form
         _phone.Focus();
     }
 
-    const string Cleaning = "Getting this PC ready for the next customer. Please wait.";
     // nobody logs in while the last customer's apps and logins are being cleared
     public void SetBusy(bool busy)
     {
-        if (busy == (_error.Text == Cleaning)) return;
-        _go.Enabled = !busy; _error.Text = busy ? Cleaning : "";
+        _busy = busy;
+        _go.Enabled = !busy;
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e) { if (e.CloseReason == CloseReason.UserClosing) e.Cancel = true; base.OnFormClosing(e); }
@@ -229,8 +258,13 @@ sealed class TimerWidget : Form
                 _tray.ShowBalloonTip(5000, "Time left", message, ToolTipIcon.Info);
             }
         if (left is null || left > 600) _warned.Clear();
-        var show = DateTime.UtcNow < _peekUntil || !Native.GameInFront(Handle);
-        if (Visible != show) Visible = show;
+        var gameInFront = Native.GameInFront(Handle, out var frontClass, out var frontProcess);
+        var show = DateTime.UtcNow < _peekUntil || !gameInFront;
+        if (Visible != show)
+        {
+            Program.Log($"timer {(show ? "shown" : "hidden")}; front class={frontClass} process={frontProcess}");
+            Visible = show;
+        }
     }
 
     protected override bool ShowWithoutActivation => true; // never take focus from a game
@@ -277,10 +311,11 @@ static class Native
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
     [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool attach);
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
-    [DllImport("shell32.dll")] static extern int SHQueryUserNotificationState(out int state);
     [DllImport("user32.dll")] static extern IntPtr GetShellWindow();
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out Rect r);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int max);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint processId);
     [StructLayout(LayoutKind.Sequential)] struct Rect { public int L, T, R, B; }
 
     // Windows refuses SetForegroundWindow from a background program unless it joins the foreground thread's input.
@@ -296,14 +331,27 @@ static class Native
     }
     [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, nuint extra);
 
-    public static bool GameInFront(IntPtr self)
+    public static bool GameInFront(IntPtr self, out string className, out string processName)
     {
-        if (SHQueryUserNotificationState(out var st) == 0 && st is 2 or 3 or 4) return true; // full screen, D3D exclusive, presentation
         var h = GetForegroundWindow();
-        if (h == IntPtr.Zero || h == self || h == GetShellWindow()) return false;
+        className = "none";
+        processName = "none";
+        if (h == IntPtr.Zero) return false;
+
         var cls = new System.Text.StringBuilder(64);
         GetClassName(h, cls, cls.Capacity);
-        if (cls.ToString() is "Progman" or "WorkerW" or "Shell_TrayWnd") return false;
+        className = cls.ToString();
+        GetWindowThreadProcessId(h, out var processId);
+        try
+        {
+            using var process = Process.GetProcessById((int)processId);
+            processName = process.ProcessName;
+        }
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { }
+
+        // Hidden windows and our own lock screen/agent windows are never games.
+        if (!IsWindowVisible(h) || processId == Environment.ProcessId || h == self || h == GetShellWindow()) return false;
+        if (className is "Progman" or "WorkerW" or "Shell_TrayWnd") return false;
         if (!GetWindowRect(h, out var r)) return false;
         var m = Screen.FromHandle(h).Bounds; // borderless-window games cover the whole monitor
         return r.L <= m.Left && r.T <= m.Top && r.R >= m.Right && r.B >= m.Bottom;
