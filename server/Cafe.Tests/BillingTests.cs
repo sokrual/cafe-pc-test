@@ -308,20 +308,20 @@ public sealed class BillingTests : IDisposable
     }
 
     [Fact]
-    public void T1_4_logout_queued_offline_bills_to_when_it_happened_not_when_the_network_came_back()
+    public void T1_4_offline_logout_is_billed_through_server_receipt_time()
     {
         _cafe.AddPc(_owner, "PC1");
         _cafe.PcLogin("PC1", "9000000003", "2222");
-        Wait(20); _cafe.PcSeen("PC1"); // last contact at 20 min
-        Wait(15);                      // network down; customer logs out at 35 min
-        Wait(60);                      // network back an hour later; PC sends "logout, 3600 s ago"
-        Assert.Equal(TimeSpan.FromMinutes(35), _cafe.PcLogout("PC1", 3600).Used);
+        Wait(20); _cafe.PcSeen("PC1");
+        Wait(15);                      // customer logs out while the network is down
+        Wait(60);                      // server receives the queued logout an hour later
+        Assert.Equal(TimeSpan.FromMinutes(95), _cafe.PcLogout("PC1", 3600).Used);
 
         _cafe.PcLogin("PC1", "9000000003", "2222");
         Wait(10); _cafe.PcSeen("PC1");
         Wait(5);
-        // a tampered PC claims the logout was 5 hours ago: never earlier than the last contact
-        Assert.Equal(TimeSpan.FromMinutes(10), _cafe.PcLogout("PC1", 5 * 3600).Used);
+        // A PC cannot reduce the bill by claiming an earlier logout time.
+        Assert.Equal(TimeSpan.FromMinutes(15), _cafe.PcLogout("PC1", 5 * 3600).Used);
     }
 
     [Fact]
