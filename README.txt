@@ -3,6 +3,7 @@ CAFE PC SOFTWARE (test repo)
 Software to run a small gaming cafe: 10 to 15 Windows 11 Pro gaming PCs and one counter (admin) PC
 on the same shop network. Payment is cash or UPI. Nothing runs on the internet; all data stays on the counter PC.
 Made by Turyos Ventures. Work in progress, not ready for real customers yet.
+What is built and what is left: STATUS.txt.
 
 WHAT IS IN HERE
 

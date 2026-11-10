@@ -1,0 +1,51 @@
+PROJECT STATUS - what is built, what is left
+Last updated: 10 Nov 2026. Version 0.3.0. Latest green test run: 42747190129 (all 8 jobs pass).
+
+Read README.txt for the layout and CLAUDE.md for the rules (commit as "Turyos Ventures" with an empty email,
+no AI signature anywhere, simple English in everything people see, smallest change that fully works).
+
+BUILD PHASES
+
+B1  Counter PC server and billing                                   DONE
+    Customers, staff, owner; PIN logins with lockout; sessions (prepaid, pay at end, plans); pause, add time,
+    group bills; cash, UPI and wallet payments; shift close; append-only money records and audit log;
+    encrypted database. Code: server/Cafe.Core, server/Cafe.Server. Tests: server/Cafe.Tests/BillingTests.cs.
+
+B2  Gaming PC lock screen, timer and watchdog                       DONE
+    Lock screen and on-screen timer (pc/Cafe.Agent), Windows service that keeps it running (pc/Cafe.Watchdog),
+    offline queue, HTTPS with a pinned certificate. Tests: pc/Cafe.UiTests.
+
+B3  Lockdown and installers                                         BUILT - final security pass still open
+    Installers for the counter PC and the gaming PCs (install/), Customer account, logout clean-up
+    (pc/Cafe.Watchdog/Wipe.cs), Level A app allow-list (install/levelA.ps1, watch-only until the cafe trial),
+    web filter with AdGuard Home, uninstall. Tests: ci/lockdown.ps1 (50 checks).
+    Left: the final end-to-end security pass, and the fixes from three outside security reviews
+    (finding by finding: confirm against the code, add a failing test, then the smallest fix).
+    Level A switches to blocking after the cafe trial, with an "allow or not" prompt for the owner (part of B5.3).
+
+B4  Customer sign-up and data rules                                 NOT STARTED
+    Sign-up and visit register as required by the Rajasthan cyber cafe rules and Indian data law, how long
+    the data is kept and how it is deleted. The detailed spec is kept by the project owner and is given
+    separately. Until B4 exists, customers have name, phone and PIN only, and the register is kept on paper.
+
+B5  Owner features                                                  IN PROGRESS
+    B5.1 Accounts, adding PCs, owner two-step login, staff auto-logout        DONE
+         Code: server/Cafe.Core/Accounts.cs. Tests: server/Cafe.Tests/AccountTests.cs.
+    B5.2 Counter screen (web page): all PCs, start/stop/pause/add time, lock, payments       next
+    B5.3 Alerts on the owner's PC (voice and popup) and the "allow or not" prompt for blocked programs
+    B5.4 Reports: revenue by day, week, month, PC, cash/UPI, staff, discounts and corrections; PDF and Excel
+    B5.5 Daily encrypted backup, with a restore test
+    B5.6 Messages to PCs read aloud, "Call staff" button
+    B5.7 Plans, offers, happy hours, reservations
+    B5.8 Owner access from his phone (Tailscale) and a view-only screen view
+    B5.9 Turning PCs on and off from the counter
+
+B6  Load and long-run tests (all PCs at once, 12-hour runs)        NOT STARTED
+
+TEST PHASES ON REAL PCS (after the build)
+    Phase 0 kit (kit/): one cafe PC for 1-2 days, changes nothing for customers. Sent to the owner after B5.
+    Then: 1 lock and escape, 2 billing, 3 sign-up and data, 4 owner features, 5 load, 6 real customers and rollout.
+
+OPEN DECISIONS FOR THE CAFE OWNER (defaults in the code until he decides)
+    Grace minutes, block size, minimum charge, how long prepaid minutes last, what happens when time runs out,
+    PIN length, the real rate card, the Windows version on his PCs, the logo.
