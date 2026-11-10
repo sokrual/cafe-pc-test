@@ -95,7 +95,9 @@ if (-not $Server -and (Test-Path "$app\watchdog.args")) { $Server = ((Get-Conten
 if (-not $Server -and -not $Ci) { Add-Type -AssemblyName Microsoft.VisualBasic; $Server = [Microsoft.VisualBasic.Interaction]::InputBox("Type the counter PC's address (for example 192.168.1.10):", "Shinzx setup") }
 if ($Server -notmatch '^[A-Za-z0-9.-]{1,63}$') { throw "The counter PC's address '$Server' is not valid. Use its address, for example 192.168.1.10." }
 foreach ($f in "pc.token", "server.pin") {
-    if (-not (Test-Path "$src\$f") -and -not (Test-Path "$app\$f")) { throw "The file $f is missing. Copy it from the counter PC into this folder." }
+    if (-not (Test-Path "$src\$f") -and -not (Test-Path "$app\$f") -and -not (Test-Path "$data\keys\$f")) {
+        throw "The file $f is missing. Copy it from the counter PC into this folder."
+    }
 }
 
 # --- program files ---
@@ -103,13 +105,23 @@ if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force }
 Get-Process Cafe.Watchdog, Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force   # a stopped service can take a moment to let go of its file
 Start-Sleep -Seconds 1
 New-Item $app -ItemType Directory -Force | Out-Null   # inside Program Files: customers can read and run, not change
-foreach ($f in "Cafe.Agent.exe", "Cafe.Watchdog.exe", "keep-running.txt", "install-pc.ps1", "levelA.ps1", "SETUP-MODE.bat", "pc.token", "server.pin") {
+foreach ($f in "Cafe.Agent.exe", "Cafe.Watchdog.exe", "keep-running.txt", "install-pc.ps1", "levelA.ps1", "SETUP-MODE.bat") {
     if ($src -ne $app -and (Test-Path "$src\$f")) { Copy-Item "$src\$f" $app -Force }   # SETUP-MODE runs from $app itself
 }
 "`"$app\Cafe.Agent.exe`" --server https://${Server}:5443" | Set-Content "$app\watchdog.args" -Encoding ascii
 
 New-Item $data -ItemType Directory -Force | Out-Null
 icacls $data /inheritance:r /grant "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" | Out-Null   # admins and Windows only
+$keys = "$data\keys"
+New-Item $keys -ItemType Directory -Force | Out-Null
+icacls $keys /inheritance:r /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" | Out-Null
+foreach ($f in "pc.token", "server.pin") {
+    $source = if (Test-Path "$src\$f") { "$src\$f" } elseif (Test-Path "$app\$f") { "$app\$f" } else { $null }
+    if ($source) { Copy-Item $source "$keys\$f" -Force }
+    if (-not (Test-Path "$keys\$f")) { throw "The protected key file $f is missing." }
+    if ($src -ne $app -and (Test-Path "$src\$f")) { Remove-Item "$src\$f" -Force }
+    Remove-Item "$app\$f" -Force -ErrorAction SilentlyContinue
+}
 # the one place the lock screen (running as Customer) may write: a "please clean up" note for the watchdog
 New-Item "$data\wipe" -ItemType Directory -Force | Out-Null
 icacls "$data\wipe" /grant "*S-1-5-32-545:(OI)(CI)(W,RD)" | Out-Null

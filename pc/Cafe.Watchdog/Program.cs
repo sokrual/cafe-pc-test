@@ -2,12 +2,21 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.ServiceProcess;
 using System.Text;
+using System.Text.RegularExpressions;
+using System.Security.Principal;
 
 // Windows service, runs as SYSTEM: customers can neither stop nor kill it. Every second it checks that the PC program
 // runs in the signed-in user's session and starts it there if not, so killing the PC program only blinks the screen.
 // Reads one line from watchdog.args next to this exe: "<path to Cafe.Agent.exe>" <its arguments>
 // (that file must sit in a folder only admins can change, or anyone could make SYSTEM start their program).
-ServiceBase.Run(new WatchdogService());
+if (args.Contains("--test-pipe-probe", StringComparer.OrdinalIgnoreCase))
+    Environment.ExitCode = PcProxy.TestPipeProbe();
+else if (args.Contains("--test-proxy", StringComparer.OrdinalIgnoreCase))
+{
+    PcProxy.StartTest(args);
+    Thread.Sleep(Timeout.Infinite);
+}
+else ServiceBase.Run(new WatchdogService());
 
 sealed class WatchdogService : ServiceBase
 {
@@ -24,13 +33,27 @@ static class Watchdog
 
     public static void Run(CancellationToken stop)
     {
-        var line = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "watchdog.args")).Trim();
-        var path = Path.GetFullPath(line.Split('"')[1]);
+        var argsFile = Path.Combine(AppContext.BaseDirectory, "watchdog.args");
+        var path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "Cafe.Agent.exe"));
+        var line = $"\"{path}\"";
+        try
+        {
+            var configured = File.ReadAllText(argsFile).Trim();
+            var match = Regex.Match(configured, "^\\\"([^\\\"]+)\\\"");
+            if (!match.Success) throw new InvalidOperationException("watchdog.args has no quoted Cafe.Agent.exe path");
+            path = Path.GetFullPath(match.Groups[1].Value);
+            if (!Path.GetFileName(path).Equals("Cafe.Agent.exe", StringComparison.OrdinalIgnoreCase) || !File.Exists(path))
+                throw new InvalidOperationException("watchdog.args must name the installed Cafe.Agent.exe");
+            line = configured;
+        }
+        catch (Exception e) { Log($"ERROR reading watchdog.args: {e.Message}; guarding with the installed Cafe.Agent.exe and retrying the proxy"); }
         var exe = Path.GetFileNameWithoutExtension(path);
-        // SYSTEM starts whatever these name: if ordinary accounts can change either, a customer could swap in their own program
-        foreach (var f in new[] { AppContext.BaseDirectory, Path.Combine(AppContext.BaseDirectory, "watchdog.args"), path })
+        // SYSTEM starts only files in admin-controlled locations.
+        foreach (var f in new[] { AppContext.BaseDirectory, argsFile, path })
             if (WritableByNonAdmins(f)) { Log($"REFUSED: {f} can be changed by non-admin accounts; install into Program Files"); return; }
         Log($"v{typeof(Watchdog).Assembly.GetName().Version} watching {exe}");
+        var proxyStarted = false;
+        var nextProxyAttempt = DateTime.MinValue;
         var setup = Path.Combine(AppContext.BaseDirectory, "setup.flag"); // the installer's setup mode: no lock screen while the owner sets up
         var sid = Wipe.CustomerSid();
         uint? watched = null;
@@ -41,6 +64,20 @@ static class Watchdog
         {
             try
             {
+                if (!proxyStarted && DateTime.UtcNow >= nextProxyAttempt)
+                {
+                    try
+                    {
+                        PcProxy.StartFromWatchdogArgs(line, path, stop, Log);
+                        proxyStarted = true;
+                        Log("PC pipe proxy started");
+                    }
+                    catch (Exception e)
+                    {
+                        Log($"PC pipe proxy start failed: {e.Message}; lock screen remains guarded; retrying in 30 seconds");
+                        nextProxyAttempt = DateTime.UtcNow.AddSeconds(30);
+                    }
+                }
                 if (Wipe.RequestExists())
                 {
                     if (DateTime.UtcNow >= nextCleanup)
@@ -100,7 +137,11 @@ static class Watchdog
 
     internal static bool WritableByNonAdmins(string file)
     {
-        var acl = Directory.Exists(file) ? (System.Security.AccessControl.FileSystemSecurity)new DirectoryInfo(file).GetAccessControl() : new FileInfo(file).GetAccessControl();
+        var acl = Directory.Exists(file)
+            ? (System.Security.AccessControl.FileSystemSecurity)new DirectoryInfo(file).GetAccessControl()
+            : File.Exists(file)
+                ? new FileInfo(file).GetAccessControl()
+                : new DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath(file))!).GetAccessControl();
         var anyone = new[] { "S-1-1-0", "S-1-5-11", "S-1-5-32-545", "S-1-5-4", Wipe.CustomerSid() }; // Everyone, Authenticated Users, Users, Interactive, Customer
         // Write = write data/append/attributes only; "Modify" is not used because it also contains read and run
         const System.Security.AccessControl.FileSystemRights write = System.Security.AccessControl.FileSystemRights.Write
@@ -113,7 +154,7 @@ static class Watchdog
     static void Log(string line)
     {
         try { Directory.CreateDirectory(Logs); File.AppendAllText(Path.Combine(Logs, $"watchdog-{DateTime.Now:yyyyMMdd}.log"), $"{DateTime.Now:HH:mm:ss} {line}{Environment.NewLine}"); }
-        catch (IOException) { }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 
     // the session someone is signed in to and using (console or remote); null at the Windows sign-in screen

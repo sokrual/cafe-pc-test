@@ -38,8 +38,10 @@ $enableLUAOriginal = $idleOriginal.EnableLUA
 $dohOriginal = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -ErrorAction SilentlyContinue).DnsOverHttpsMode
 # control for C6: other DNS servers must answer BEFORE the install, or "blocked" afterwards proves nothing
 $googleBefore = try { Resolve-DnsName example.com -Server 8.8.8.8 -DnsOnly -QuickTimeout -ErrorAction Stop | Out-Null; "answered" } catch { "blocked" }
-$dnsBefore = @(Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | ForEach-Object { "$($_.InterfaceIndex)=$((Get-DnsClientServerAddress -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4).ServerAddresses -join ',')" })
-$runnerDns = ((Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | Select-Object -First 1).DNSServer | Where-Object AddressFamily -eq 2).ServerAddresses[0]
+$defaultIfIndexes = @(Get-NetRoute -DestinationPrefix "0.0.0.0/0" | Sort-Object RouteMetric | Select-Object -ExpandProperty InterfaceIndex -Unique)
+if (-not $defaultIfIndexes) { throw "No IPv4 default route found" }
+$dnsBefore = @($defaultIfIndexes | ForEach-Object { $i = $_; "$i=$((Get-DnsClientServerAddress -InterfaceIndex $i -AddressFamily IPv4).ServerAddresses -join ',')" })
+$runnerDns = (Get-DnsClientServerAddress -InterfaceIndex $defaultIfIndexes[0] -AddressFamily IPv4).ServerAddresses[0]
 
 try {
     # ===== A. counter (admin) PC =====
@@ -95,6 +97,9 @@ try {
     Check "B3.C3" "Stored sign-in password really signs in Customer" ($first.ExitCode -eq 0) "exit $($first.ExitCode)"
     $s = Get-CimInstance Win32_Service -Filter "Name='CafeWatchdog'"
     Check "B3.C4" "Watchdog service: automatic, as SYSTEM, also in Safe Mode" ($s.StartMode -eq "Auto" -and $s.StartName -eq "LocalSystem" -and (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal\CafeWatchdog") -and (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Control\SafeBoot\Network\CafeWatchdog")) "$($s.State)"
+    $tokenRead = CustomerPs "[IO.File]::ReadAllText('$data\keys\pc.token') | Out-Null"
+    $pinRead = CustomerPs "[IO.File]::ReadAllText('$data\keys\server.pin') | Out-Null"
+    Check "B3.C4b" "Customer cannot read the PC token or certificate pin" ($tokenRead -ne 0 -and $pinRead -ne 0 -and -not (Test-Path "$app\pc.token") -and -not (Test-Path "$app\server.pin") -and -not (Test-Path "$stage\pc.token") -and -not (Test-Path "$stage\server.pin")) "token read exit $tokenRead, pin read exit $pinRead; source copies removed"
     Start-Sleep -Seconds 5
     Check "B3.C5" "Setup mode: no lock screen yet" ((Test-Path "$app\setup.flag") -and -not (Get-Process Cafe.Agent -ErrorAction SilentlyContinue)) "setup.flag present"
     $other = try { Resolve-DnsName example.com -Server 8.8.8.8 -DnsOnly -QuickTimeout -ErrorAction Stop | Out-Null; "answered" } catch { "blocked" }
@@ -121,8 +126,36 @@ try {
     Check "B3.E2" "Customer: no Task Manager, no Lock, no password change, no registry editor, no command prompt" ($sys.DisableTaskMgr -eq 1 -and $sys.DisableLockWorkstation -eq 1 -and $sys.DisableChangePassword -eq 1 -and $sys.DisableRegistryTools -eq 1 -and $cmd -eq 2) "DisableCMD $cmd"
     Remove-Variable sys; [gc]::Collect(); cmd.exe /c "reg unload HKU\T >nul 2>&1"
     Check "B3.E3" "Switch user hidden" ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System").HideFastUserSwitching -eq 1) ""
+    # Prove that the watchdog still starts the locked UI when its protected keys are absent,
+    # then restores the proxy after the 30-second retry when the keys return.
+    Stop-Service CafeWatchdog -Force
+    Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force
+    $heldKeys = Join-Path $env:TEMP ("cafe-held-keys-" + [guid]::NewGuid().ToString("N"))
+    New-Item $heldKeys -ItemType Directory | Out-Null
+    Move-Item "$data\keys\pc.token" "$heldKeys\pc.token"
+    Move-Item "$data\keys\server.pin" "$heldKeys\server.pin"
+    Start-Service CafeWatchdog
     $agentUp = WaitFor 20 { Get-Process Cafe.Agent -ErrorAction SilentlyContinue }
-    Check "B3.E4" "Setup mode off: the watchdog starts the lock screen" ($agentUp -and -not (Test-Path "$app\setup.flag")) ""
+    $watchdogLog = Join-Path "$data\logs" "watchdog-$(Get-Date -Format yyyyMMdd).log"
+    $missingKeysLogged = WaitFor 10 { (Test-Path $watchdogLog) -and (Select-String -Path $watchdogLog -Pattern "PC pipe proxy start failed" -SimpleMatch) }
+    $retryLogStart = if (Test-Path $watchdogLog) { (Get-Content $watchdogLog).Count } else { 0 }
+    Move-Item "$heldKeys\pc.token" "$data\keys\pc.token"
+    Move-Item "$heldKeys\server.pin" "$data\keys\server.pin"
+    Remove-Item $heldKeys -Force
+    $proxyRetried = WaitFor 45 {
+        if (-not (Test-Path $watchdogLog)) { return $false }
+        $lines = @(Get-Content $watchdogLog)
+        $lines.Count -gt $retryLogStart -and [bool]($lines | Select-Object -Skip $retryLogStart | Select-String -Pattern "PC pipe proxy started" -SimpleMatch)
+    }
+    Check "B3.E4" "Watchdog starts the lock screen without keys and retries the proxy after keys return" ($agentUp -and $missingKeysLogged -and $proxyRetried -and -not (Test-Path "$app\setup.flag")) "agent $agentUp, missing-key failure logged $missingKeysLogged, proxy retry $proxyRetried"
+
+    # The pipe ACL admits Customer, but the process-image check must refuse a different executable.
+    $probe = AsCustomer "$app\Cafe.Watchdog.exe" "--test-pipe-probe"
+    $probe.WaitForExit()
+    Start-Sleep -Milliseconds 300
+    $pipeRefused = $probe.ExitCode
+    $refusalLogged = (Test-Path $watchdogLog) -and [bool](Select-String -Path $watchdogLog -Pattern "refused named-pipe client process" -SimpleMatch)
+    Check "B3.E4b" "A non-Cafe.Agent.exe process running as Customer is refused by the pipe" ($pipeRefused -eq 0 -and $refusalLogged) "probe exit $pipeRefused, refusal logged $refusalLogged"
     $la = Get-Content "$data\levelA-id.txt" -ErrorAction SilentlyContinue
     Check "B3.E5" "Level A watch-only on (nothing blocked)" ($la -and ((CiTool.exe --list-policies) -match [regex]::Escape("$la".Trim('{}')))) "policy $la"
 
@@ -246,7 +279,8 @@ try {
     Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
     Copy-Item "$data\logs\*" $wd -ErrorAction SilentlyContinue   # the watchdog's log goes with the uninstall; keep it for the artifacts
     & "$app\install-pc.ps1" -Uninstall -Ci
-    $dnsAfter = @(Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | ForEach-Object { "$($_.InterfaceIndex)=$((Get-DnsClientServerAddress -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4).ServerAddresses -join ',')" })
+    $afterIfIndexes = @(Get-NetRoute -DestinationPrefix "0.0.0.0/0" | Sort-Object RouteMetric | Select-Object -ExpandProperty InterfaceIndex -Unique)
+    $dnsAfter = @($afterIfIndexes | ForEach-Object { $i = $_; "$i=$((Get-DnsClientServerAddress -InterfaceIndex $i -AddressFamily IPv4).ServerAddresses -join ',')" })
     Check "B3.I1" "PC uninstall: service, account, files and rules gone" (-not (Get-Service CafeWatchdog -ErrorAction SilentlyContinue) -and -not (Get-LocalUser Customer -ErrorAction SilentlyContinue) -and -not (Test-Path $app) -and -not (Get-NetFirewallRule -Group "Shinzx PC" -ErrorAction SilentlyContinue)) ""
     Check "B3.I2" "PC uninstall: DNS and automatic sign-in back as before" (("$dnsAfter" -eq "$dnsBefore") -and (Get-ItemProperty $winlogon).AutoAdminLogon -eq $autoBefore) "DNS before $dnsBefore, after $dnsAfter"
     Check "B3.I2b" "PC uninstall: clock settings back as before" ((Get-ItemProperty $ntpKey).NtpServer -eq $ntpBefore) "$ntpBefore"

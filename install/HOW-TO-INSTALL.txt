@@ -45,3 +45,11 @@ To take the software off: double-click UNINSTALL-PC on a gaming PC, or UNINSTALL
 
 Also on every PC: set a password for the BIOS (the settings screen that opens before Windows starts)
 and turn off "boot from USB" there. Then nobody can start the PC from a USB stick.
+
+
+CERTIFICATE RENEWAL (GAMING PCS)
+When the counter PC's HTTPS certificate is renewed, copy the new server.pin into
+the gaming PC install folder along with the updated PC key files, then run
+INSTALL-PC on each gaming PC as administrator. The installer updates the protected
+ProgramData keys and restarts CafeWatchdog; the restarted watchdog reloads the new
+certificate pin before accepting lock-screen requests.

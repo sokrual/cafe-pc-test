@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 
 namespace Cafe.Agent;
 
@@ -16,11 +15,10 @@ static class Program
     static void Main(string[] args)
     {
         string? Arg(string n) => Array.IndexOf(args, n) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
-        string Read(string flag, string file) => File.ReadAllText(Arg(flag) ?? Path.Combine(AppContext.BaseDirectory, file)).Trim();
         _logDir = Arg("--logs") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Cafe", "logs");
         Log($"started v{typeof(Program).Assembly.GetName().Version}");
         ApplicationConfiguration.Initialize();
-        Application.Run(new Agent(new Uri(Arg("--server") ?? "https://127.0.0.1:5443"), Read("--token-file", "pc.token"), Read("--pin-file", "server.pin"), Arg("--name") ?? "Shinzx Gaming Hub"));
+        Application.Run(new Agent(Arg("--name") ?? "Shinzx Gaming Hub"));
     }
 
     // never logs PINs or tokens; a log that can't be written must not stop the PC program
@@ -38,7 +36,7 @@ record ErrorBody(string Error);
 
 sealed class Agent : ApplicationContext
 {
-    readonly HttpClient _http;
+    readonly WatchdogPipeClient _watchdog = new();
     readonly LockScreen _lock;
     readonly TimerWidget _timer;
     PcState _state = new(true, null, null, null, 0, null); // locked until the admin PC says otherwise
@@ -48,12 +46,8 @@ sealed class Agent : ApplicationContext
     // installed cafe PCs only: the SYSTEM watchdog cleans the Customer account when this note appears, then deletes it
     static readonly string WipeNote = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ShinzxCafe", "wipe", "request");
 
-    public Agent(Uri server, string token, string pin, string name)
+    public Agent(string name)
     {
-        // only the admin PC's own certificate is accepted (pinned SHA-256), so nobody can pretend to be the counter
-        var tls = new HttpClientHandler { ServerCertificateCustomValidationCallback = (_, cert, _, _) => cert is not null && Convert.ToHexString(SHA256.HashData(cert.RawData)) == pin };
-        _http = new HttpClient(tls) { BaseAddress = server, Timeout = TimeSpan.FromSeconds(3) };
-        _http.DefaultRequestHeaders.Add("X-Pc-Token", token);
         _lock = new LockScreen(name, Login);
         _timer = new TimerWidget(Now, () => Send("/pc/logout", lockNow: true), () => Send("/pc/selflock", lockNow: true));
         KeyBlocker.Install(() => _lock.Visible);
@@ -85,11 +79,11 @@ sealed class Agent : ApplicationContext
             while (_queue.Count > 0) // replay in order; the admin PC is told how long ago each one happened
             {
                 var (path, since) = _queue[0];
-                using var r = await _http.PostAsync(path == "/pc/logout" ? $"{path}?ago={(long)since.Elapsed.TotalSeconds}" : path, null);
+                using var r = await _watchdog.PostAsync(path == "/pc/logout" ? $"{path}?ago={(long)since.Elapsed.TotalSeconds}" : path, null);
                 Program.Log($"sent queued {path} ({(long)since.Elapsed.TotalSeconds}s late): {(int)r.StatusCode}");
                 _queue.RemoveAt(0); // a 400 (e.g. already logged out at the counter) is final too
             }
-            if (await _http.GetFromJsonAsync<PcState>("/pc/state") is { } s) Apply(s);
+            if (await _watchdog.GetFromJsonAsync<PcState>("/pc/state") is { } s) Apply(s);
             if (!_online) Program.Log("admin PC reachable again");
             _online = true;
         }
@@ -116,7 +110,7 @@ sealed class Agent : ApplicationContext
         if (WipePending()) return WipeMessage();
         try
         {
-            using var r = await _http.PostAsJsonAsync("/pc/login", new { phone, pin });
+            using var r = await _watchdog.PostAsJsonAsync("/pc/login", new { phone, pin });
             if (!r.IsSuccessStatusCode) return (await r.Content.ReadFromJsonAsync<ErrorBody>())?.Error ?? "Could not log in. Please try again.";
             Apply((await r.Content.ReadFromJsonAsync<PcState>())!);
             return null;

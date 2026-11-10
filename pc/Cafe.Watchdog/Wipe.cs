@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Net.Sockets;
-using System.Security.Cryptography;
 using System.Text.Json;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
@@ -59,29 +58,7 @@ static class Wipe
         Directory.Delete(path);
     }
 
-    // Keep one pinned connection for repeated status checks. Rebuilding the handler for every
-    // retry forces a fresh TLS handshake each time, which can exceed the timeout on busy ARM PCs.
-    // Any failure drops it, so the next try re-reads the files (a new certificate pin, a new PC key).
-    static (HttpClient Client, Uri Server)? _serverClient;
-
-    static (HttpClient Client, Uri Server) CreateServerClient()
-    {
-        var line = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "watchdog.args"));
-        var match = Regex.Match(line, @"--server\s+(https://[^\s""]+)");
-        if (!match.Success) throw new InvalidOperationException("watchdog server URL is missing");
-        var server = new Uri(match.Groups[1].Value);
-        var token = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "pc.token")).Trim();
-        var pin = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "server.pin")).Trim();
-        var handler = new HttpClientHandler
-        {
-            ServerCertificateCustomValidationCallback = (_, cert, _, _) =>
-                cert is not null && Convert.ToHexString(SHA256.HashData(cert.RawData)).Equals(pin, StringComparison.OrdinalIgnoreCase)
-        };
-        var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
-        client.DefaultRequestHeaders.Add("X-Pc-Token", token);
-        return (client, server);
-    }
-
+    // The watchdog's proxy owns the pinned server connection and the only copy of the PC key.
     // The watchdog has the same PC token and certificate pin as the lock screen. A missing answer,
     // invalid response, or non-null session all mean "do not clean".
     public static bool ServerHasNoSession(out int error)
@@ -89,14 +66,13 @@ static class Wipe
         error = 0;
         try
         {
-            var (client, server) = _serverClient ??= CreateServerClient();
-            using var response = client.GetAsync(new Uri(server, "/pc/state")).GetAwaiter().GetResult();
+            using var response = PcProxy.SendServerRequest(HttpMethod.Get, "/pc/state");
             if (!response.IsSuccessStatusCode) throw new HttpRequestException(null, null, response.StatusCode); // e.g. an old PC key
             using var state = JsonDocument.Parse(response.Content.ReadAsStream());
             if (!state.RootElement.TryGetProperty("session", out var session)) { error = 13; return false; }
             return session.ValueKind == JsonValueKind.Null;
         }
-        catch (Exception e) { error = ErrorCode(e); _serverClient?.Client.Dispose(); _serverClient = null; return false; }
+        catch (Exception e) { error = ErrorCode(e); return false; }
     }
 
     public static int ErrorCode(Exception e)
