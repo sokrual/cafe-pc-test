@@ -96,13 +96,21 @@ static class Watchdog
                             {
                                 try
                                 {
-                                    var report = Wipe.Run(sid, path, trusted);
-                                    File.Delete(Wipe.Request); // only a completed clean-up releases the lock screen
+                                    var testMode = File.Exists(Path.Combine(AppContext.BaseDirectory, "test-wipe-mode.flag"));
+                                    var report = Wipe.Run(sid, path, trusted, testMode);
+                                    File.Delete(Wipe.Request); // only a completed reset releases the lock screen
                                     Log($"cleanup complete: {report}");
                                     cleanupReason = null;
                                     nextCleanup = DateTime.MinValue;
+                                    watched = null; // the Windows session may have logged off and signed back in with the same id
+                                    trusted = [];
                                 }
-                                catch (Exception e) { reason = $"cleanup failed (error code {Wipe.ErrorCode(e)})"; }
+                                catch (Exception e)
+                                {
+                                    reason = $"cleanup failed (error code {Wipe.ErrorCode(e)})";
+                                    watched = null;
+                                    trusted = [];
+                                }
                             }
                         }
                         if (reason is not null)

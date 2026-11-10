@@ -20,6 +20,34 @@ function AsCustomer($exe, $argList) { # start a program as Customer (password re
     $null = $proc.Handle   # without this Windows PowerShell never reports the exit code
     $proc
 }
+if (-not ("CafeWindowProbe" -as [type])) {
+    Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class CafeWindowProbe {
+    delegate bool EnumProc(IntPtr window, IntPtr state);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc callback, IntPtr state);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder text, int max);
+    public static bool HasVisibleWindow(int pid) {
+        bool found = false;
+        EnumWindows((window, state) => {
+            uint owner;
+            GetWindowThreadProcessId(window, out owner);
+            if (owner == (uint)pid && IsWindowVisible(window)) {
+                var title = new StringBuilder(256);
+                GetWindowText(window, title, title.Capacity);
+                if (title.Length > 0) { found = true; return false; }
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+}
+'@
+}
 function CustomerPs($command) { # run PowerShell as Customer; returns its exit code (0 = the command worked)
     $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("`$ErrorActionPreference = 'Stop'; $command"))
     $p = AsCustomer "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" "-NoProfile -EncodedCommand $enc"; $p.WaitForExit(); $p.ExitCode
@@ -118,7 +146,23 @@ try {
 
     # ===== E. step 2 =====
     & "$stage\install-pc.ps1" -Ci
+    # CI runs without a Customer interactive session; this admin-only marker exercises the profile reset after
+    # the test Customer processes exit. Installed cafe PCs never contain this file and log off the real Customer session.
+    New-Item "$app\test-wipe-mode.flag" -ItemType File -Force | Out-Null
     Check "B3.E1" "Clean copy saved" (Test-Path "$data\clean-profile\AppData\Local\Discord\Update.txt") "$data\clean-profile"
+    # An older install has a clean file copy but no registry-hive baseline. Require owner setup instead of
+    # letting the first customer logout fail forever because the reset snapshot is missing.
+    $heldHive = "$data\clean-profile-hive.migration-test"
+    Move-Item "$data\clean-profile-hive" $heldHive
+    & "$stage\install-pc.ps1" -Ci
+    $migrationSetup = (Test-Path "$app\setup.flag") -and -not (Get-Process Cafe.Agent -ErrorAction SilentlyContinue)
+    Move-Item $heldHive "$data\clean-profile-hive"
+    Remove-Item "$app\setup.flag" -Force -ErrorAction SilentlyContinue
+    Restart-Service CafeWatchdog -Force
+    $migrationLock = WaitFor 20 {
+        @(Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Where-Object { [CafeWindowProbe]::HasVisibleWindow($_.Id) }).Count -gt 0
+    }
+    Check "B3.E1b" "An existing install without a clean hive requests owner setup and restores the lock screen after its baseline returns" ($migrationSetup -and $migrationLock) "setup requested $migrationSetup; lock screen restored $migrationLock"
     cmd.exe /c "reg load HKU\T `"$prof\NTUSER.DAT`" >nul 2>&1"
     $h = if ($LASTEXITCODE) { "Registry::HKEY_USERS\$($u.SID.Value)" } else { "Registry::HKEY_USERS\T" }
     $sys = Get-ItemProperty "$h\Software\Microsoft\Windows\CurrentVersion\Policies\System"
@@ -126,6 +170,8 @@ try {
     Check "B3.E2" "Customer: no Task Manager, no Lock, no password change, no registry editor, no command prompt" ($sys.DisableTaskMgr -eq 1 -and $sys.DisableLockWorkstation -eq 1 -and $sys.DisableChangePassword -eq 1 -and $sys.DisableRegistryTools -eq 1 -and $cmd -eq 2) "DisableCMD $cmd"
     Remove-Variable sys; [gc]::Collect(); cmd.exe /c "reg unload HKU\T >nul 2>&1"
     Check "B3.E3" "Switch user hidden" ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System").HideFastUserSwitching -eq 1) ""
+    $hiveRead = CustomerPs "try { [IO.File]::ReadAllBytes('$data\clean-profile-hive\NTUSER.DAT') | Out-Null; if (Test-Path '$data\clean-profile-hive\UsrClass.dat') { [IO.File]::ReadAllBytes('$data\clean-profile-hive\UsrClass.dat') | Out-Null }; exit 0 } catch { exit 1 }"
+    Check "B3.E6" "Owner registry hives are saved and Customer cannot read them" ((Test-Path "$data\clean-profile-hive\NTUSER.DAT") -and $hiveRead -ne 0) "NTUSER.DAT and optional UsrClass.dat are admin/SYSTEM-only; read attempt exit $hiveRead"
     # Prove that the watchdog still starts the locked UI when its protected keys are absent,
     # then restores the proxy after the 30-second retry when the keys return.
     Stop-Service CafeWatchdog -Force
@@ -199,10 +245,17 @@ try {
     # A directory containing a junction at the request path is a request, not a reason to follow it.
     New-Item "$data\wipe\request" -ItemType Directory -Force | Out-Null
     New-Item -ItemType Junction -Path "$data\wipe\request\escape" -Target "C:\ShinzxCanary" | Out-Null
+    $resetClock = [Diagnostics.Stopwatch]::StartNew()
     Pc "/pc/logout" @{} | Out-Null
     $asked = WaitFor 15 { Test-Path "$data\wipe\request" }
     $done = WaitFor 90 { -not (Test-Path "$data\wipe\request") }
+    $resetLockReady = WaitFor 15 {
+        @(Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Where-Object { [CafeWindowProbe]::HasVisibleWindow($_.Id) }).Count -gt 0
+    }
+    $resetClock.Stop()
+    $resetSeconds = [math]::Round($resetClock.Elapsed.TotalSeconds, 2)
     Check "B3.F1" "Logout request folder and its junction are removed without following the link" ($asked -and $done -and (Test-Path "C:\ShinzxCanary\keep.txt")) "asked $asked, done $done"
+    Check "B3.M1" "Full profile reset logout-to-lock-screen-ready measurement" ($done -and $resetLockReady) "$resetSeconds seconds; request removed $done; lock screen ready $resetLockReady"
     # A junction at the request path itself is also removed without touching its target.
     New-Item -ItemType Junction -Path "$data\wipe\request" -Target "C:\ShinzxCanary" | Out-Null
     $linkDone = WaitFor 30 { -not (Test-Path "$data\wipe\request") }
@@ -220,7 +273,48 @@ try {
     Move-Item "$data\clean-profile.saved" "$data\clean-profile"
     Start-Service CafeWatchdog
     $retryDone = WaitFor 45 { -not (Test-Path "$data\wipe\request") }
-    Check "B3.F1d" "A failed clean-up stays pending and succeeds after watchdog restart" ($blocked -and $retryDone) "blocked $blocked, retry $retryDone"
+    Check "B3.F1d" "A failed reset stays pending and succeeds after watchdog restart" ($blocked -and $retryDone) "blocked $blocked, retry $retryDone"
+
+    # Verify the full profile + registry hives were replaced, then exercise the account after the reset.
+    $prof = (Get-CimInstance Win32_UserProfile | Where-Object SID -eq $u.SID.Value).LocalPath
+    $ntUserMatch = (Test-Path "$prof\NTUSER.DAT") -and ((Get-FileHash "$prof\NTUSER.DAT").Hash -eq (Get-FileHash "$data\clean-profile-hive\NTUSER.DAT").Hash)
+    $usrClassSnapshot = "$data\clean-profile-hive\UsrClass.dat"
+    $usrClassPath = "$prof\AppData\Local\Microsoft\Windows\UsrClass.dat"
+    $usrClassMatch = -not (Test-Path $usrClassSnapshot) -or ((Test-Path $usrClassPath) -and ((Get-FileHash $usrClassPath).Hash -eq (Get-FileHash $usrClassSnapshot).Hash))
+    $hiveMatch = $ntUserMatch -and $usrClassMatch
+    Check "B3.M2" "Customer profile folder and registry hives are restored from the owner's clean baseline" ((Test-Path $prof) -and (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$($u.SID.Value)") -and $hiveMatch) "profile $prof; NTUSER.DAT $ntUserMatch; UsrClass.dat $usrClassMatch"
+    $passwordProbe = AsCustomer "$env:WINDIR\System32\cmd.exe" "/c exit"
+    $passwordOk = $passwordProbe.WaitForExit(15000) -and $passwordProbe.ExitCode -eq 0
+    Check "B3.M3" "Customer password still works after a full profile reset" $passwordOk "AsCustomer exit success: $passwordOk"
+    $wlAfterReset = Get-ItemProperty $winlogon
+    $autoSignInOk = ($wlAfterReset.AutoAdminLogon -eq "1" -and $wlAfterReset.ForceAutoLogon -eq "1" -and
+        $wlAfterReset.DefaultUserName -eq "Customer" -and $wlAfterReset.DefaultDomainName -eq $env:COMPUTERNAME -and
+        -not [string]::IsNullOrWhiteSpace([Shinzx.Lsa]::Read("DefaultPassword")))
+    Check "B3.M4" "Automatic sign-in settings and saved password survive a full profile reset" $autoSignInOk "AutoAdminLogon, ForceAutoLogon, Customer name/domain and LSA password retained: $autoSignInOk"
+    $gameProbe = AsCustomer "$env:ProgramFiles\FakeGame\game.exe" "-n 1 127.0.0.1"
+    $allUsersGameOk = $gameProbe.WaitForExit(15000) -and $gameProbe.ExitCode -eq 0
+    Check "B3.M5" "A game installed for all users still runs after a full profile reset" $allUsersGameOk "$env:ProgramFiles\FakeGame\game.exe exit success: $allUsersGameOk"
+    # Read the restored hive directly: no second Customer logon is needed while the profile service settles.
+    $hiveWasLoaded = Test-Path "Registry::HKEY_USERS\$($u.SID.Value)"
+    $resetHive = if ($hiveWasLoaded) { "Registry::HKEY_USERS\$($u.SID.Value)" } else { "Registry::HKEY_USERS\ShinzxResetCheck" }
+    if (-not $hiveWasLoaded) {
+        reg.exe load "HKU\ShinzxResetCheck" "$prof\NTUSER.DAT" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not inspect the restored Customer registry hive." }
+    }
+    try {
+        $resetPolicies = Get-ItemProperty "$resetHive\Software\Microsoft\Windows\CurrentVersion\Policies\System"
+        $resetCmd = (Get-ItemProperty "$resetHive\Software\Policies\Microsoft\Windows\System").DisableCMD
+        $resetRun = Get-ItemProperty "$resetHive\$runKey"
+        $settingsOk = ($resetPolicies.DisableTaskMgr -eq 1 -and $resetCmd -eq 2 -and $resetRun.OwnerApp -eq "C:\owner.exe" -and -not $resetRun.Evil)
+    } finally {
+        if (-not $hiveWasLoaded) { [gc]::Collect(); reg.exe unload "HKU\ShinzxResetCheck" | Out-Null }
+    }
+    Check "B3.M7" "Customer restrictions and owner autostart settings survive the new registry hive" $settingsOk "policy and Run keys restored: $settingsOk"
+    Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force
+    $resetLockReady = WaitFor 20 {
+        @(Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Where-Object { [CafeWindowProbe]::HasVisibleWindow($_.Id) }).Count -gt 0
+    }
+    Check "B3.M6" "Watchdog starts the lock screen after a full profile reset" $resetLockReady "visible Cafe.Agent lock screen: $resetLockReady"
     # An unreachable counter server must also leave the request pending; reconnecting lets the next loop retry.
     Set-Content "$data\wipe\request" ""
     Stop-Process -Id $server.Id -Force
@@ -231,8 +325,12 @@ try {
     $offlineDone = WaitFor 45 { -not (Test-Path "$data\wipe\request") }
     Check "B3.F0b" "An unreachable server keeps the request pending until it reconnects" ($offlineKept -and $offlineDone) "kept $offlineKept, retry $offlineDone"
     Start-Sleep -Seconds 2
-    Check "B3.F2" "Customer's programs closed (a Windows one and a game)" ($p1.HasExited -and $p2.HasExited) "ping $($p1.HasExited), game $($p2.HasExited)"
-    Check "B3.F3" "Mouse app on the keep list stays running" (-not $p3.HasExited) "lghub.exe"
+    Check "B3.F2" "Customer's programs closed by the full profile reset" ($p1.HasExited -and $p2.HasExited -and $p3.HasExited -and $p4.HasExited) "ping $($p1.HasExited), game $($p2.HasExited), mouse $($p3.HasExited), open-folder app $($p4.HasExited)"
+    $mouseProbe = AsCustomer "$env:ProgramFiles\FakeMouse\lghub.exe" "-t 127.0.0.1"
+    Start-Sleep -Seconds 1
+    $mouseStarts = -not $mouseProbe.HasExited
+    if ($mouseStarts) { Stop-Process -Id $mouseProbe.Id -Force -ErrorAction SilentlyContinue }
+    Check "B3.F3" "Machine-wide mouse app can start again for Customer after reset" $mouseStarts "Program Files executable started as Customer: $mouseStarts"
     Check "B3.F4" "Customer's files and app logins gone" (-not (Test-Path "$prof\Downloads\secret.txt") -and -not (Test-Path "$prof\AppData\Roaming\discord")) "Downloads, Discord login"
     Check "B3.F5a" "Owner's desktop shortcut back" (Test-Path "$prof\Desktop\Game.txt") ""
     Check "B3.F5b" "Owner's Discord install kept" (Test-Path "$prof\AppData\Local\Discord\Update.txt") ""
@@ -243,11 +341,10 @@ try {
     Check "B3.F8" "A customer's folder link cannot make the clean-up delete files elsewhere" ($linkMade -eq 0 -and (Test-Path "C:\ShinzxCanary\keep.txt")) "link made: exit $linkMade"
     Check "B3.F8b" "A customer's hard link cannot make the clean-up write over files elsewhere" ((Get-Content "C:\ShinzxCanary\keep.txt" -Raw) -eq "must stay`r`n") "hard link made: exit $hard (a refusal by Windows is a pass too)"
     Check "B3.F9" "A program named like a mouse app in a folder anyone can write is closed" ($p4.HasExited) "lghub.exe in an open folder"
-    $run = Get-ItemProperty "Registry::HKEY_USERS\$($u.SID.Value)\$runKey" -ErrorAction SilentlyContinue
-    Check "B3.F10" "Customer's autostart entry removed, the owner's kept" ($runMade -eq 0 -and $ownerRun -eq 0 -and -not $run.Evil -and $run.OwnerApp -eq "C:\owner.exe") "made: customer exit $runMade, owner exit $ownerRun"
+    Check "B3.F10" "Customer's autostart entry removed, the owner's kept" ($runMade -eq 0 -and $ownerRun -eq 0 -and $resetRun.OwnerApp -eq "C:\owner.exe" -and -not $resetRun.Evil) "made: customer exit $runMade, owner exit $ownerRun"
     cmd.exe /c "schtasks /query /tn ShinzxCustomerTask >nul 2>&1"
     Check "B3.F11" "Customer's scheduled task removed" ($taskMade -eq 0 -and $LASTEXITCODE -ne 0) "made: exit $taskMade"
-    Stop-Process -Id $p3.Id -Force
+    Stop-Process -Id $p3.Id -Force -ErrorAction SilentlyContinue
 
     # ===== G. what a customer cannot do =====
     $stop = AsCustomer "$env:WINDIR\System32\sc.exe" "stop CafeWatchdog"; $stop.WaitForExit()
@@ -276,6 +373,7 @@ try {
     } finally { & "$app\levelA.ps1" -Mode Off }
 
     # ===== I. uninstall =====
+    Remove-Item "$app\test-wipe-mode.flag" -Force -ErrorAction SilentlyContinue
     Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
     Copy-Item "$data\logs\*" $wd -ErrorAction SilentlyContinue   # the watchdog's log goes with the uninstall; keep it for the artifacts
     & "$app\install-pc.ps1" -Uninstall -Ci

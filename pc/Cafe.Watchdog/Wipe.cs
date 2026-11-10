@@ -6,11 +6,9 @@ using System.Security.Principal;
 using System.Text.RegularExpressions;
 using Microsoft.Win32;
 
-// Logout wipe. The lock screen (running as Customer) leaves a note in ProgramData\ShinzxCafe\wipe when a customer
-// logs out; the watchdog, as SYSTEM, then closes everything that customer opened, puts the Customer account's files
-// back to the owner's clean copy (that removes every app login: Discord, browsers, Epic, Riot ...), clears Steam's
-// saved logins (kept in Steam's own folder, outside the account), and deletes the note. Until then the lock screen
-// lets nobody log in.
+// Logout reset. The lock screen (running as Customer) leaves a note in ProgramData\\ShinzxCafe\\wipe.
+// The watchdog, as SYSTEM, logs off Customer and swaps the entire profile folder and both registry hives to the
+// protected owner baseline, clears Steam's saved logins and customer tasks, then releases the lock screen.
 static class Wipe
 {
     public const string User = "Customer";
@@ -96,93 +94,154 @@ static class Wipe
         catch (IdentityNotMappedException) { return null; } // not a cafe install (no Customer account): no wipes
     }
 
-    public static string Run(string sid, string agent, HashSet<(int, DateTime)> trusted)
+    public static string Run(string sid, string agent, HashSet<(int, DateTime)> trusted, bool testMode = false)
     {
+        var clean = Path.Combine(Data, "clean-profile");
+        var hiveSnapshot = Path.Combine(Data, "clean-profile-hive");
+        var savedNtUser = Path.Combine(hiveSnapshot, "NTUSER.DAT");
+        var savedUsrClass = Path.Combine(hiveSnapshot, "UsrClass.dat");
+        if (!Directory.Exists(clean) || !File.Exists(savedNtUser))
+            throw new InvalidOperationException("clean profile or registry hive unavailable");
+
+        string? profile;
+        using (var key = Registry.LocalMachine.OpenSubKey($@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\{sid}"))
+            profile = key?.GetValue("ProfileImagePath") as string;
+        if (profile is null) throw new InvalidOperationException("Customer profile path unavailable");
+        profile = Path.GetFullPath(Environment.ExpandEnvironmentVariables(profile));
+        if (!string.Equals(Path.GetPathRoot(profile), Path.GetPathRoot(Data), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Customer profile and protected staging area must be on the same drive");
+
+        var stageRoot = Path.Combine(Data, "profile-stage");
+        var backupRoot = Path.Combine(Data, "profile-old");
+        EnsureProtectedDirectory(stageRoot, null);
+        EnsureProtectedDirectory(backupRoot, null);
+        var stages = Directory.GetDirectories(stageRoot);
+        var backups = Directory.GetDirectories(backupRoot);
+        if (stages.Length > 1 || backups.Length > 1) throw new InvalidOperationException("unexpected profile reset staging state");
+        var existingStage = stages.FirstOrDefault();
+        var existingBackup = backups.FirstOrDefault();
+
+        // Recover a service interruption between the two same-volume directory renames.
+        if (!Directory.Exists(profile))
+        {
+            if (existingBackup is not null && existingStage is not null)
+            {
+                if (!testMode) LogoffCustomerIfPresent(sid);
+                WaitForHiveUnload(sid, TimeSpan.FromSeconds(30));
+                Directory.Move(existingStage, profile);
+                DeleteOldProfile(existingBackup, clean);
+                return "profile=reset recovered";
+            }
+            if (existingBackup is not null)
+            {
+                Directory.Move(existingBackup, profile);
+                throw new InvalidOperationException("previous profile reset was interrupted; restored the Customer profile");
+            }
+            if (existingStage is not null)
+            {
+                if (!testMode) LogoffCustomerIfPresent(sid);
+                WaitForHiveUnload(sid, TimeSpan.FromSeconds(30));
+                Directory.Move(existingStage, profile);
+                return "profile=reset recovered";
+            }
+            throw new InvalidOperationException("Customer profile folder unavailable");
+        }
+        if (existingBackup is not null && existingStage is null)
+        {
+            DeleteOldProfile(existingBackup, clean); // the previous swap completed; only backup deletion was interrupted
+            return "profile=reset recovered";
+        }
+        if (existingBackup is not null) DeleteOldProfile(existingBackup, clean);
+        if (existingStage is not null) Directory.Delete(existingStage, true);
+        var stage = Path.Combine(stageRoot, Guid.NewGuid().ToString("N"));
+        var backup = Path.Combine(backupRoot, Guid.NewGuid().ToString("N"));
+
+        int? customerSession = null;
+        if (!testMode)
+        {
+            var lockScreen = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(agent))
+                .FirstOrDefault(p => Owner(p) == sid && string.Equals(Native.PathOf(p), agent, StringComparison.OrdinalIgnoreCase));
+            if (lockScreen is null || lockScreen.SessionId == 0)
+                throw new InvalidOperationException("Customer lock screen session unavailable");
+            customerSession = lockScreen.SessionId;
+        }
+
         var keep = File.ReadAllLines(Path.Combine(AppContext.BaseDirectory, "keep-running.txt")).Select(l => l.Trim())
             .Where(l => l.Length > 0 && !l.StartsWith('#')).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var programFiles = new[] { Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 }.Select(f => Environment.GetFolderPath(f) + "\\");
         var closed = new List<Process>();
+        if (testMode)
+        {
+            // CI's lock screen runs as the runner rather than Customer; terminate it to exercise watchdog restart.
+            foreach (var ui in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(agent)))
+                if (ui.SessionId > 0 && string.Equals(Native.PathOf(ui), agent, StringComparison.OrdinalIgnoreCase))
+                    try { ui.Kill(); closed.Add(ui); } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+        }
         foreach (var p in Process.GetProcesses())
         {
-            if (Owner(p) != sid || trusted.Contains((p.Id, StartOf(p)))) continue;
+            if (Owner(p) != sid) continue;
+            if (!testMode && trusted.Contains((p.Id, StartOf(p)))) continue;
             var f = Native.PathOf(p);
-            if (f == agent) continue;
-            // mouse/keyboard apps listed by the owner, only from folders customers cannot change (Steam's folder, for one,
-            // is open to all users: a customer's program named like a mouse app there must not survive the clean-up)
-            if (f is not null && keep.Contains(Path.GetFileName(f)) && programFiles.Any(d => f.StartsWith(d, StringComparison.OrdinalIgnoreCase))
+            if (!testMode && f == agent) continue;
+            // Production logs off the whole Customer session below. These exceptions avoid an abrupt close
+            // before Windows performs its normal session-end notifications.
+            if (!testMode && f is not null && keep.Contains(Path.GetFileName(f)) && programFiles.Any(d => f.StartsWith(d, StringComparison.OrdinalIgnoreCase))
                 && !Watchdog.WritableByNonAdmins(f) && !Watchdog.WritableByNonAdmins(Path.GetDirectoryName(f)!)) continue;
-            try { p.Kill(); closed.Add(p); } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { } // already gone
+            try { p.Kill(); closed.Add(p); } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
         }
-        foreach (var p in closed) if (!p.WaitForExit(5000)) throw new TimeoutException("customer process did not exit"); // Explorer comes back by itself (Windows restarts it)
+        foreach (var p in closed) if (!p.WaitForExit(5000)) throw new TimeoutException("customer process did not exit");
 
         var report = $"closed={closed.Count}";
-        var profile = Registry.LocalMachine.OpenSubKey($@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\{sid}")?.GetValue("ProfileImagePath") as string;
-        var clean = Path.Combine(Data, "clean-profile");
-        if (profile is null || !Directory.Exists(clean)) throw new InvalidOperationException("clean profile unavailable");
-        // graphics driver caches stay between customers (games load faster). robocopy /MIR deletes them even with
-        // /XD (tested on CI), so they wait in an admin-only folder during the copy and come back after it
-        string[] caches = [@"AppData\Local\NVIDIA", @"AppData\LocalLow\NVIDIA", @"AppData\Local\AMD", @"AppData\Local\D3DSCache"];
-        var hold = Path.Combine(Data, "caches");
-        if (Directory.Exists(hold)) Directory.Delete(hold, true); // left over from a clean-up that was cut off
-        Directory.CreateDirectory(hold);
-        var links = RemoveLinks(profile, profile, clean); // before any copy or delete here (no customer program runs any more)
-        for (var i = 0; i < caches.Length; i++) Move(Path.Combine(profile, caches[i]), Path.Combine(hold, $"{i}"));
-        int exitCode;
-        try
+        var links = RemoveLinks(profile, profile, clean);
+
+        // Build a complete clean profile before logging off. Its parent is inaccessible to Customer;
+        // the staged folder itself has the Customer ACL it needs after the atomic same-volume swap.
+        Directory.CreateDirectory(stage);
+        EnsureProtectedDirectory(stage, sid);
+        int stagedExit;
+        using (var rc = Process.Start(new ProcessStartInfo("robocopy.exe", $"\"{clean}\" \"{stage}\" /MIR /XJ /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.* UsrClass.dat*") { UseShellExecute = false, CreateNoWindow = true })!)
         {
-            using var rc = Process.Start(new ProcessStartInfo("robocopy.exe", $"\"{clean}\" \"{profile}\" /MIR /XJ /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.* UsrClass.dat*") { UseShellExecute = false, CreateNoWindow = true })!;
             if (!rc.WaitForExit(300_000))
             {
                 rc.Kill(true);
                 rc.WaitForExit();
-                throw new TimeoutException("profile copy timed out");
+                throw new TimeoutException("clean profile staging timed out");
             }
-            exitCode = rc.ExitCode;
-            if (exitCode >= 8) throw new InvalidOperationException("profile copy failed");
+            stagedExit = rc.ExitCode;
+            if (stagedExit >= 8) throw new InvalidOperationException("clean profile staging failed");
         }
-        finally
+        File.Copy(savedNtUser, Path.Combine(stage, "NTUSER.DAT"), true);
+        if (File.Exists(savedUsrClass))
         {
-            for (var i = 0; i < caches.Length; i++) Move(Path.Combine(hold, $"{i}"), Path.Combine(profile, caches[i]));
+            var usrClass = Path.Combine(stage, @"AppData\Local\Microsoft\Windows\UsrClass.dat");
+            Directory.CreateDirectory(Path.GetDirectoryName(usrClass)!);
+            File.Copy(savedUsrClass, usrClass, true);
         }
-        report += $"; links={links}; robocopy={exitCode}"; // 0-7 = fine; files Windows keeps open are skipped
 
+        // These settings live outside the profile. Clear customer login material and tasks before the next sign-in.
+        var steamCleaned = false;
         if (Registry.LocalMachine.OpenSubKey(@"SOFTWARE\WOW6432Node\Valve\Steam")?.GetValue("InstallPath") is string steam)
         {
             var cfg = Path.Combine(steam, "config");
-            // customers can write in Steam's folder: never follow a link they could have put there
             if (Directory.Exists(cfg) && new DirectoryInfo(cfg).LinkTarget is null)
             {
-                File.Delete(Path.Combine(cfg, "loginusers.vdf")); // the "remember me" accounts list
+                File.Delete(Path.Combine(cfg, "loginusers.vdf"));
                 var main = Path.Combine(cfg, "config.vdf");
                 var text = File.Exists(main) ? File.ReadAllText(main) : "";
-                var cleaned = Regex.Replace(text, @"\s*""ConnectCache""\s*\{[^{}]*\}", ""); // saved login keys
+                var cleaned = Regex.Replace(text, @"\s*""ConnectCache""\s*\{[^{}]*\}", "");
                 if (cleaned != text) File.WriteAllText(main, cleaned);
-                report += "; steam=1";
+                steamCleaned = true;
             }
         }
-        // ways to start a program again for the next customer: autostart entries and scheduled tasks
-        var runs = Path.Combine(Data, "run-keys.txt");
-        using var hive = Registry.Users.OpenSubKey(sid, true); // loaded while Customer is signed in
-        if (hive is not null && File.Exists(runs))
-        {
-            var saved = File.ReadAllLines(runs).Select(l => l.Split('\t', 3)).Where(p => p.Length == 3).ToList();
-            foreach (var k in new[] { "Run", "RunOnce" })
-            {
-                using var key = hive.OpenSubKey($@"Software\Microsoft\Windows\CurrentVersion\{k}", true);
-                if (key is null || !RealName(key).StartsWith($@"\REGISTRY\USER\{sid}\", StringComparison.OrdinalIgnoreCase)) continue; // a registry link out of the account
-                foreach (var n in key.GetValueNames()) key.DeleteValue(n);
-                foreach (var p in saved.Where(p => p[0] == k)) key.SetValue(p[1], p[2], p[2].Contains('%') ? RegistryValueKind.ExpandString : RegistryValueKind.String);
-            }
-            report += "; autostart=1";
-        }
+
         var tasks = Path.Combine(Environment.SystemDirectory, "Tasks");
         var removed = 0;
-        foreach (var f in Directory.EnumerateFiles(tasks, "*", SearchOption.AllDirectories))
+        foreach (var task in Directory.EnumerateFiles(tasks, "*", SearchOption.AllDirectories))
         {
             string xml;
-            try { xml = File.ReadAllText(f); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { continue; }
-            if (!xml.Contains($">{sid}<") && !xml.Contains($"\\{User}<") && !xml.Contains($">{User}<")) continue; // the task runs as Customer
-            using var d = Process.Start(new ProcessStartInfo("schtasks.exe", $"/delete /tn \"{f[tasks.Length..]}\" /f") { UseShellExecute = false, CreateNoWindow = true })!;
+            try { xml = File.ReadAllText(task); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { continue; }
+            if (!xml.Contains($">{sid}<") && !xml.Contains($"\\{User}<") && !xml.Contains($">{User}<")) continue;
+            using var d = Process.Start(new ProcessStartInfo("schtasks.exe", $"/delete /tn \"{task[tasks.Length..]}\" /f") { UseShellExecute = false, CreateNoWindow = true })!;
             if (!d.WaitForExit(10_000))
             {
                 d.Kill(true);
@@ -192,7 +251,84 @@ static class Wipe
             if (d.ExitCode != 0) throw new InvalidOperationException("task removal failed");
             removed++;
         }
-        return report + $"; tasks={removed}";
+
+        // Move caches while the old profile is still available, then retry after logoff if Windows had a file open.
+        string[] caches = [@"AppData\Local\NVIDIA", @"AppData\LocalLow\NVIDIA", @"AppData\Local\AMD", @"AppData\Local\D3DSCache"];
+        for (var i = 0; i < caches.Length; i++) Move(Path.Combine(profile, caches[i]), Path.Combine(stage, caches[i]));
+
+        if (!testMode && !WTSLogoffSession(IntPtr.Zero, (uint)customerSession!.Value, false))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "could not log off the Customer Windows session");
+        WaitForHiveUnload(sid, TimeSpan.FromSeconds(30));
+        for (var i = 0; i < caches.Length; i++) Move(Path.Combine(profile, caches[i]), Path.Combine(stage, caches[i]));
+
+        // The profile path in ProfileList stays stable. Replacing the folder also replaces NTUSER.DAT and UsrClass.dat.
+        Directory.Move(profile, backup);
+        try { Directory.Move(stage, profile); }
+        catch
+        {
+            if (!Directory.Exists(profile) && Directory.Exists(backup)) Directory.Move(backup, profile);
+            throw;
+        }
+        DeleteOldProfile(backup, clean);
+        report += $"; profile=reset; links={links}; robocopy={stagedExit}; hive=restored; steam={(steamCleaned ? 1 : 0)}; tasks={removed}";
+        return report;
+    }
+
+    static void LogoffCustomerIfPresent(string sid)
+    {
+        var process = Process.GetProcesses().FirstOrDefault(p => Owner(p) == sid && p.SessionId > 0);
+        if (process is not null && !WTSLogoffSession(IntPtr.Zero, (uint)process.SessionId, false))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "could not log off the Customer session during reset recovery");
+    }
+
+    static void EnsureProtectedDirectory(string path, string? customerSid)
+    {
+        Directory.CreateDirectory(path);
+        var grants = customerSid is null
+            ? "\"*S-1-5-32-544:(OI)(CI)F\" \"*S-1-5-18:(OI)(CI)F\""
+            : $"\"*{customerSid}:(OI)(CI)F\" \"*S-1-5-32-544:(OI)(CI)F\" \"*S-1-5-18:(OI)(CI)F\"";
+        using var acl = Process.Start(new ProcessStartInfo("icacls.exe", $"\"{path}\" /inheritance:r /grant:r {grants}") { UseShellExecute = false, CreateNoWindow = true })!;
+        if (!acl.WaitForExit(10_000))
+        {
+            acl.Kill(true);
+            acl.WaitForExit();
+            throw new TimeoutException("profile staging permissions timed out");
+        }
+        if (acl.ExitCode != 0) throw new InvalidOperationException("profile staging permissions failed");
+    }
+
+    static void DeleteOldProfile(string path, string clean)
+    {
+        if (!Directory.Exists(path)) return;
+        _ = RemoveLinks(path, path, clean);
+        using (var acl = Process.Start(new ProcessStartInfo("icacls.exe", $"\"{path}\" /reset /T /C") { UseShellExecute = false, CreateNoWindow = true })!)
+        {
+            if (!acl.WaitForExit(30_000))
+            {
+                acl.Kill(true);
+                acl.WaitForExit();
+                throw new TimeoutException("old profile permissions reset timed out");
+            }
+            if (acl.ExitCode != 0) throw new InvalidOperationException("old profile permissions reset failed");
+        }
+        foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+            try { File.SetAttributes(file, FileAttributes.Normal); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        foreach (var dir in Directory.EnumerateDirectories(path, "*", SearchOption.AllDirectories))
+            try { File.SetAttributes(dir, FileAttributes.Directory); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        Directory.Delete(path, true);
+    }
+
+    static void WaitForHiveUnload(string sid, TimeSpan timeout)
+    {
+        var until = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < until)
+        {
+            using var hive = Registry.Users.OpenSubKey(sid);
+            using var classes = Registry.Users.OpenSubKey(sid + "_Classes");
+            if (hive is null && classes is null) return;
+            Thread.Sleep(10);
+        }
+        throw new TimeoutException("Customer registry hives did not unload");
     }
 
     // A customer can leave links in the account: folder links (junctions) and hard links to files they cannot change
@@ -269,6 +405,7 @@ static class Wipe
         finally { Native.CloseHandle(h); }
     }
 
+    [DllImport("wtsapi32.dll", SetLastError = true)] static extern bool WTSLogoffSession(IntPtr server, uint sessionId, bool wait);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetFileInformationByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle file, byte[] info);
     [DllImport("ntdll.dll")] static extern int NtQueryKey(Microsoft.Win32.SafeHandles.SafeRegistryHandle key, int cls, byte[] info, int length, out int result);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, int access, out IntPtr token);
