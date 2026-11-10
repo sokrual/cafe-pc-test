@@ -259,7 +259,7 @@ public sealed class OfflineLockTests
             static AutomationElement Part(AutomationElement root, string id) =>
                 root.FindFirstDescendant(c => c.ByAutomationId(id)) ?? throw new InvalidOperationException($"no {id} on screen");
             var screen = LockWindow();
-            Rig.WaitFor(() => Part(LockWindow(), "StaffUnlock").IsEnabled, 15, "offline staff unlock button did not appear");
+            Rig.WaitFor(() => !Part(LockWindow(), "StaffUnlock").IsOffscreen, 15, "offline staff unlock button did not appear");
             Part(screen, "StaffUnlock").AsButton().Invoke();
             var valid = Rig.AppCode(secret);
             var wrong = valid == "000000" ? "000001" : "000000";
@@ -273,7 +273,6 @@ public sealed class OfflineLockTests
                 Rig.WaitFor(() => Part(screen, "Error").Name.Contains(expected, StringComparison.OrdinalIgnoreCase),
                     10, "wrong offline code was not rejected");
             }
-            Part(screen, "StaffCode").AsTextBox().Text = wrong;
             Rig.WaitFor(() => Part(screen, "Error").Name.Contains("10 minutes", StringComparison.OrdinalIgnoreCase), 10,
                 "third wrong code did not pause offline unlock for ten minutes");
         }

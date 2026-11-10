@@ -115,6 +115,7 @@ public sealed class AccountTests : IDisposable
         using var rows = cmd.ExecuteReader();
         Assert.True(rows.Read()); Assert.Contains("PC1", rows.GetString(1));
         Assert.True(rows.Read()); Assert.Contains("PC2", rows.GetString(1));
+        Assert.True(rows.Read()); Assert.Contains("PC2", rows.GetString(1));
         Assert.False(rows.Read());
     }
 
