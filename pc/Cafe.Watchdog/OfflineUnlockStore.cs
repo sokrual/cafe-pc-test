@@ -90,6 +90,8 @@ sealed class OfflineUnlockStore
 
             if (state.Rate is null || state.Accounts.Count == 0)
                 return new(false, "Offline staff unlock is not set up on this PC.", null);
+            if (!Guid.TryParseExact(request.SaleId, "N", out _))
+                return new(false, "The offline sale reference is not valid.", null);
             if (request.Phone.Length is < 10 or > 13 || !request.Phone.All(char.IsAsciiDigit)
                 || request.Code.Length != 6 || !request.Code.All(char.IsAsciiDigit))
                 return new(Fail("Enter the staff phone number and six-digit app code."), "Wrong phone number or code.", null);
@@ -119,7 +121,7 @@ sealed class OfflineUnlockStore
             if (matched is null)
                 return new(Fail("Wrong phone number or code."), "Wrong phone number or code.", null);
 
-            var sale = new OfflineUnlockSale(Guid.NewGuid().ToString("N"), request.Phone, request.Code, matched.Value,
+            var sale = new OfflineUnlockSale(request.SaleId, request.Phone, request.Code, matched.Value,
                 request.Minutes, request.Method, request.UpiLast4, request.Session);
             state.UsedSteps[request.Phone] = matched.Value;
             state.WrongTries = 0;

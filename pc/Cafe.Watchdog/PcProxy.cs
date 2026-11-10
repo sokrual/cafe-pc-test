@@ -136,6 +136,16 @@ static class PcProxy
                 throw;
             }
             client = null; // ownership transferred to _http
+            _ = Task.Run(async () =>
+            {
+                while (!stop.IsCancellationRequested)
+                {
+                    RefreshOfflineUnlockData();
+                    SyncOfflineSales();
+                    try { await Task.Delay(TimeSpan.FromSeconds(30), stop); }
+                    catch (OperationCanceledException) { break; }
+                }
+            }, CancellationToken.None);
         }
         catch
         {
