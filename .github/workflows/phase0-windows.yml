@@ -7,6 +7,11 @@ on:
     branches: [main]
   pull_request: # every pull request gets the same 8 jobs before it is merged
 
+# a new push to a pull request stops that pull request's older runs; only the latest commit needs testing
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   server-tests:
     strategy:
