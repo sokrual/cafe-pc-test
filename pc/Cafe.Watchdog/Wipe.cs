@@ -59,6 +59,28 @@ static class Wipe
         Directory.Delete(path);
     }
 
+    // Keep one pinned connection for repeated status checks. Rebuilding the handler for every
+    // retry forces a fresh TLS handshake each time, which can exceed the timeout on busy ARM PCs.
+    static readonly Lazy<(HttpClient Client, Uri Server)> ServerClient = new(CreateServerClient);
+
+    static (HttpClient Client, Uri Server) CreateServerClient()
+    {
+        var line = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "watchdog.args"));
+        var match = Regex.Match(line, @"--server\s+(https://[^\s""]+)");
+        if (!match.Success) throw new InvalidOperationException("watchdog server URL is missing");
+        var server = new Uri(match.Groups[1].Value);
+        var token = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "pc.token")).Trim();
+        var pin = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "server.pin")).Trim();
+        var handler = new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback = (_, cert, _, _) =>
+                cert is not null && Convert.ToHexString(SHA256.HashData(cert.RawData)).Equals(pin, StringComparison.OrdinalIgnoreCase)
+        };
+        var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
+        client.DefaultRequestHeaders.Add("X-Pc-Token", token);
+        return (client, server);
+    }
+
     // The watchdog has the same PC token and certificate pin as the lock screen. A missing answer,
     // invalid response, or non-null session all mean "do not clean".
     public static bool ServerHasNoSession(out int error)
@@ -66,19 +88,7 @@ static class Wipe
         error = 0;
         try
         {
-            var line = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "watchdog.args"));
-            var match = Regex.Match(line, @"--server\s+(https://[^\s""]+)");
-            if (!match.Success) { error = 87; return false; }
-            var server = new Uri(match.Groups[1].Value);
-            var token = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "pc.token")).Trim();
-            var pin = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "server.pin")).Trim();
-            using var handler = new HttpClientHandler
-            {
-                ServerCertificateCustomValidationCallback = (_, cert, _, _) =>
-                    cert is not null && Convert.ToHexString(SHA256.HashData(cert.RawData)).Equals(pin, StringComparison.OrdinalIgnoreCase)
-            };
-            using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(3) };
-            client.DefaultRequestHeaders.Add("X-Pc-Token", token);
+            var (client, server) = ServerClient.Value;
             using var response = client.GetAsync(new Uri(server, "/pc/state")).GetAwaiter().GetResult();
             if (!response.IsSuccessStatusCode) { error = (int)response.StatusCode; return false; }
             using var state = JsonDocument.Parse(response.Content.ReadAsStream());

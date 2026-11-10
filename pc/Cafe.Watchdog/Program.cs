@@ -72,7 +72,9 @@ static class Watchdog
                         {
                             if (reason != cleanupReason) Log(reason);
                             cleanupReason = reason;
-                            nextCleanup = DateTime.UtcNow.AddSeconds(30);
+                            // A server error may be transient (for example, while its listener is restarting).
+                            // Retry it promptly; an active session or local cleanup failure keeps the 30-second backoff.
+                            nextCleanup = DateTime.UtcNow.AddSeconds(reason.StartsWith("cleanup deferred (server error", StringComparison.Ordinal) ? 5 : 30);
                             if (reason.StartsWith("cleanup failed", StringComparison.Ordinal))
                                 try { File.SetCreationTimeUtc(Wipe.Request, DateTime.UtcNow.AddMinutes(-3)); } catch { }
                         }

@@ -258,8 +258,13 @@ sealed class TimerWidget : Form
                 _tray.ShowBalloonTip(5000, "Time left", message, ToolTipIcon.Info);
             }
         if (left is null || left > 600) _warned.Clear();
-        var show = DateTime.UtcNow < _peekUntil || !Native.GameInFront(Handle);
-        if (Visible != show) Visible = show;
+        var gameInFront = Native.GameInFront(Handle, out var frontClass, out var frontProcess);
+        var show = DateTime.UtcNow < _peekUntil || !gameInFront;
+        if (Visible != show)
+        {
+            Program.Log($"timer {(show ? "shown" : "hidden")}; front class={frontClass} process={frontProcess}");
+            Visible = show;
+        }
     }
 
     protected override bool ShowWithoutActivation => true; // never take focus from a game
@@ -307,8 +312,10 @@ static class Native
     [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool attach);
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] static extern IntPtr GetShellWindow();
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out Rect r);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int max);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint processId);
     [StructLayout(LayoutKind.Sequential)] struct Rect { public int L, T, R, B; }
 
     // Windows refuses SetForegroundWindow from a background program unless it joins the foreground thread's input.
@@ -324,15 +331,27 @@ static class Native
     }
     [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, nuint extra);
 
-    public static bool GameInFront(IntPtr self)
+    public static bool GameInFront(IntPtr self, out string className, out string processName)
     {
-        // Use the actual foreground window's bounds. SHQueryUserNotificationState can report
-        // QUNS_BUSY for a runner/console desktop too, which must not hide the customer timer.
         var h = GetForegroundWindow();
-        if (h == IntPtr.Zero || h == self || h == GetShellWindow()) return false;
+        className = "none";
+        processName = "none";
+        if (h == IntPtr.Zero) return false;
+
         var cls = new System.Text.StringBuilder(64);
         GetClassName(h, cls, cls.Capacity);
-        if (cls.ToString() is "Progman" or "WorkerW" or "Shell_TrayWnd") return false;
+        className = cls.ToString();
+        GetWindowThreadProcessId(h, out var processId);
+        try
+        {
+            using var process = Process.GetProcessById((int)processId);
+            processName = process.ProcessName;
+        }
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { }
+
+        // Hidden windows and our own lock screen/agent windows are never games.
+        if (!IsWindowVisible(h) || processId == Environment.ProcessId || h == self || h == GetShellWindow()) return false;
+        if (className is "Progman" or "WorkerW" or "Shell_TrayWnd") return false;
         if (!GetWindowRect(h, out var r)) return false;
         var m = Screen.FromHandle(h).Bounds; // borderless-window games cover the whole monitor
         return r.L <= m.Left && r.T <= m.Top && r.R >= m.Right && r.B >= m.Bottom;
