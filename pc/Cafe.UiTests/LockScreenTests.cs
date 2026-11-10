@@ -33,9 +33,12 @@ public sealed class LockScreenTests : IDisposable
             LogIn("9000000003", "2222");
             Rig.WaitFor(() => Hidden("LockScreen"), 10, "login did not unlock the PC");
             File.WriteAllText(note, "");
-            Rig.WaitFor(() => !Hidden("LockScreen") && Text(Window("LockScreen"), "Message") == "Please ask at the counter.", 10,
-                "pending clean-up did not block the PC with the counter message");
+            Rig.WaitFor(() => !Hidden("LockScreen") && Text(Window("LockScreen"), "Message") == "Getting this PC ready for the next customer. Please wait.", 10,
+                "new clean-up did not show the normal waiting message");
             Assert.False(Part(Window("LockScreen"), "Login").AsButton().IsEnabled, "login stayed enabled during clean-up");
+            File.SetCreationTimeUtc(note, DateTime.UtcNow.AddMinutes(-3));
+            Rig.WaitFor(() => Text(Window("LockScreen"), "Message") == "Please ask at the counter.", 10,
+                "old clean-up did not show the counter message");
             File.Delete(note);
             Rig.WaitFor(() => Hidden("LockScreen"), 10, "PC did not return to its active session after the request cleared");
         }
