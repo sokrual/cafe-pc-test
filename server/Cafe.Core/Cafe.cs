@@ -28,13 +28,19 @@ public static class ShopNetwork
 /// Staff and owner PINs may be entered only on the counter PC or over Tailscale.
 public static class StaffLoginNetwork
 {
-    public static bool Allows(System.Net.IPAddress? ip)
+    public const string RefusalMessage = "Counter pages open only on the counter PC.";
+
+    public static bool Allows(System.Net.IPAddress? remote, System.Net.IPAddress? local = null)
     {
-        if (ip is null) return false;
-        if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
-        if (System.Net.IPAddress.IsLoopback(ip)) return true;
-        var b = ip.GetAddressBytes();
-        return ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && b[0] == 100 && b[1] is >= 64 and <= 127;
+        if (remote is null) return false;
+        if (local is not null && remote.Equals(local)) return true;
+        if (remote.IsIPv4MappedToIPv6) remote = remote.MapToIPv4();
+        if (System.Net.IPAddress.IsLoopback(remote)) return true;
+        var b = remote.GetAddressBytes();
+        if (remote.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+            return b[0] == 100 && b[1] is >= 64 and <= 127;
+        return remote.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6
+            && b[0] == 0xfd && b[1] == 0x7a && b[2] == 0x11 && b[3] == 0x5c && b[4] == 0xa1 && b[5] == 0xe0;
     }
 }
 
