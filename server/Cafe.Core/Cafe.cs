@@ -375,17 +375,15 @@ public sealed partial class CafeCore : IDisposable
         return StateOf(pc);
     });
 
-    /// secondsAgo: the PC was offline and queued the logout. The PC's own clock is never trusted: it sends
-    /// "this happened N seconds ago" from a stopwatch, and the time can't go back before the PC was last heard from.
+    /// The server's receipt time is the billing time. A PC-reported delay is only a review signal; it never reduces the bill.
     public Bill PcLogout(string pc, long secondsAgo = 0) => Tx(() =>
     {
         var s = StateOf(pc).Session ?? throw new CafeException("Nobody is logged in on this PC.");
-        var floor = new[] { Scalar<string?>("SELECT last_seen FROM pcs WHERE name = @p0", pc), Scalar<string>("SELECT started FROM sessions WHERE id = @p0", s) }
-            .Where(x => x is not null).Max(x => Time(x!));
-        var at = new[] { _now().AddSeconds(-Math.Clamp(secondsAgo, 0, 7 * 24 * 3600)), floor }.Max(); // a silly number must not crash the server
+        var reportedDelay = Math.Clamp(secondsAgo, 0, 7 * 24 * 3600); // a silly number must not crash the server
+        var at = _now();
         var user = UserOf(s);
-        // an honest outage and a pulled network cable look the same from here, so the owner gets to look at long ones
-        if (_now() - at > TimeSpan.FromMinutes(2)) Audit(user, "review_late_logout", $"session {s} on {pc} ended {(int)(_now() - at).TotalMinutes} min before the PC reported it");
+        // An honest outage and a tampered PC can both report a long delay, so staff can review the claim.
+        if (reportedDelay > 120) Audit(user, "review_late_logout", $"session {s} on {pc} reported logout {reportedDelay / 60} min before the server received it");
         return Stop(user, s, at);
     });
 
