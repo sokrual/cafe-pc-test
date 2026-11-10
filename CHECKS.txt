@@ -96,7 +96,7 @@ B1, B2 (9 Nov 2026): backend check and security pass done; fixes: PIN lengths (s
 B3 (9-10 Nov 2026): mapping done (B3-relevant Musts met or listed as gaps); security pass with 7 fixes, each
   with a test; 3 outside reviews received. Review fix 1: offline logout is billed through server receipt time;
   the PC-reported delay is retained only as an owner/staff review signal. Test: T1_4_offline_logout_is_billed_through_server_receipt_time.
-  Review fix 2: staff and owner PIN login is limited to the counter PC or Tailscale (100.64.0.0/10). Test: Staff_login_is_only_allowed_on_the_counter_pc_or_tailscale.
+  Review fix 2: every /staff/* request is limited to the counter PC (loopback or its own local address) or Tailscale IPv4 (100.64.0.0/10) and IPv6 (fd7a:115c:a1e0::/48); refusals return 403 with a plain-text message. Test: Staff_pages_are_only_allowed_on_the_counter_pc_or_tailscale.
   Remaining review fixes and the final end-to-end security pass are still open.
 B4: not built. Its Privacy and law checks apply in full.
 B5.1 (10 Nov 2026): built with tests (two-step login, staff logout, PC keys). Not yet mapped against these lists.
