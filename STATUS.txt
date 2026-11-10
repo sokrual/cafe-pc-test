@@ -1,5 +1,5 @@
 PROJECT STATUS - what is built, what is left
-Last updated: 10 Nov 2026. Version 0.3.0. Latest green test run: 42747190129 (all 8 jobs pass).
+Last updated: 10 Nov 2026. Version 0.3.0. Latest green test run: 42775255486 (all 8 jobs pass, pull request #3).
 
 Read README.txt for the layout, CHECKS.txt for the backend and security checks every phase must pass, and CLAUDE.md for the rules (commit as "Turyos Ventures" with an empty email,
 no AI signature anywhere, simple English in everything people see, smallest change that fully works).
@@ -19,8 +19,20 @@ B3  Lockdown and installers                                         BUILT - fina
     Installers for the counter PC and the gaming PCs (install/), Customer account, logout clean-up
     (pc/Cafe.Watchdog/Wipe.cs), Level A app allow-list (install/levelA.ps1, watch-only until the cafe trial),
     web filter with AdGuard Home, uninstall. Tests: ci/lockdown.ps1 (50 checks).
-    Left: the final end-to-end security pass, and the fixes from three outside security reviews
-    (finding by finding: confirm against the code, add a failing test, then the smallest fix).
+    Security fixes from the three outside reviews, one small pull request each, in this order:
+      #1 offline logout billed until the server receives it                          DONE (merged)
+      #2 staff and owner pages only on the counter PC or over Tailscale              DONE (merged)
+      #3 owner setting "lock the PC when time runs out", off by default              DONE (merged)
+      #4 clean-up safety: folder or link at the request path, clean-up only when the
+         server says the PC is free, a failed clean-up keeps the PC blocked          in progress
+      #5 PC key held by the SYSTEM watchdog, not readable by the customer account
+      #6 full Windows customer account reset between customers (only if under ~1 min)
+      #7 offline lock: the PC locks itself at zero with no connection; owner and staff
+         unlock it with their own authenticator codes and add time for a new payment,
+         which reaches the money records on reconnect. Also: one failing session must
+         not stop the other sessions from ending.
+      #8 final end-to-end security pass against CHECKS.txt
+    After #8: a final review by two separate reviewers. Then B4.
     Level A switches to blocking after the cafe trial, with an "allow or not" prompt for the owner (part of B5.3).
 
 B4  Customer sign-up and data rules                                 NOT STARTED
@@ -47,5 +59,6 @@ TEST PHASES ON REAL PCS (after the build)
     Then: 1 lock and escape, 2 billing, 3 sign-up and data, 4 owner features, 5 load, 6 real customers and rollout.
 
 OPEN DECISIONS FOR THE CAFE OWNER (defaults in the code until he decides)
-    Grace minutes, block size, minimum charge, how long prepaid minutes last, what happens when time runs out,
+    Grace minutes, block size, minimum charge, how long prepaid minutes last, whether to switch on "lock the PC
+    when time runs out" (owner setting, off by default; the owner screen for it comes in B5.2),
     PIN length, the real rate card, the Windows version on his PCs, the logo.
