@@ -61,7 +61,8 @@ static class Wipe
 
     // Keep one pinned connection for repeated status checks. Rebuilding the handler for every
     // retry forces a fresh TLS handshake each time, which can exceed the timeout on busy ARM PCs.
-    static readonly Lazy<(HttpClient Client, Uri Server)> ServerClient = new(CreateServerClient);
+    // Any failure drops it, so the next try re-reads the files (a new certificate pin, a new PC key).
+    static (HttpClient Client, Uri Server)? _serverClient;
 
     static (HttpClient Client, Uri Server) CreateServerClient()
     {
@@ -88,14 +89,14 @@ static class Wipe
         error = 0;
         try
         {
-            var (client, server) = ServerClient.Value;
+            var (client, server) = _serverClient ??= CreateServerClient();
             using var response = client.GetAsync(new Uri(server, "/pc/state")).GetAwaiter().GetResult();
             if (!response.IsSuccessStatusCode) { error = (int)response.StatusCode; return false; }
             using var state = JsonDocument.Parse(response.Content.ReadAsStream());
             if (!state.RootElement.TryGetProperty("session", out var session)) { error = 13; return false; }
             return session.ValueKind == JsonValueKind.Null;
         }
-        catch (Exception e) { error = ErrorCode(e); return false; }
+        catch (Exception e) { error = ErrorCode(e); _serverClient?.Client.Dispose(); _serverClient = null; return false; }
     }
 
     public static int ErrorCode(Exception e)
