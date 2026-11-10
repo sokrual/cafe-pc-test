@@ -1,7 +1,7 @@
 PROJECT STATUS - what is built, what is left
 Last updated: 10 Nov 2026. Version 0.3.0. Latest green test run: 42747190129 (all 8 jobs pass).
 
-Read README.txt for the layout and CLAUDE.md for the rules (commit as "Turyos Ventures" with an empty email,
+Read README.txt for the layout, CHECKS.txt for the backend and security checks every phase must pass, and CLAUDE.md for the rules (commit as "Turyos Ventures" with an empty email,
 no AI signature anywhere, simple English in everything people see, smallest change that fully works).
 
 BUILD PHASES

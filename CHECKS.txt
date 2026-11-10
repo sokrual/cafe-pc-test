@@ -1,0 +1,101 @@
+BACKEND AND SECURITY CHECKS - what every phase must pass
+Last updated: 10 Nov 2026. See STATUS.txt for the phases.
+
+Every phase (B1-B6) is checked against two lists: the 111-term backend and security checklist, and 154 more
+checks beyond it. For this project each item is marked Must (before the cafe uses it), Later, or Not needed.
+Report each check as a table: item, met / gap / not needed, file and line, test that proves it.
+Rank real gaps first. Say what you ran and what you only read.
+
+SYSTEM ASSUMED: one counter PC (HTTPS server, encrypted SQLite) + 10-15 Windows 11 Pro gaming PCs on one shop
+network; nothing hosted on the internet; owner remote access only through Tailscale.
+
+==================================================================================================
+PART 1 - THE 111 TERMS (this project: 58 Must, 2 Later, 51 Not needed)
+==================================================================================================
+
+MUST
+Security (11): rate limiting; secrets management (Windows DPAPI); encryption at rest (encrypted SQLite, encrypted
+  ID photos, BitLocker on the counter PC); encryption in transit; SQL injection; IAM (owner, staff, customer roles;
+  owner two-step login for remote use); TLS (own certificate, gaming PCs pin it); XSS; session/token rotation;
+  CORS; CSRF.
+Reliability (13): timeouts; retries; exponential backoff; idempotency; dead letter queue (failed sync events shown
+  to the owner); failover (PCs keep timing if the counter PC is down); health checks (heartbeats); liveness
+  (watchdog restarts the service); backups (with a restore test); disaster recovery (restore the counter PC on new
+  hardware); chaos tests (pull cable and power before launch); network partitions; clock skew (server time is
+  the truth, India time synced).
+Data (8): indexing; query optimisation; N+1 queries; migrations; schema versioning; eventual consistency;
+  CAP (PCs choose availability); optimistic locking.
+Caching (2): latency (unlock is fast); cold starts (service up before the lock screen).
+Architecture (5): message queues (offline queue per PC); WebSockets; API versioning; service discovery (fixed
+  counter PC address); cron jobs (backup, 1-year purge, plan expiry, reports).
+Code (5): race conditions; deadlocks; thread safety; memory leaks (12-hour soak test); garbage collection.
+Scaling (2): infrastructure as code (one setup script per PC type); DNS (forced through AdGuard Home).
+Release (5): CI/CD; canary (one PC first); rollbacks; semantic versioning; dependency hell.
+Observability (7): logging (never PINs or ID numbers); monitoring; metrics (CPU/RAM targets); alerts (tamper, PC
+  offline mid-session, backup failed, disk full); observability (every bill can be explained); on-call;
+  production incidents (paper fallback).
+
+LATER (2): feature flags; postmortems.
+
+NOT NEEDED (51): DDoS protection, OAuth, WAF, SSRF, circuit breakers, read replicas, sharding, partitioning,
+  replication, distributed transactions, saga pattern, pessimistic locking, distributed locks, leader election,
+  caching, cache invalidation, CDN, edge caching, throughput, P99 latency, tail latency, connection pooling,
+  pub/sub, event-driven architecture, webhooks, long polling, server-sent events, gRPC, API gateways, reverse
+  proxies, backpressure, load balancing, horizontal/vertical/auto scaling, Docker, Kubernetes, Helm charts,
+  Terraform, multi-region, serverless limits, cost optimisation, TCP vs UDP, HTTP/2 and HTTP/3, build caching,
+  blue-green and rolling deployments, distributed tracing, SLOs, SLIs, error budgets.
+
+==================================================================================================
+PART 2 - 154 MORE CHECKS (this project: 111 Must, 6 Later, 37 Not needed)
+Sources: OWASP Top 10:2025, ASVS 5.0, API Top 10 2023, MASVS 2.1, SLSA v1.1, WCAG 2.2, DPDP Rules 2025,
+CERT-In directions 2022, Rajasthan cyber cafe rules 2007, IT Rules 2011.
+==================================================================================================
+
+Access and identity (10 Must, 1 Not needed): object, function and property-level authorisation; roles model;
+  password/PIN storage; multi-factor login; sessions; account recovery; account enumeration and brute force;
+  business-flow abuse. Not needed: bot protection (no public sign-up).
+Input, output and web (8 Must, 2 Not needed): input validation; file uploads; path traversal; deserialisation;
+  clickjacking; security headers; cookie flags; fail closed. Not needed: open redirects, SRI.
+Keys, infrastructure, supply chain (13 Must, 3 Not needed): key rotation; certificate lifecycle; patching; SBOM;
+  signed builds; secret scanning; SAST, DAST and dependency scanning; network segmentation; admin hardening;
+  audit trail; threat model; pen test (a structured break-it day); API inventory. Not needed: hardened
+  containers, security.txt, third-party API trust.
+Desktop client (read from the mobile list) (4 Must, 3 Not needed): no secrets in the client; anti-tamper;
+  local communication checks; deliberate certificate pinning.
+Privacy and law, India (12 Must, 5 Not needed): data minimisation; DPDP consent and notice; retention (login
+  register at least 1 year); data rights; 72-hour breach report to the Data Protection Board; CERT-In 6-hour
+  incident report, 180-day logs and NIC/NPL time sync; children's data (verifiable parental consent from
+  13 May 2027); no dark patterns; grievance contact; data stays on the counter PC; sector rules (Rajasthan cyber
+  cafe rules 2007, IT Rules 2011). Not needed: app store rules, accessibility law, payment rules, AI disclosure.
+Backend (33 Must, 1 Later, 6 Not needed): API contracts; plain error format; pagination; payload limits;
+  request IDs; structured logs; background jobs; graceful shutdown; migrations that do not break the running
+  version; soft delete where the law needs records kept; UTC storage, India time shown; money in paise; Unicode
+  and Indian names; non-guessable IDs; search; media handling (photos); notifications; admin back-office;
+  server is the source of truth; testing pyramid; contract tests; load testing; branch protection; dependency
+  updates; runbooks; backup targets (how much data may be lost, how fast it is back). Later: fuzz testing.
+  Not needed: config in environment variables, multi-tenancy, email deliverability, webhook signatures,
+  matchmaking, status page.
+Screens (frontend) (9 Must, 2 Later, 9 Not needed): fast enough on the counter PC; error boundaries; design
+  tokens; works at the counter screen size; dark mode where useful; low-end PC budget; end-to-end tests.
+  Later: Hindi, phone push alerts.
+UI/UX (22 Must, 3 Later, 3 Not needed): clear status, loading, empty and error states; offline states; undo;
+  safeguards before destructive actions; plain, short text; consistent navigation; forms; large click targets;
+  contrast; text scaling; keyboard focus; no puzzles at login; consistent help; usability test with the owner
+  and staff. Later: screen reader, reduced motion, trust and safety. Not needed: optimistic UI for money,
+  permission priming, drag-and-drop.
+
+ALSO ALWAYS: secrets never in plain files or code; no clear-text fallback; pinned dependencies with checksum and
+licence checks; two-step login on developer and GitHub accounts; independent review before real customers.
+
+==================================================================================================
+PART 3 - WHAT HAS BEEN CHECKED SO FAR
+==================================================================================================
+B1, B2 (9 Nov 2026): backend check and security pass done; fixes: PIN lengths (staff 6-12, customers 4-12),
+  10 login tries per minute per address, input limits, schema version, staff discounts closed, late logouts
+  flagged for review, watchdog not fooled by renamed programs, counter data folder admins-only.
+B3 (9-10 Nov 2026): mapping done (B3-relevant Musts met or listed as gaps); security pass with 7 fixes, each
+  with a test; 3 outside reviews received. STILL OPEN: the final end-to-end security pass and the fixes from
+  the outside reviews.
+B4: not built. Its Privacy and law checks apply in full.
+B5.1 (10 Nov 2026): built with tests (two-step login, staff logout, PC keys). Not yet mapped against these lists.
+B5.2 onward, B6: check each part against both lists when it is built.
