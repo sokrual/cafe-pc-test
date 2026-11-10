@@ -266,7 +266,7 @@ static class PcProxy
                 }
                 if (request is not null && request.Method == "POST" && request.Path == "/local/offline-unlock" && request.Body is not null)
                 {
-                    var attempt = JsonSerializer.Deserialize<OfflineUnlockRequest>(request.Body)
+                    var attempt = JsonSerializer.Deserialize<OfflineUnlockRequest>(request.Body, new JsonSerializerOptions(JsonSerializerDefaults.Web))
                         ?? throw new JsonException("invalid offline unlock request");
                     var result = _offline?.TryUnlock(attempt) ?? new OfflineUnlockResult(false, "Offline unlock is not set up on this PC.", null);
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(result.Success ? 200 : 400, JsonSerializer.Serialize(result)))).WaitAsync(TimeSpan.FromSeconds(2));
