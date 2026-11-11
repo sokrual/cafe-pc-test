@@ -36,6 +36,10 @@ const timeText = r => r.session ? (r.leftSec != null ? clock(r.leftSec) + " left
 
 async function refresh(forcePanel = false) {
   try { rows = await api("GET", "/staff/counter"); } catch (e) { say(e.message, false); return; }
+  try {
+    const alerts = await api("GET", "/staff/alerts");
+    $("alerts").replaceChildren(...alerts.map(a => el("p", { textContent: "Alert: " + a })));
+  } catch { $("alerts").replaceChildren(); }
   $("pcs").replaceChildren(...rows.map(r => {
     const [label, cls] = status(r);
     return el("button", { className: "pc" + (r.pc === selected ? " sel" : ""), onclick: () => { selected = r.pc; panelKey = ""; refresh(); },
@@ -243,6 +247,70 @@ async function showRates(pick) {
   } catch (e) { say(e.message, false); }
 }
 $("ratesBtn").onclick = () => showRates();
+
+async function showOwnerSecurity() {
+  try {
+    const [settings, people, pcs] = await Promise.all([
+      api("GET", "/staff/settings/offline-unlock"),
+      api("GET", "/staff/offline-unlock-people"),
+      api("GET", "/staff/pcs")
+    ]);
+    panelKey = "side";
+    const run = async (fn, message) => {
+      try { const result = await fn(); say(typeof message === "function" ? message(result) : message); await showOwnerSecurity(); }
+      catch (e) { say(e.message, false); }
+    };
+    const personOptions = people.map(p => el("option", { value: p.phone, textContent: p.name + " · " + p.phone }));
+    $("panel").replaceChildren(
+      el("h2", { textContent: "Owner security" }),
+      el("p", { className: "small", textContent: "Offline unlock stops working on a PC after seven days without a counter refresh." }),
+      el("label", { htmlFor: "offlineMax", textContent: "Most minutes per offline unlock" }),
+      el("input", { id: "offlineMax", inputMode: "numeric", value: settings.maxOfflineUnlockMinutes }),
+      el("button", { textContent: "Save limit", onclick: () => run(
+        () => api("POST", "/staff/settings/offline-unlock", { minutes: parseInt($("offlineMax").value, 10) }),
+        r => "Offline unlock limit saved: " + r.maxOfflineUnlockMinutes + " minutes.") }),
+      el("hr"),
+      el("h3", { textContent: "People allowed to unlock offline" }),
+      people.length ? el("ul", {}, ...people.map(p => el("li", {},
+        p.name + " · " + p.phone + " · " + (p.HasSecret ?? p.hasSecret
+          ? ((p.Enabled ?? p.enabled) ? "offline unlock on" : "offline unlock off")
+          : "not set up"),
+        p.hasSecret ? el("button", { className: "quiet", textContent: p.enabled ? "Turn off" : "Turn on",
+          onclick: () => run(() => api("POST", "/staff/offline-unlock-person", { phone: p.phone, enabled: !p.enabled }),
+            p.enabled ? "Offline unlock switched off." : "Offline unlock switched on.") }) : null))) : el("p", { textContent: "No owner or staff accounts yet." }),
+      el("hr"),
+      el("h3", { textContent: "End counter logins" }),
+      el("p", { className: "small", textContent: "End every counter login except the one you are using now." }),
+      el("button", { className: "danger", textContent: "End all other logins", onclick: () => run(
+        () => api("POST", "/staff/logins/end-others"), r => "Ended " + r.ended + " other counter logins.") }),
+      el("label", { htmlFor: "endPerson", textContent: "End every login for one person" }),
+      el("select", { id: "endPerson" }, ...personOptions),
+      el("button", { className: "danger", textContent: "End this person's logins", disabled: people.length === 0, onclick: () => run(
+        () => api("POST", "/staff/logins/end-person", { phone: $("endPerson").value }),
+        r => "Ended " + r.ended + " logins for " + $("endPerson").selectedOptions[0].textContent + ".") }),
+      el("hr"),
+      el("h3", { textContent: "PC keys" }),
+      pcs.length ? el("ul", {}, ...pcs.map(pc => el("li", {},
+        pc.name + (pc.inUse ? " · in use" : ""),
+        el("button", { className: "danger", textContent: "Remove PC", disabled: pc.inUse,
+          onclick: () => run(() => api("DELETE", "/staff/pcs/" + encodeURIComponent(pc.name)),
+            pc.name + " removed. Add it again to issue a new key.") })))) : el("p", { textContent: "No PCs are registered." }),
+      el("label", { htmlFor: "newPcName", textContent: "Add or re-add a PC" }),
+      el("input", { id: "newPcName", maxLength: 40, placeholder: "PC name" }),
+      el("button", { textContent: "Add PC and show its key", onclick: async () => {
+        const name = $("newPcName").value.trim();
+        if (!name) { say("Type the PC name.", false); return; }
+        try {
+          const key = await api("POST", "/staff/pcs", { pc: name });
+          $("panel").append(el("p", { textContent: "Save this token now. It is shown only once." }),
+            el("pre", { textContent: "PC token: " + key.token + "\nServer pin: " + key.pin }));
+          say("New PC key created. Copy it into that PC's install setup.");
+        } catch (e) { say(e.message, false); }
+      } }),
+      el("button", { className: "quiet", textContent: "Close", onclick: () => { panelKey = ""; refresh(true); } }));
+  } catch (e) { say(e.message, false); }
+}
+$("ownerSecurityBtn").onclick = () => showOwnerSecurity();
 
 // Memberships: the owner sets the plans, staff sell them at the counter. One membership at a time per customer.
 async function showMembers(pick) {
