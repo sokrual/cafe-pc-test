@@ -455,12 +455,20 @@ try {
     Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force
     Restart-Service CafeWatchdog -Force
     $server = Start-Process "$out\server\Cafe.Server.exe" -ArgumentList "--data $tdata --seed-test" -PassThru -WindowStyle Hidden
-    $staffLogin = WaitFor 90 {
+    $serverReady = WaitFor 90 {
+        try {
+            Invoke-RestMethod "https://127.0.0.1:5443/pc/state" -Headers @{ "X-Pc-Token" = $token } | Out-Null
+            $true
+        } catch { $false }
+    }
+    $staffLogin = $false
+    $staffLoginError = ""
+    if ($serverReady) {
         try {
             $staff = Invoke-RestMethod "https://127.0.0.1:5443/staff/login" -Method Post -ContentType "application/json" -Body '{"phone":"9000000002","pin":"111111"}'
             $script:staffHeaders = @{ Authorization = "Bearer $($staff.token)" }
-            $true
-        } catch { $false }
+            $staffLogin = $true
+        } catch { $staffLoginError = $_.Exception.Message }
     }
     $staffHeaders = $script:staffHeaders
     $script:finalStaffState = $null
@@ -479,7 +487,7 @@ try {
     $finalStaffBill = $script:finalStaffBill
     $remainingActions = Get-QueuedActionCount $queuedLogoutFile
     $logoutReplayed = [bool]($staffLogin -and $finalStaffState -and $null -eq $finalStaffState.Session -and $finalStaffBill.Charged -gt 0)
-    Check "B3.F12" "Offline self-lock and logout survive lock-screen kill and watchdog restart; staff API confirms ended session and charged bill" ($sessionBeforeLogout -and $logoutDurable -and $logoutReplayed -and $remainingActions -eq 0) "session before $sessionBeforeLogout; self-lock queued $selfLockQueued; logout queued $logoutQueued; queue ordered $logoutDurable; staff login $staffLogin; staff session $($finalStaffState.Session); bill charged $($finalStaffBill.Charged); pending actions $remainingActions"
+    Check "B3.F12" "Offline self-lock and logout survive lock-screen kill and watchdog restart; staff API confirms ended session and charged bill" ($sessionBeforeLogout -and $logoutDurable -and $logoutReplayed -and $remainingActions -eq 0) "session before $sessionBeforeLogout; self-lock queued $selfLockQueued; logout queued $logoutQueued; queue ordered $logoutDurable; server ready $serverReady; staff login $staffLogin ($staffLoginError); staff session $($finalStaffState.Session); bill charged $($finalStaffBill.Charged); pending actions $remainingActions"
     Stop-Process -Id $p3.Id -Force -ErrorAction SilentlyContinue
 
     # ===== G. what a customer cannot do =====
