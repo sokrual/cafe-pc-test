@@ -139,6 +139,30 @@ public sealed class BillingTests : IDisposable
     }
 
     [Fact]
+    public void Owner_rate_cards_are_kept_in_the_database_and_the_one_in_use_sets_the_prices()
+    {
+        var standard = _cafe.RateCards(_staff).Single();
+        Assert.Equal(("Standard", true, new Rate()), (standard.Name, standard.InUse, standard.Rate));
+        var weekend = new Rate(Paise30: 5000, Paise60: 8000, Paise90: 12000, ExtraBlockPaise: 5000, CarryOverDays: 14);
+        _cafe.SaveRateCard(_owner, "Weekend", weekend);
+        Assert.Equal(4000, _cafe.BillFor(_cafe.StartPrepaid(_staff, "PC1", _cust, 30)).Due); // saved, not in use yet
+        _cafe.UseRateCard(_owner, "Weekend");
+        Assert.Equal(5000, _cafe.BillFor(_cafe.StartPrepaid(_staff, "PC2", _cust, 30)).Due);
+        Assert.Throws<CafeException>(() => _cafe.SaveRateCard(_staff, "Cheap", weekend with { Paise30 = 100 })); // owner only
+        Assert.Throws<CafeException>(() => _cafe.UseRateCard(_staff, "Standard"));
+        Assert.Throws<CafeException>(() => _cafe.DeleteRateCard(_owner, "Weekend")); // in use
+        Assert.Throws<CafeException>(() => _cafe.SaveRateCard(_owner, "Bad", weekend with { BlockGraceMin = 30 })); // grace as long as a block
+        Assert.Throws<CafeException>(() => _cafe.SaveRateCard(_owner, "Bad", weekend with { Paise60 = 0 }));
+        _cafe.Dispose();
+        using var reopened = new CafeCore(_file, "test-key-123", () => _clock); // a restart keeps the card in use
+        Assert.Equal(weekend, reopened.Rate);
+        var owner = reopened.Login("9000000001", "432100");
+        reopened.UseRateCard(owner, "Standard");
+        reopened.DeleteRateCard(owner, "Weekend");
+        Assert.Equal(["Standard"], reopened.RateCards(owner).Select(c => c.Name));
+    }
+
+    [Fact]
     public void Counter_finds_a_customer_by_phone_with_saved_time_and_wallet()
     {
         _cafe.BuyPlan(_staff, _cust, 120, 7, 10000, "cash");

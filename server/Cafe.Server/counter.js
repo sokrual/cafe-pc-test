@@ -2,7 +2,7 @@
 // Counter screen. Server values only ever go in as text (never HTML), so a name cannot run code here.
 const $ = id => document.getElementById(id);
 let token = sessionStorage.getItem("cafeToken"); // gone when the browser closes; Windows locks the PC when staff walk away
-let rows = [], selected = null, panelKey = "", poll = null;
+let rows = [], selected = null, panelKey = "", poll = null, rate = null; // rate: the card in use, for the time choices
 
 function el(tag, props = {}, ...kids) {
   const e = Object.assign(document.createElement(tag), props);
@@ -54,9 +54,12 @@ async function refresh(forcePanel = false) {
 const liveText = r => [r.customer, { prepaid: "Paid in advance", postpaid: "Pays at the end", plan: "Plan time" }[r.mode], timeText(r),
   r.toPay > 0 ? "To pay " + rupees(r.toPay) : "Nothing to pay"].filter(Boolean).join(" · ");
 
+const span = m => m < 60 ? m + " min" : Math.floor(m / 60) + " h" + (m % 60 ? " " + m % 60 + " min" : "");
 function minutesPick(id) {
-  return el("select", { id }, ...[30, 60, 90, 120, 150, 180].map(m => el("option", { value: m, textContent: m < 60 ? m + " min" : m / 60 + " h" })));
+  const block = rate?.blockMin ?? 30;
+  return el("select", { id }, ...[1, 2, 3, 4, 5, 6].map(n => n * block).map(m => el("option", { value: m, textContent: span(m) })));
 }
+async function loadRate() { try { rate = (await api("GET", "/staff/rate-cards")).find(c => c.inUse)?.rate ?? null; } catch { } }
 function payForm(session, amount) {
   return el("div", {},
     el("h2", { textContent: "Take payment" }),
@@ -131,7 +134,7 @@ async function stop(r) {
 }
 
 function signOut() { sessionStorage.removeItem("cafeToken"); token = null; clearInterval(poll); $("app").hidden = true; $("login").hidden = false; }
-function start() { $("login").hidden = true; $("app").hidden = false; refresh(); poll = setInterval(refresh, 3000); }
+function start() { $("login").hidden = true; $("app").hidden = false; loadRate(); refresh(); poll = setInterval(refresh, 3000); }
 
 $("login").onsubmit = async e => {
   e.preventDefault();
@@ -163,4 +166,34 @@ $("reviewBtn").onclick = async () => {
       el("div", { className: "row" }, el("button", { className: "quiet", textContent: "Close", onclick: () => { panelKey = ""; refresh(true); } })));
   } catch (e) { say(e.message, false); }
 };
+// Rate cards: everyone sees them, only the owner can change them (the server refuses anyone else).
+const RATE_FIELDS = [["blockMin", "Block length in minutes", 1], ["paise30", "Price for 1 block, ₹", 100], ["paise60", "Price for 2 blocks, ₹", 100],
+  ["paise90", "Price for 3 blocks, ₹", 100], ["extraBlockPaise", "Each block after that, ₹", 100], ["minimumMin", "Minimum charge in minutes", 1],
+  ["graceMin", "Free if they leave within (minutes)", 1], ["blockGraceMin", "Free minutes after each block", 1], ["carryOverDays", "Unused minutes stay valid for (days)", 1]];
+async function showRates(pick) {
+  try {
+    const cards = await api("GET", "/staff/rate-cards");
+    const c = cards.find(x => x.name === pick) ?? cards.find(x => x.inUse);
+    const run = (fn, msg, next) => async () => {
+      const target = typeof next === "function" ? next() : next ?? c.name; // read when clicked, not when drawn
+      try { await fn(); await loadRate(); say(msg); showRates(target); } catch (e) { say(e.message, false); }
+    };
+    const read = () => Object.fromEntries(RATE_FIELDS.map(([k, , unit]) => {
+      const n = parseFloat($("r_" + k).value);
+      if (!Number.isFinite(n)) throw new Error("Fill in every box with a number.");
+      return [k, Math.round(n * unit)];
+    }));
+    panelKey = "side";
+    $("panel").replaceChildren(el("h2", { textContent: "Rate cards" }),
+      el("div", { className: "row" }, ...cards.map(x => el("button", { className: x.name === c.name ? "" : "quiet", textContent: x.name + (x.inUse ? " (in use)" : ""), onclick: () => showRates(x.name) }))),
+      el("hr"), el("label", { htmlFor: "r_name", textContent: "Name (type a new name to make a new card)" }), el("input", { id: "r_name", value: c.name }),
+      ...RATE_FIELDS.flatMap(([k, label, unit]) => [el("label", { htmlFor: "r_" + k, textContent: label }), el("input", { id: "r_" + k, inputMode: "decimal", value: c.rate[k] / unit })]),
+      el("div", { className: "row" },
+        el("button", { textContent: "Save", onclick: run(() => api("POST", "/staff/rate-cards", { name: $("r_name").value.trim(), rate: read() }), "Rate card saved.", () => $("r_name").value.trim()) }),
+        c.inUse ? null : el("button", { className: "quiet", textContent: "Put in use", onclick: run(() => api("POST", "/staff/rate-cards/use", { name: c.name }), `"${c.name}" is now in use.`) }),
+        c.inUse ? null : el("button", { className: "danger", textContent: "Delete", onclick: run(() => api("DELETE", "/staff/rate-cards/" + encodeURIComponent(c.name)), `"${c.name}" deleted.`, "") }),
+        el("button", { className: "quiet", textContent: "Close", onclick: () => { panelKey = ""; refresh(true); } })));
+  } catch (e) { say(e.message, false); }
+}
+$("ratesBtn").onclick = () => showRates();
 if (token) start(); else $("login").hidden = false;

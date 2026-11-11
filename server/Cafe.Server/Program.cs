@@ -168,6 +168,10 @@ app.MapPost("/staff/sessions", (HttpContext c, StartBody b) =>
 app.MapPost("/staff/sessions/{id:long}/stop", (HttpContext c, long id) => cafe.Stop(Staff(c), id));
 app.MapPost("/staff/sessions/{id:long}/time", (HttpContext c, long id, MinutesBody b) => { cafe.AddTime(Staff(c), id, b.Minutes); return Results.Ok(); });
 app.MapPost("/staff/sessions/{id:long}/pay", (HttpContext c, long id, PayBody b) => { cafe.Pay(Staff(c), id, b.Method, b.Amount, b.UpiLast4); return cafe.BillFor(id); });
+app.MapGet("/staff/rate-cards", (HttpContext c) => cafe.RateCards(Staff(c)));
+app.MapPost("/staff/rate-cards", (HttpContext c, RateCardBody b) => { cafe.SaveRateCard(Staff(c), b.Name, b.Rate); return Results.Ok(); });
+app.MapPost("/staff/rate-cards/use", (HttpContext c, NameBody b) => { cafe.UseRateCard(Staff(c), b.Name); return Results.Ok(); });
+app.MapDelete("/staff/rate-cards/{name}", (HttpContext c, string name) => { cafe.DeleteRateCard(Staff(c), name); return Results.Ok(); });
 app.MapPost("/staff/shift/open", (HttpContext c) => new { shift = cafe.OpenShift(Staff(c)) });
 app.MapPost("/staff/shift/close", (HttpContext c, CashBody b) => { var (expected, difference) = cafe.CloseShift(Staff(c), b.Counted); return new { expected, difference }; });
 
@@ -268,3 +272,5 @@ record StartBody(string Pc, string Phone, string Mode, int? Minutes);
 record MinutesBody(int Minutes);
 record PayBody(string Method, long Amount, string? UpiLast4);
 record CashBody(long Counted);
+record RateCardBody(string Name, Rate Rate);
+record NameBody(string Name);
