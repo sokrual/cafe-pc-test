@@ -316,7 +316,25 @@ try {
     Start-Sleep -Seconds 32
     $afterDeferred = if (Test-Path $watchdogLog) { @(Select-String -Path $watchdogLog -Pattern "cleanup deferred (session active)" -SimpleMatch).Count } else { 0 }
     Check "B3.F0" "Fresh request is tried promptly and unchanged deferral is logged once" ((Test-Path "$data\wipe\request") -and $firstDeferred -and $afterDeferred -eq ($beforeDeferred + 1)) "log lines $beforeDeferred -> $afterDeferred"
-    Remove-Item "$data\wipe\request" -Force -ErrorAction SilentlyContinue
+    $f0RequestPath = "$data\wipe\request"
+    $f0Removed = $false
+    $f0RemoveError = ""
+    for ($attempt = 0; $attempt -le 15; $attempt++) {
+        try {
+            if (Test-Path -LiteralPath $f0RequestPath) {
+                Remove-Item -LiteralPath $f0RequestPath -Force -ErrorAction Stop
+            }
+            if (-not (Test-Path -LiteralPath $f0RequestPath)) {
+                $f0Removed = $true
+                break
+            }
+            $f0RemoveError = "request path still exists"
+        } catch {
+            $f0RemoveError = $_.Exception.Message
+        }
+        if ($attempt -lt 15) { Start-Sleep -Seconds 1 }
+    }
+    Check "B3.F0b" "F0 test request removed" $f0Removed $(if ($f0Removed) { "request path is gone" } else { $f0RemoveError })
     $p1 = AsCustomer "$env:WINDIR\System32\PING.EXE" "-t 127.0.0.1"
     $p2 = AsCustomer "$env:ProgramFiles\FakeGame\game.exe" "-t 127.0.0.1"
     $p3 = AsCustomer "$env:ProgramFiles\FakeMouse\lghub.exe" "-t 127.0.0.1"
@@ -581,6 +599,9 @@ try {
 }
 catch { Check "B3.X" "script error" $false "$_ (line $($_.InvocationInfo.ScriptLineNumber))" }
 finally {
+    foreach ($f in Get-ChildItem (Join-Path $data "logs") -Filter "watchdog-*.log" -ErrorAction SilentlyContinue) {
+        Copy-Item $f.FullName $wd -Force -ErrorAction SilentlyContinue
+    }
     foreach ($f in Get-ChildItem $wd -Filter "*.log" -ErrorAction SilentlyContinue) { Write-Host "--- $($f.Name)"; Get-Content $f.FullName | Select-Object -Last 40 }
     $results | Format-Table id, result, test, detail -AutoSize -Wrap | Out-String -Width 250 | Write-Host
     $results | Export-Csv (Join-Path $repo "lockdown-results.csv") -NoTypeInformation -Encoding utf8
