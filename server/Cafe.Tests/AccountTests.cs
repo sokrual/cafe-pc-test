@@ -375,6 +375,10 @@ public sealed class AccountTests : IDisposable
         _cafe.RemovePc(_owner, "PC1");
         Assert.Null(_cafe.PcByToken(token));                                        // its key stops working
         Assert.Empty(_cafe.Pcs(_staff));
+        var replacement = _cafe.AddPc(_owner, "PC1");
+        Assert.NotEqual(token, replacement);
+        Assert.Null(_cafe.PcByToken(token));
+        Assert.Equal("PC1", _cafe.PcByToken(replacement));
     }
 
     [Fact]
