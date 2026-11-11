@@ -338,22 +338,61 @@ try {
     $gameProbe = AsCustomer "$env:ProgramFiles\FakeGame\game.exe" "-n 1 127.0.0.1"
     $allUsersGameOk = $gameProbe.WaitForExit(15000) -and $gameProbe.ExitCode -eq 0
     Check "B3.M5" "A game installed for all users still runs after a full profile reset" $allUsersGameOk "$env:ProgramFiles\FakeGame\game.exe exit success: $allUsersGameOk"
-    # Read the restored hive directly: no second Customer logon is needed while the profile service settles.
-    $hiveWasLoaded = Test-Path "Registry::HKEY_USERS\$($u.SID.Value)"
-    $resetHive = if ($hiveWasLoaded) { "Registry::HKEY_USERS\$($u.SID.Value)" } else { "Registry::HKEY_USERS\ShinzxResetCheck" }
-    if (-not $hiveWasLoaded) {
-        reg.exe load "HKU\ShinzxResetCheck" "$prof\NTUSER.DAT" | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Could not inspect the restored Customer registry hive." }
-    }
+    # Wait for the profile service to unload Customer's live hive before inspecting the restored file.
+    # Never read HKU\<SID>: Windows may unload it between a path check and a registry read.
+    $customerHivePath = "Registry::HKEY_USERS\$($u.SID.Value)"
+    $privateHivePath = "Registry::HKEY_USERS\ShinzxResetCheck"
+    $privateHiveLoaded = $false
+    $resetPolicies = $null
+    $resetCmd = $null
+    $resetRun = $null
+    $settingsOk = $false
+    $settingsDetail = $null
     try {
-        $resetPolicies = Get-ItemProperty "$resetHive\Software\Microsoft\Windows\CurrentVersion\Policies\System"
-        $resetCmd = (Get-ItemProperty "$resetHive\Software\Policies\Microsoft\Windows\System").DisableCMD
-        $resetRun = Get-ItemProperty "$resetHive\$runKey"
-        $settingsOk = ($resetPolicies.DisableTaskMgr -eq 1 -and $resetCmd -eq 2 -and $resetRun.OwnerApp -eq "C:\owner.exe" -and -not $resetRun.Evil)
+        $hiveReleased = $false
+        for ($hiveWait = 0; $hiveWait -lt 60; $hiveWait++) {
+            if (-not (Test-Path -LiteralPath $customerHivePath)) {
+                $hiveReleased = $true
+                break
+            }
+            Start-Sleep -Seconds 1
+        }
+        if (-not $hiveReleased -and -not (Test-Path -LiteralPath $customerHivePath)) {
+            $hiveReleased = $true
+        }
+
+        if (-not $hiveReleased) {
+            $settingsDetail = "Customer hive still loaded after 60 s"
+        } else {
+            reg.exe load "HKU\ShinzxResetCheck" "$prof\NTUSER.DAT" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Could not load the restored Customer registry hive under the private name." }
+            $privateHiveLoaded = $true
+
+            $policySystemPath = "$privateHivePath\Software\Microsoft\Windows\CurrentVersion\Policies\System"
+            $policyCommandPath = "$privateHivePath\Software\Policies\Microsoft\Windows\System"
+            $runRegistryPath = "$privateHivePath\$runKey"
+            $resetPolicies = Get-ItemProperty -LiteralPath $policySystemPath -ErrorAction Stop
+            $resetCmd = (Get-ItemProperty -LiteralPath $policyCommandPath -ErrorAction Stop).DisableCMD
+            $resetRun = Get-ItemProperty -LiteralPath $runRegistryPath -ErrorAction Stop
+            $settingsOk = ($resetPolicies.DisableTaskMgr -eq 1 -and $resetCmd -eq 2 -and
+                $resetRun.OwnerApp -eq "C:\owner.exe" -and -not $resetRun.Evil)
+            $settingsDetail = "policy and Run keys restored from NTUSER.DAT: $settingsOk"
+        }
+    } catch {
+        $settingsOk = $false
+        $settingsDetail = "could not read restored NTUSER.DAT: $($_.Exception.Message)"
     } finally {
-        if (-not $hiveWasLoaded) { [gc]::Collect(); reg.exe unload "HKU\ShinzxResetCheck" | Out-Null }
+        if ($privateHiveLoaded) {
+            [gc]::Collect()
+            [gc]::WaitForPendingFinalizers()
+            reg.exe unload "HKU\ShinzxResetCheck" | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                $settingsOk = $false
+                $settingsDetail = "could not unload the private restored Customer hive"
+            }
+        }
     }
-    Check "B3.M7" "Customer restrictions and owner autostart settings survive the new registry hive" $settingsOk "policy and Run keys restored: $settingsOk"
+    Check "B3.M7" "Customer restrictions and owner autostart settings survive the new registry hive" $settingsOk $settingsDetail
     Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force
     $resetLockReady = WaitFor 20 {
         @(Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Where-Object { [CafeWindowProbe]::HasVisibleWindow($_.Id) }).Count -gt 0
@@ -385,7 +424,8 @@ try {
     Check "B3.F8" "A customer's folder link cannot make the clean-up delete files elsewhere" ($linkMade -eq 0 -and (Test-Path "C:\ShinzxCanary\keep.txt")) "link made: exit $linkMade"
     Check "B3.F8b" "A customer's hard link cannot make the clean-up write over files elsewhere" ((Get-Content "C:\ShinzxCanary\keep.txt" -Raw) -eq "must stay`r`n") "hard link made: exit $hard (a refusal by Windows is a pass too)"
     Check "B3.F9" "A program named like a mouse app in a folder anyone can write is closed" ($p4.HasExited) "lghub.exe in an open folder"
-    Check "B3.F10" "Customer's autostart entry removed, the owner's kept" ($runMade -eq 0 -and $ownerRun -eq 0 -and $resetRun.OwnerApp -eq "C:\owner.exe" -and -not $resetRun.Evil) "made: customer exit $runMade, owner exit $ownerRun"
+    $resetOwnerRunOk = ($null -ne $resetRun -and $resetRun.OwnerApp -eq "C:\owner.exe" -and -not $resetRun.Evil)
+    Check "B3.F10" "Customer's autostart entry removed, the owner's kept" ($runMade -eq 0 -and $ownerRun -eq 0 -and $resetOwnerRunOk) "made: customer exit $runMade, owner exit $ownerRun"
     cmd.exe /c "schtasks /query /tn ShinzxCustomerTask >nul 2>&1"
     Check "B3.F11" "Customer's scheduled task removed" ($taskMade -eq 0 -and $LASTEXITCODE -ne 0) "made: exit $taskMade"
     Stop-Process -Id $p3.Id -Force -ErrorAction SilentlyContinue
@@ -443,4 +483,5 @@ finally {
     $results | Export-Csv (Join-Path $repo "lockdown-results.csv") -NoTypeInformation -Encoding utf8
     Copy-Item $wd (Join-Path $repo "lockdown-logs") -Recurse -Force -ErrorAction SilentlyContinue   # artifacts must sit in the checkout
 }
-if (@($results | Where-Object result -eq "FAIL").Count) { exit 1 }
+$failCount = @($results | Where-Object result -eq "FAIL").Count
+if ($failCount -gt 0) { exit 1 } else { exit 0 }
