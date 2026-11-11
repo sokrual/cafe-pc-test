@@ -72,7 +72,9 @@ B5  Owner features                                                  IN PROGRESS
           Phone check: format check plus staff or owner checking the number on the customer's phone.
           No SMS codes (they cost money). A tourist with no working number plays as Walk-in (no wallet,
           no membership); the owner records an identity check in a pop-up (same data as B4 sign-up).
-          Tax in v1: "GST registered" or "Tax not applicable (below the limit)" switch, usable by any cafe.
+          Tax in v1, three choices at setup, each with a short hover note: "Tax not applicable (below the
+          limit)", "GST registered (regular)", "GST composition scheme" (no tax on the bill, the bill is
+          called "Bill of Supply" and carries the fixed sentence; reports show 6% of takings as tax owed).
           Found: server runs with InvariantGlobalization=true (must go), Indian time is fixed in
           Offers.cs and Memberships.cs, money is called "paise" everywhere.
     B5.11 Food, drinks, snacks and merchandise on the bill: a list per category with custom text per sale,
