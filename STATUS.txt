@@ -59,7 +59,7 @@ B5  Owner features                                                  IN PROGRESS
             carried over only for members (non-members lose leftover minutes); the customer sees a
             reminder before it ends                                                              DONE
             (follow-up on the PC side: show the reminder on screen)
-         c) members-only offers, happy hours, discounts and promotions
+         c) members-only offers, happy hours, discounts and promotions                          DONE
          d) reservations
     B5.10 First-run setup screens for the owner: rate card, carry-over rule, memberships, offers,
           discounts, promotions, logo. Shinzx runs it again after testing. Rate cards are set by the owner after install, not in the code:

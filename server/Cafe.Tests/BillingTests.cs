@@ -196,6 +196,53 @@ public sealed class BillingTests : IDisposable
     }
 
     [Fact]
+    public void Happy_hour_bills_the_whole_session_that_starts_inside_it_and_offers_never_stack()
+    {
+        // test clock: Monday 9 Nov 2026, 15:30 Indian time
+        _cafe.SaveRateCard(_owner, "Happy", new Rate(Paise30: 2000, Paise60: 3000, Paise90: 5000, ExtraBlockPaise: 2000));
+        var weekdays = new HappyHour(0, "Happy", [1, 2, 3, 4, 5], 15 * 60, 18 * 60, false); // Mon-Fri 3 pm to 6 pm
+        Assert.Throws<CafeException>(() => _cafe.AddHappyHour(_staff, weekdays)); // owner only
+        Assert.Throws<CafeException>(() => _cafe.AddHappyHour(_owner, weekdays with { FromMin = 18 * 60, ToMin = 15 * 60 }));
+        _cafe.AddHappyHour(_owner, weekdays);
+        var happy = _cafe.StartPostpaid(_staff, "PC1", _cust);
+        Wait(200); // runs past 6 pm: still billed on the happy card, 210 min = Rs 50 + 4 x Rs 20
+        Assert.Equal(13000, _cafe.Stop(_staff, happy).Charged);
+        Assert.Equal(6000, PlayFor(36)); // started at 18:50: the card in use again
+
+        _cafe.SaveOffer(_owner, new Offer("Diwali", 20, false));
+        _cafe.SaveOffer(_owner, new Offer("Members10", 10, true));
+        _cafe.SaveOffer(_owner, new Offer("Old", 50, false, To: new DateOnly(2026, 11, 8)));
+        Assert.Throws<CafeException>(() => _cafe.SaveOffer(_staff, new Offer("Mine", 90, false))); // owner sets offers
+        Assert.Throws<CafeException>(() => _cafe.ApplyOffer(_staff, happy, "Diwali")); // no offer on top of happy hour
+
+        var s = _cafe.StartPostpaid(_staff, "PC1", _cust);
+        _cafe.ApplyOffer(_staff, s, "Diwali"); // staff may apply an owner's offer
+        Assert.Throws<CafeException>(() => _cafe.ApplyOffer(_staff, s, "Members10")); // one offer at a time
+        Wait(36);
+        var bill = _cafe.Stop(_staff, s);
+        Assert.Equal((6000L, -1200L, 4800L), (bill.Charged, bill.Adjusted, bill.Due));
+
+        var paid = _cafe.StartPrepaid(_staff, "PC1", _cust, 30);
+        _cafe.Pay(_staff, paid, "cash", 4000);
+        Assert.Throws<CafeException>(() => _cafe.ApplyOffer(_staff, paid, "Diwali")); // offers go on before payment
+        _cafe.Stop(_staff, paid);
+
+        var p = _cafe.StartPrepaid(_staff, "PC1", _cust, 30);
+        Assert.Throws<CafeException>(() => _cafe.ApplyOffer(_staff, p, "Members10")); // members only
+        Assert.Throws<CafeException>(() => _cafe.ApplyOffer(_staff, p, "Old")); // ended yesterday
+        _cafe.ApplyOffer(_owner, p, "Diwali");
+        _cafe.AddTime(_staff, p, 30); // the discount follows every new charge
+        Assert.Equal(8000 - 1600, _cafe.BillFor(p).Due);
+        _cafe.Stop(_staff, p);
+
+        var running = _cafe.StartPostpaid(_staff, "PC1", _cust);
+        _cafe.SaveRateCard(_owner, "Standard", new Rate(Paise60: 9000)); // a price change during the session...
+        Wait(36);
+        Assert.Equal(6000, _cafe.Stop(_staff, running).Charged); // ...does not change a session already running
+        Assert.Equal(9000, PlayFor(36));
+    }
+
+    [Fact]
     public void Counter_finds_a_customer_by_phone_with_saved_time_and_wallet()
     {
         _cafe.BuyPlan(_staff, _cust, 120, 7, 10000, "cash");

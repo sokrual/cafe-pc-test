@@ -69,7 +69,9 @@ public sealed partial class CafeCore : IDisposable
     readonly SqliteConnection _db;
     readonly Func<DateTime> _now;
     readonly Action<string> _log;
-    public Rate Rate { get; set; } = new();
+    Rate _rate = new();
+    /// The card in use; inside one session's billing, that session's own prices (see WithSessionRate).
+    public Rate Rate { get => _sessionRate ?? _rate; set => _rate = value; }
     readonly HashSet<long> _timeLimitFailures = [];
 
     public CafeCore(string path, string key, Func<DateTime>? now = null, Action<string>? log = null)
@@ -118,6 +120,7 @@ public sealed partial class CafeCore : IDisposable
         _ready = true;
         LoadRateCards();
         LoadMemberships();
+        LoadOffers();
     }
 
     public void Dispose() => _db.Dispose();
@@ -226,7 +229,7 @@ public sealed partial class CafeCore : IDisposable
     {
         Minutes(minutes);
         var id = Start(by, pc, user, minutes, null);
-        Ledger(by, "charge", Price(minutes), session: id, reference: $"prepaid {minutes} min");
+        Ledger(by, "charge", WithSessionRate(id, () => Price(minutes)), session: id, reference: $"prepaid {minutes} min");
         return id;
     });
 
@@ -247,6 +250,7 @@ public sealed partial class CafeCore : IDisposable
         RequireStaffOrSelf(by, user);
         if (InUse(pc)) throw new CafeException($"{pc} is already in use");
         var id = Insert("INSERT INTO sessions(pc, user_id, prepaid_min, plan_id, started) VALUES(@p0, @p1, @p2, @p3, @p4)", pc, user, prepaidMin, plan, Iso(_now()));
+        PriceSession(id, user); // the prices this session keeps to the end (a happy hour's, or the card in use)
         Audit(by, "start", $"session {id} on {pc} prepaid={prepaidMin} plan={plan}");
         return id;
     });
@@ -256,7 +260,8 @@ public sealed partial class CafeCore : IDisposable
         RequireStaff(by); Minutes(minutes); // negative minutes would be a staff discount, which only the owner may give
         if (Exec("UPDATE sessions SET prepaid_min = prepaid_min + @p0 WHERE id = @p1 AND ended IS NULL AND prepaid_min IS NOT NULL", minutes, session) == 0)
             throw new CafeException("Time can be added only for a prepaid customer who is playing.");
-        Ledger(by, "charge", Price(minutes), session: session, reference: $"added {minutes} min");
+        Ledger(by, "charge", WithSessionRate(session, () => Price(minutes)), session: session, reference: $"added {minutes} min");
+        SyncOffer(by, session);
         Audit(by, "add_time", $"session {session} +{minutes} min");
     });
 
@@ -297,7 +302,7 @@ public sealed partial class CafeCore : IDisposable
 
     /// Safe to call twice or at the same moment as the countdown's own stop: only the first call bills.
     /// at: when it really ended (a logout the PC queued while the admin PC was unreachable); default now.
-    public Bill Stop(long by, long session, DateTime? at = null) => Tx(() =>
+    public Bill Stop(long by, long session, DateTime? at = null) => Tx(() => WithSessionRate(session, () =>
     {
         RequireStaffOrSelf(by, Scalar<long?>("SELECT user_id FROM sessions WHERE id = @p0", session) ?? throw new CafeException("This visit was not found."));
         var now = at ?? _now();
@@ -331,10 +336,11 @@ public sealed partial class CafeCore : IDisposable
                 Ledger(by, "charge", Price(billed), session: session, user: user, reference: $"{billed} min");
                 if (billed > usedMin) CarryOver(by, user, billed - usedMin); // the unused part of the last block
             }
+            SyncOffer(by, session);
             Audit(by, "stop", $"session {session} used {used}");
         }
         return BillFor(session);
-    });
+    }));
 
     // Over the bought time: 5 min grace, then 30-min blocks at the extra-block price; the unused part is kept.
     void ChargeOvertime(long by, long session, long user, TimeSpan over, string what)
@@ -350,8 +356,8 @@ public sealed partial class CafeCore : IDisposable
     void CarryOver(long by, long user, int minutes)
     {
         var member = MembershipOf(user);
-        if (member is null && Rate.CarryOverMembersOnly) return; // the owner's rule: only members keep unused time
-        var expires = member?.Ends ?? _now().AddDays(Rate.CarryOverDays); // a member keeps it for as long as the membership runs
+        if (member is null && _rate.CarryOverMembersOnly) return; // the owner's rule (card in use): only members keep unused time
+        var expires = member?.Ends ?? _now().AddDays(_rate.CarryOverDays); // a member keeps it for as long as the membership runs
         var id = Insert("INSERT INTO plans(user_id, minutes_left, expires) VALUES(@p0, @p1, @p2)", user, minutes, Iso(expires));
         Audit(by, "carry_over", $"user {user} {minutes} min kept as plan {id}");
     }
@@ -518,6 +524,8 @@ public sealed partial class CafeCore : IDisposable
         };
         if (sale.Session == -1 && existingSession is null)
             throw new CafeException("The offline walk-in session could not be found.");
+        // shortcut: an offline top-up prices the time already played with the card in use, not the session's own
+        // (it differs only for a happy-hour session that gets an offline sale during an outage)
         if (existingSession is long existing)
         {
             if (Scalar<long?>( "SELECT id FROM sessions WHERE id = @p0 AND pc = @p1 AND ended IS NULL", existing, pc) is null)

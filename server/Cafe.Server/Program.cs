@@ -180,6 +180,12 @@ app.MapPost("/staff/memberships", (HttpContext c, MembershipSaleBody b) =>
     var by = Staff(c);
     return new { ends = cafe.SellMembership(by, cafe.FindCustomer(by, b.Phone).Id, b.Plan, b.Method, b.UpiLast4) };
 });
+app.MapGet("/staff/offers", (HttpContext c) => { Staff(c); return new { offers = cafe.Offers(), happyHours = cafe.HappyHours() }; });
+app.MapPost("/staff/offers", (HttpContext c, Offer b) => { cafe.SaveOffer(Staff(c), b); return Results.Ok(); });
+app.MapDelete("/staff/offers/{name}", (HttpContext c, string name) => { cafe.DeleteOffer(Staff(c), name); return Results.Ok(); });
+app.MapPost("/staff/happy-hours", (HttpContext c, HappyHour b) => new { id = cafe.AddHappyHour(Staff(c), b) });
+app.MapDelete("/staff/happy-hours/{id:long}", (HttpContext c, long id) => { cafe.DeleteHappyHour(Staff(c), id); return Results.Ok(); });
+app.MapPost("/staff/sessions/{id:long}/offer", (HttpContext c, long id, NameBody b) => { cafe.ApplyOffer(Staff(c), id, b.Name); return cafe.BillFor(id); });
 app.MapPost("/staff/shift/open", (HttpContext c) => new { shift = cafe.OpenShift(Staff(c)) });
 app.MapPost("/staff/shift/close", (HttpContext c, CashBody b) => { var (expected, difference) = cafe.CloseShift(Staff(c), b.Counted); return new { expected, difference }; });
 

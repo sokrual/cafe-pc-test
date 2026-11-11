@@ -51,7 +51,8 @@ async function refresh(forcePanel = false) {
   if (forcePanel || key !== panelKey) { panelKey = key; showPc(r); }
   else if ($("live")) $("live").textContent = liveText(r);
 }
-const liveText = r => [r.customer, { prepaid: "Paid in advance", postpaid: "Pays at the end", plan: "Plan time" }[r.mode], timeText(r),
+const liveText = r => [r.customer, { prepaid: "Paid in advance", postpaid: "Pays at the end", plan: "Plan time" }[r.mode],
+  r.happyHour ? "Happy hour: " + r.happyHour : null, r.offer ? "Offer: " + r.offer : null, timeText(r),
   r.toPay > 0 ? "To pay " + rupees(r.toPay) : "Nothing to pay"].filter(Boolean).join(" · ");
 
 const day = iso => new Date(iso).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
@@ -105,6 +106,12 @@ function showPc(r) {
     // to pause, lock the PC below: locking stops the time and unlocking starts it again (a pause alone would leave the PC playable)
     row.append(el("button", { className: "danger", textContent: "Stop and bill", onclick: () => stop(r) }));
     p.push(row);
+    if (!r.happyHour && !r.offer) p.push(el("label", { htmlFor: "offerPick", textContent: "Offer (one per bill, not with happy hour)" }),
+      el("div", { className: "row" }, el("select", { id: "offerPick" }, el("option", { value: "", textContent: "Loading offers..." })),
+        el("button", { className: "quiet", textContent: "Apply offer", onclick: act(() => {
+          if (!$("offerPick").value) throw new Error("Pick an offer.");
+          return api("POST", `/staff/sessions/${r.session}/offer`, { name: $("offerPick").value });
+        }, "Offer applied.") })));
     // pay-at-end is charged when it stops, so only time paid in advance can be paid during the session
     if (r.toPay > 0 && r.mode === "prepaid") p.push(el("hr"), payForm(r.session, r.toPay));
   }
@@ -114,6 +121,12 @@ function showPc(r) {
     el("div", { className: "row" }, el("button", { className: "quiet", textContent: r.session ? "Lock and pause" : "Lock this PC",
       onclick: act(() => api("POST", "/staff/lock", { pc: r.pc, message: $("lockMsg").value || null }), r.session ? "Locked. The time has stopped." : "Locked.") })));
   $("panel").replaceChildren(...p);
+  if ($("offerPick")) api("GET", "/staff/offers").then(d => {
+    const today = new Date().toLocaleDateString("en-CA"); // yyyy-mm-dd, the PC's own date
+    const live = d.offers.filter(o => (!o.from || o.from <= today) && (!o.to || o.to >= today));
+    $("offerPick")?.replaceChildren(el("option", { value: "", textContent: live.length ? "Pick an offer" : "No offers today" }),
+      ...live.map(o => el("option", { value: o.name, textContent: `${o.name} · ${o.percent}% off${o.membersOnly ? " · members" : ""}` })));
+  }).catch(() => { });
 }
 async function find() {
   try { const c = await api("GET", "/staff/customers/" + encodeURIComponent($("phone").value.trim()));
@@ -235,4 +248,44 @@ async function showMembers(pick) {
   } catch (e) { say(e.message, false); }
 }
 $("membersBtn").onclick = () => showMembers();
+
+// Offers: the owner sets happy hours (a rate card for set days and times) and named offers (% off, members only, dates).
+const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const hhmm = m => String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
+const mins = id => { const [h, m] = ($(id).value || "").split(":").map(Number); if (!Number.isFinite(h) || !Number.isFinite(m)) throw new Error("Fill in both times."); return h * 60 + m; };
+async function showOffers() {
+  try {
+    const [d, cards] = await Promise.all([api("GET", "/staff/offers"), api("GET", "/staff/rate-cards")]);
+    const run = (fn, msg) => async () => { try { await fn(); say(msg); showOffers(); } catch (e) { say(e.message, false); } };
+    const check = (id, label, checked = false) => el("label", { className: "check" }, el("input", { type: "checkbox", id, checked }), label);
+    panelKey = "side";
+    $("panel").replaceChildren(el("h2", { textContent: "Happy hours" }),
+      el("p", { className: "small", textContent: "A visit that starts inside the time is billed on that rate card to the end. No offer can be added on top." }),
+      d.happyHours.length ? el("ul", {}, ...d.happyHours.map(h => el("li", {}, `${h.card} · ${h.days.map(x => DAYS[x - 1]).join(" ")} · ${hhmm(h.fromMin)}-${hhmm(h.toMin)}${h.membersOnly ? " · members" : ""} `,
+        el("button", { className: "quiet", textContent: "Delete", onclick: run(() => api("DELETE", "/staff/happy-hours/" + h.id), "Happy hour deleted.") })))) : el("p", { textContent: "No happy hours yet." }),
+      el("label", { htmlFor: "h_card", textContent: "Rate card" }), el("select", { id: "h_card" }, ...cards.map(c => el("option", { value: c.name, textContent: c.name }))),
+      el("div", { className: "row" }, ...DAYS.map((x, i) => check("h_d" + (i + 1), x, i < 5))),
+      el("div", { className: "row" }, el("div", {}, el("label", { htmlFor: "h_from", textContent: "From" }), el("input", { id: "h_from", type: "time", value: "11:00" })),
+        el("div", {}, el("label", { htmlFor: "h_to", textContent: "To" }), el("input", { id: "h_to", type: "time", value: "15:00" }))),
+      check("h_members", "Members only"),
+      el("div", { className: "row" }, el("button", { textContent: "Add happy hour", onclick: run(() => api("POST", "/staff/happy-hours", {
+        card: $("h_card").value, days: DAYS.map((_, i) => i + 1).filter(n => $("h_d" + n).checked), fromMin: mins("h_from"), toMin: mins("h_to"), membersOnly: $("h_members").checked }), "Happy hour added.") })),
+      el("hr"), el("h2", { textContent: "Offers" }),
+      el("p", { className: "small", textContent: "Staff put one offer on a bill. It takes the % off every charge of that visit." }),
+      d.offers.length ? el("ul", {}, ...d.offers.map(o => el("li", {}, `${o.name} · ${o.percent}%${o.membersOnly ? " · members" : ""}${o.from || o.to ? ` · ${o.from ?? "..."} to ${o.to ?? "..."}` : ""} `,
+        el("button", { className: "quiet", textContent: "Delete", onclick: run(() => api("DELETE", "/staff/offers/" + encodeURIComponent(o.name)), "Offer deleted.") })))) : el("p", { textContent: "No offers yet." }),
+      el("label", { htmlFor: "o_name", textContent: "Name (an existing name changes that offer)" }), el("input", { id: "o_name" }),
+      el("label", { htmlFor: "o_pct", textContent: "Discount, %" }), el("input", { id: "o_pct", inputMode: "numeric" }),
+      check("o_members", "Members only"),
+      el("div", { className: "row" }, el("div", {}, el("label", { htmlFor: "o_from", textContent: "From (optional)" }), el("input", { id: "o_from", type: "date" })),
+        el("div", {}, el("label", { htmlFor: "o_to", textContent: "To (optional)" }), el("input", { id: "o_to", type: "date" }))),
+      el("div", { className: "row" }, el("button", { textContent: "Save offer", onclick: run(() => {
+          const percent = parseInt($("o_pct").value, 10);
+          if (!Number.isFinite(percent)) throw new Error("Type the discount in %.");
+          return api("POST", "/staff/offers", { name: $("o_name").value.trim(), percent, membersOnly: $("o_members").checked, from: $("o_from").value || null, to: $("o_to").value || null });
+        }, "Offer saved.") }),
+        el("button", { className: "quiet", textContent: "Close", onclick: () => { panelKey = ""; refresh(true); } })));
+  } catch (e) { say(e.message, false); }
+}
+$("offersBtn").onclick = () => showOffers();
 if (token) start(); else $("login").hidden = false;
