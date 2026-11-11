@@ -463,18 +463,20 @@ try {
         } catch { $false }
     }
     $staffHeaders = $script:staffHeaders
-    $finalStaffState = $null
-    $finalStaffBill = $null
+    $script:finalStaffState = $null
+    $script:finalStaffBill = $null
     $replayObserved = $staffLogin -and (WaitFor 90 {
         try {
             $state = Invoke-RestMethod "https://127.0.0.1:5443/staff/state/PC1" -Headers $staffHeaders
             $bill = Invoke-RestMethod "https://127.0.0.1:5443/staff/bill/$sessionBeforeLogout" -Headers $staffHeaders
-            $finalStaffState = $state
-            $finalStaffBill = $bill
+            $script:finalStaffState = $state
+            $script:finalStaffBill = $bill
             $pending = Get-QueuedActionCount $queuedLogoutFile
             $null -eq $state.Session -and $bill.Charged -gt 0 -and $pending -eq 0
         } catch { $false }
     })
+    $finalStaffState = $script:finalStaffState
+    $finalStaffBill = $script:finalStaffBill
     $remainingActions = Get-QueuedActionCount $queuedLogoutFile
     $logoutReplayed = [bool]($staffLogin -and $finalStaffState -and $null -eq $finalStaffState.Session -and $finalStaffBill.Charged -gt 0)
     Check "B3.F12" "Offline self-lock and logout survive lock-screen kill and watchdog restart; staff API confirms ended session and charged bill" ($sessionBeforeLogout -and $logoutDurable -and $logoutReplayed -and $remainingActions -eq 0) "session before $sessionBeforeLogout; self-lock queued $selfLockQueued; logout queued $logoutQueued; queue ordered $logoutDurable; staff login $staffLogin; staff session $($finalStaffState.Session); bill charged $($finalStaffBill.Charged); pending actions $remainingActions"
