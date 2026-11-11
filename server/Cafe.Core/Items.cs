@@ -116,8 +116,8 @@ public sealed partial class CafeCore
     {
         RequireOwner(by);
         if (from > to) throw new CafeException("The report must end on or after the day it starts.");
-        var start = from.ToDateTime(TimeOnly.MinValue).AddHours(-5.5);
-        var end = to.AddDays(1).ToDateTime(TimeOnly.MinValue).AddHours(-5.5);
+        var start = from.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc).AddHours(-5.5); // Utc: never read as this computer's local time
+        var end = to.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc).AddHours(-5.5);
         using var r = Query("SELECT category, item, sum(qty), sum(amount) FROM ledger WHERE kind = 'charge' AND item IS NOT NULL AND at >= @p0 AND at < @p1 GROUP BY category, item ORDER BY category, item",
             Iso(start), Iso(end));
         var list = new List<ItemSale>();

@@ -672,6 +672,10 @@ public sealed class BillingTests : IDisposable
         Assert.Throws<CafeException>(() => _cafe.ItemReport(_staff, day, day)); // the owner's report
         Assert.Equal([new ItemSale("Beverages", "Coke", 4, 20000)], _cafe.ItemReport(_owner, day, day));
         Assert.Empty(_cafe.ItemReport(_owner, day.AddDays(1), day.AddDays(1)));
+        _clock = new DateTime(2026, 11, 9, 18, 40, 0, DateTimeKind.Utc); // 10 Nov, 00:10 in India
+        _cafe.CounterSale(_staff, coke, 1, null, "cash");
+        Assert.Equal(1, _cafe.ItemReport(_owner, day.AddDays(1), day.AddDays(1)).Single().Qty); // counted on the Indian day, whatever this computer's time zone
+        Assert.Equal(4, _cafe.ItemReport(_owner, day, day).Single().Qty);
     }
 
     [Fact]
