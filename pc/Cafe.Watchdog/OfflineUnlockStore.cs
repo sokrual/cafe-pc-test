@@ -59,8 +59,12 @@ sealed class OfflineUnlockStore
         var clear = JsonSerializer.SerializeToUtf8Bytes(state);
         var protectedBytes = Protect(clear);
         var temp = _path + ".new";
-        File.WriteAllBytes(temp, protectedBytes);
-        File.Move(temp, _path, true);
+        using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            stream.Write(protectedBytes);
+            stream.Flush(true);
+        }
+        PcProxy.ReplaceDurably(temp, _path);
     }
 
     public void UpdateFromServer(string json)

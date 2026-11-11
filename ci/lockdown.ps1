@@ -11,6 +11,12 @@ function Check($id, $test, $ok, $detail) {
     Write-Host "[$res] $id $test - $detail"
 }
 function WaitFor($seconds, $test) { for ($i = 0; $i -lt $seconds * 2; $i++) { if (& $test) { return $true }; Start-Sleep -Milliseconds 500 }; $false }
+function Get-QueuedActionCount($path) {
+    if (-not (Test-Path -LiteralPath $path)) { return 0 }
+    $items = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $path -Raw)
+    if ($null -eq $items) { return 0 }
+    return @($items).Count
+}
 if (-not ("CafeDpapiProbe" -as [type])) {
     Add-Type @'
 using System;
@@ -34,6 +40,47 @@ public static class CafeDpapiProbe {
             try { var clear = new byte[output.Length]; Marshal.Copy(output.Data, clear, 0, clear.Length); return clear; }
             finally { LocalFree(output.Data); }
         } finally { handle.Free(); }
+    }
+}
+'@
+}
+if (-not ("CafeTotpProbe" -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Security.Cryptography;
+public static class CafeTotpProbe
+{
+    const string Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    public static string Current(string secret)
+    {
+        var key = Decode(secret);
+        long step = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30;
+        var msg = BitConverter.GetBytes(step);
+        if (BitConverter.IsLittleEndian) Array.Reverse(msg);
+        using (var hmac = new HMACSHA1(key))
+        {
+            var hash = hmac.ComputeHash(msg);
+            int offset = hash[hash.Length - 1] & 0x0F;
+            int binary = ((hash[offset] & 0x7F) << 24) | (hash[offset + 1] << 16) |
+                (hash[offset + 2] << 8) | hash[offset + 3];
+            return (binary % 1000000).ToString("D6", CultureInfo.InvariantCulture);
+        }
+    }
+    static byte[] Decode(string text)
+    {
+        var bytes = new List<byte>();
+        int buffer = 0, bits = 0;
+        foreach (char c in text.ToUpperInvariant().Replace(" ", "").TrimEnd('='))
+        {
+            int value = Alphabet.IndexOf(c);
+            if (value < 0) throw new FormatException("Invalid Base32 test secret.");
+            buffer = ((buffer << 5) | value) & 0xFFFF;
+            bits += 5;
+            if (bits >= 8) { bytes.Add((byte)(buffer >> (bits - 8))); bits -= 8; }
+        }
+        return bytes.ToArray();
     }
 }
 '@
@@ -157,6 +204,10 @@ try {
     $tokenRead = CustomerPs "[IO.File]::ReadAllText('$data\keys\pc.token') | Out-Null"
     $pinRead = CustomerPs "[IO.File]::ReadAllText('$data\keys\server.pin') | Out-Null"
     Check "B3.C4b" "Customer cannot read the PC token or certificate pin" ($tokenRead -ne 0 -and $pinRead -ne 0 -and -not (Test-Path "$app\pc.token") -and -not (Test-Path "$app\server.pin") -and -not (Test-Path "$stage\pc.token") -and -not (Test-Path "$stage\server.pin")) "token read exit $tokenRead, pin read exit $pinRead; source copies removed"
+    $tokenDisk = [IO.File]::ReadAllBytes("$data\keys\pc.token")
+    $tokenDiskText = [Text.Encoding]::UTF8.GetString($tokenDisk).Trim()
+    $tokenClear = [Text.Encoding]::UTF8.GetString([CafeDpapiProbe]::Unprotect($tokenDisk)).Trim()
+    Check "B3.C4e" "PC token on disk is machine-DPAPI encrypted, not the plain token" ($tokenClear -eq $token -and $tokenDiskText -ne $token) "decrypted token matches server; disk bytes differ"
     $offlineCache = "$data\keys\offline-unlock.bin"
     for ($i = 0; $i -lt 30 -and -not (Test-Path $offlineCache); $i++) { Start-Sleep -Seconds 1 }
     $offlineCacheRead = CustomerPs "try { [IO.File]::ReadAllBytes('$offlineCache') | Out-Null; exit 0 } catch { exit 1 }"
@@ -265,7 +316,25 @@ try {
     Start-Sleep -Seconds 32
     $afterDeferred = if (Test-Path $watchdogLog) { @(Select-String -Path $watchdogLog -Pattern "cleanup deferred (session active)" -SimpleMatch).Count } else { 0 }
     Check "B3.F0" "Fresh request is tried promptly and unchanged deferral is logged once" ((Test-Path "$data\wipe\request") -and $firstDeferred -and $afterDeferred -eq ($beforeDeferred + 1)) "log lines $beforeDeferred -> $afterDeferred"
-    Remove-Item "$data\wipe\request" -Force -ErrorAction SilentlyContinue
+    $f0RequestPath = "$data\wipe\request"
+    $f0Removed = $false
+    $f0RemoveError = ""
+    for ($attempt = 0; $attempt -le 15; $attempt++) {
+        try {
+            if (Test-Path -LiteralPath $f0RequestPath) {
+                Remove-Item -LiteralPath $f0RequestPath -Force -ErrorAction Stop
+            }
+            if (-not (Test-Path -LiteralPath $f0RequestPath)) {
+                $f0Removed = $true
+                break
+            }
+            $f0RemoveError = "request path still exists"
+        } catch {
+            $f0RemoveError = $_.Exception.Message
+        }
+        if ($attempt -lt 15) { Start-Sleep -Seconds 1 }
+    }
+    Check "B3.F0c" "F0 test request removed" $f0Removed $(if ($f0Removed) { "request path is gone" } else { $f0RemoveError })
     $p1 = AsCustomer "$env:WINDIR\System32\PING.EXE" "-t 127.0.0.1"
     $p2 = AsCustomer "$env:ProgramFiles\FakeGame\game.exe" "-t 127.0.0.1"
     $p3 = AsCustomer "$env:ProgramFiles\FakeMouse\lghub.exe" "-t 127.0.0.1"
@@ -428,6 +497,93 @@ try {
     Check "B3.F10" "Customer's autostart entry removed, the owner's kept" ($runMade -eq 0 -and $ownerRun -eq 0 -and $resetOwnerRunOk) "made: customer exit $runMade, owner exit $ownerRun"
     cmd.exe /c "schtasks /query /tn CafeCustomerTask >nul 2>&1"
     Check "B3.F11" "Customer's scheduled task removed" ($taskMade -eq 0 -and $LASTEXITCODE -ne 0) "made: exit $taskMade"
+    # Verify final server state and the bill through staff endpoints; queue-empty alone is not proof.
+    $loginState = Pc "/pc/login" @{ phone = "9000000003"; pin = "2222" }
+    $sessionBeforeLogout = $loginState.Session
+    Stop-Process -Id $server.Id -Force
+    $offlineSelfLock = AsCustomer "$app\Cafe.Agent.exe" "--test-queue-selflock"
+    $selfLockQueued = $offlineSelfLock.WaitForExit(15000) -and $offlineSelfLock.ExitCode -eq 0
+    $offlineLogout = AsCustomer "$app\Cafe.Agent.exe" "--test-queue-logout"
+    $logoutQueued = $offlineLogout.WaitForExit(15000) -and $offlineLogout.ExitCode -eq 0
+    $queuedLogoutFile = "$data\keys\pending-actions.json"
+    $queuedActions = if (Test-Path $queuedLogoutFile) { @(Get-Content $queuedLogoutFile -Raw | ConvertFrom-Json) } else { @() }
+    $logoutDurable = $selfLockQueued -and $logoutQueued -and $queuedActions.Count -eq 2 -and
+        $queuedActions[0].Path -eq "/pc/selflock" -and $queuedActions[1].Path -eq "/pc/logout"
+    # Pay-at-end has a 5-minute start grace; keep the outage beyond it so the staff bill must contain a charge.
+    Start-Sleep -Seconds 310
+    Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force
+    Restart-Service CafeWatchdog -Force
+    $server = Start-Process "$out\server\Cafe.Server.exe" -ArgumentList "--data $tdata --seed-test" -PassThru -WindowStyle Hidden
+    $script:f12LastHttpStatus = "not called"
+    $script:f12LastCurlError = ""
+    function Invoke-F12CurlJson([string[]]$curlArguments) {
+        $curlOutput = & curl.exe -sSk -w "HTTPSTATUS:%{http_code}" @curlArguments 2>&1
+        $curlExit = $LASTEXITCODE
+        $curlText = ($curlOutput -join [char]10)
+        $httpStatus = ""
+        $responseBody = $curlText
+        if ($curlText -match '(?s)^(.*)HTTPSTATUS:(\d{3})\s*$') {
+            $responseBody = $matches[1]
+            $httpStatus = $matches[2]
+        }
+        $script:f12LastHttpStatus = if ($httpStatus) { $httpStatus } else { "none" }
+        if ($curlExit -ne 0) {
+            $script:f12LastCurlError = "curl exit ${curlExit}: $curlText"
+            return $null
+        }
+        if ($httpStatus -notmatch '^2\d\d$') {
+            $script:f12LastCurlError = "HTTP $($script:f12LastHttpStatus): $responseBody"
+            return $null
+        }
+        try {
+            $script:f12LastCurlError = ""
+            return (ConvertFrom-Json -InputObject $responseBody)
+        } catch {
+            $script:f12LastCurlError = "HTTP $httpStatus; invalid JSON: $($_.Exception.Message)"
+            return $null
+        }
+    }
+    $serverReady = WaitFor 90 {
+        $probe = Invoke-F12CurlJson @("-H", "X-Pc-Token: $token", "https://127.0.0.1:5443/pc/state")
+        $null -ne $probe
+    }
+    $staffLogin = $false
+    $staffLoginError = ""
+    if ($serverReady) {
+        $staffCode = [CafeTotpProbe]::Current($fixture.staffCounter)
+        $staffBody = @{ phone = "9000000002"; pin = "111111"; code = $staffCode } | ConvertTo-Json
+        $staffBodyPath = Join-Path $env:TEMP ("cafe-f12-staff-" + [guid]::NewGuid().ToString("N") + ".json")
+        try {
+            [IO.File]::WriteAllText($staffBodyPath, $staffBody, (New-Object System.Text.UTF8Encoding($false)))
+            $staff = Invoke-F12CurlJson @("-X", "POST", "-H", "Content-Type: application/json", "--data-binary", "@$staffBodyPath", "https://127.0.0.1:5443/staff/login")
+        } finally {
+            Remove-Item -LiteralPath $staffBodyPath -Force -ErrorAction SilentlyContinue
+        }
+        if ($null -ne $staff -and $staff.token) {
+            $script:staffHeaders = @{ Authorization = "Bearer $($staff.token)" }
+            $staffLogin = $true
+        } else {
+            $staffLoginError = $script:f12LastCurlError
+        }
+    } else {
+        $staffLoginError = "readiness probe: HTTP $($script:f12LastHttpStatus); $($script:f12LastCurlError)"
+    }
+    $staffHeaders = $script:staffHeaders
+    $script:finalStaffState = $null
+    $script:finalStaffBill = $null
+    $replayObserved = $staffLogin -and (WaitFor 90 {
+        $state = Invoke-F12CurlJson @("-H", "Authorization: $($staffHeaders.Authorization)", "https://127.0.0.1:5443/staff/state/PC1")
+        $bill = Invoke-F12CurlJson @("-H", "Authorization: $($staffHeaders.Authorization)", "https://127.0.0.1:5443/staff/bill/$sessionBeforeLogout")
+        $script:finalStaffState = $state
+        $script:finalStaffBill = $bill
+        $pending = Get-QueuedActionCount $queuedLogoutFile
+        ($null -ne $state) -and ($null -ne $bill) -and $null -eq $state.Session -and $bill.Charged -gt 0 -and $pending -eq 0
+    })
+    $finalStaffState = $script:finalStaffState
+    $finalStaffBill = $script:finalStaffBill
+    $remainingActions = Get-QueuedActionCount $queuedLogoutFile
+    $logoutReplayed = [bool]($staffLogin -and $finalStaffState -and $null -eq $finalStaffState.Session -and $finalStaffBill.Charged -gt 0)
+    Check "B3.F12" "Offline self-lock and logout survive lock-screen kill and watchdog restart; staff API confirms ended session and charged bill" ($sessionBeforeLogout -and $logoutDurable -and $logoutReplayed -and $remainingActions -eq 0) "session before $sessionBeforeLogout; self-lock queued $selfLockQueued; logout queued $logoutQueued; queue ordered $logoutDurable; server ready $serverReady; staff login $staffLogin ($staffLoginError); staff session $($finalStaffState.Session); bill charged $($finalStaffBill.Charged); pending actions $remainingActions; last HTTP $script:f12LastHttpStatus; curl error $script:f12LastCurlError"
     Stop-Process -Id $p3.Id -Force -ErrorAction SilentlyContinue
 
     # ===== G. what a customer cannot do =====
@@ -478,6 +634,9 @@ try {
 }
 catch { Check "B3.X" "script error" $false "$_ (line $($_.InvocationInfo.ScriptLineNumber))" }
 finally {
+    foreach ($f in Get-ChildItem (Join-Path $data "logs") -Filter "watchdog-*.log" -ErrorAction SilentlyContinue) {
+        Copy-Item $f.FullName $wd -Force -ErrorAction SilentlyContinue
+    }
     foreach ($f in Get-ChildItem $wd -Filter "*.log" -ErrorAction SilentlyContinue) { Write-Host "--- $($f.Name)"; Get-Content $f.FullName | Select-Object -Last 40 }
     $results | Format-Table id, result, test, detail -AutoSize -Wrap | Out-String -Width 250 | Write-Host
     $results | Export-Csv (Join-Path $repo "lockdown-results.csv") -NoTypeInformation -Encoding utf8
