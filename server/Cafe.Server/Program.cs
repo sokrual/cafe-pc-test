@@ -72,7 +72,7 @@ app.MapGet("/pc/state", (HttpContext c) => { var pc = Pc(c); var st = cafe.State
 app.MapGet("/pc/offline-unlock-data", (HttpContext c) =>
 {
     Pc(c); // a PC token, never a staff/customer login, is required to retrieve authenticator secrets
-    return new { rate = cafe.Rate, accounts = cafe.OfflineUnlockAccounts() };
+    return new { rate = cafe.Rate, accounts = cafe.OfflineUnlockAccounts(), serverTimeUtc = DateTime.UtcNow, maxOfflineUnlockMinutes = cafe.MaxOfflineUnlockMinutes };
 });
 app.MapPost("/pc/offline-sales", (HttpContext c, OfflineSaleBody b) =>
 {
@@ -99,6 +99,34 @@ app.MapPost("/staff/users/pin", (HttpContext c, LoginBody b) => { cafe.ResetPin(
 app.MapGet("/staff/pcs", (HttpContext c) => cafe.Pcs(Staff(c)));
 app.MapGet("/staff/settings/time-lock", (HttpContext c) => { Owner(c); return new { lockWhenTimeRunsOut = cafe.LockWhenTimeRunsOut }; });
 app.MapPost("/staff/settings/time-lock", (HttpContext c, TimeLockBody b) => { cafe.SetLockWhenTimeRunsOut(Owner(c), b.Enabled); return new { lockWhenTimeRunsOut = cafe.LockWhenTimeRunsOut }; });
+app.MapGet("/staff/settings/offline-unlock", (HttpContext c) => { Owner(c); return new { maxOfflineUnlockMinutes = cafe.MaxOfflineUnlockMinutes }; });
+app.MapPost("/staff/settings/offline-unlock", (HttpContext c, OfflineUnlockLimitBody b) =>
+{
+    cafe.SetMaxOfflineUnlockMinutes(Owner(c), b.Minutes);
+    return new { maxOfflineUnlockMinutes = cafe.MaxOfflineUnlockMinutes };
+});
+app.MapGet("/staff/offline-unlock-people", (HttpContext c) => cafe.OfflineUnlockPeople(Owner(c)));
+app.MapPost("/staff/offline-unlock-person", (HttpContext c, OfflineUnlockPersonBody b) =>
+{
+    cafe.SetOfflineUnlockEnabled(Owner(c), b.Phone, b.Enabled);
+    return Results.Ok();
+});
+app.MapPost("/staff/logins/end-others", (HttpContext c) =>
+{
+    var owner = Owner(c);
+    var ended = staffTokens.EndAllExcept(TokenOf(c));
+    cafe.AuditEndOtherCounterLogins(owner, ended);
+    return new { ended };
+});
+app.MapPost("/staff/logins/end-person", (HttpContext c, EndPersonLoginsBody b) =>
+{
+    var owner = Owner(c);
+    var user = cafe.CounterLoginUser(owner, b.Phone);
+    var ended = staffTokens.EndFor(user);
+    cafe.AuditEndPersonCounterLogins(owner, b.Phone, ended);
+    return new { ended };
+});
+app.MapGet("/staff/alerts", (HttpContext c) => cafe.OfflineUnlockAlerts(Owner(c)));
 // the reply is what the new gaming PC needs: its key (shown once) and the server's certificate fingerprint
 app.MapPost("/staff/pcs", (HttpContext c, PcBody b) => new { token = cafe.AddPc(Staff(c), b.Pc), pin = File.ReadAllText(Path.Combine(data, "server.pin")) });
 app.MapDelete("/staff/pcs/{pc}", (HttpContext c, string pc) => { cafe.RemovePc(Staff(c), pc); return Results.Ok(); });
@@ -291,6 +319,9 @@ record StaffTwoStepBody(string Phone, string Secret, string Code);
 record OfflineSaleBody(string SaleId, string Phone, string Code, long Step, int Minutes, string Method, string? UpiLast4, long? Session);
 record PcBody(string Pc, string? Message);
 record TimeLockBody(bool Enabled);
+record OfflineUnlockLimitBody(int Minutes);
+record OfflineUnlockPersonBody(string Phone, bool Enabled);
+record EndPersonLoginsBody(string Phone);
 record StartBody(string Pc, string Phone, string Mode, int? Minutes);
 record MinutesBody(int Minutes);
 record PayBody(string Method, long Amount, string? UpiLast4);
