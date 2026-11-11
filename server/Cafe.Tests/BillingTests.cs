@@ -115,6 +115,41 @@ public sealed class BillingTests : IDisposable
     [Fact] public void T2_1_inside_grace_is_free() => Assert.Equal(0, PlayFor(1));
 
     [Fact]
+    public void Counter_screen_shows_each_pc_with_its_customer_time_and_what_is_owed()
+    {
+        _cafe.AddPc(_owner, "PC1"); _cafe.AddPc(_owner, "PC2");
+        _cafe.PcSeen("PC1");
+        var prepaid = _cafe.StartPrepaid(_staff, "PC1", _cust, 60);
+        var other = _cafe.AddUser(_staff, Role.Customer, "Asha", "9000000004", "3333");
+        _cafe.StartPostpaid(_staff, "PC2", other);
+        Wait(36);
+        var rows = _cafe.Counter(_staff).ToDictionary(r => r.Pc);
+        Assert.Equal(("Ravi", "prepaid", 6000L, 24 * 60L), (rows["PC1"].Customer, rows["PC1"].Mode, rows["PC1"].ToPay, rows["PC1"].LeftSec!.Value));
+        Assert.Equal(("Asha", "postpaid", 6000L), (rows["PC2"].Customer, rows["PC2"].Mode, rows["PC2"].ToPay)); // running bill: 36 min = 1 hour
+        Assert.False(rows["PC1"].Online); // last seen 36 minutes ago
+        _cafe.Pay(_staff, prepaid, "cash", 6000);
+        _cafe.Lock(_staff, "PC2");
+        rows = _cafe.Counter(_staff).ToDictionary(r => r.Pc);
+        Assert.Equal(0, rows["PC1"].ToPay);
+        Assert.True(rows["PC2"].Locked);
+        _cafe.Stop(_staff, prepaid);
+        var free = _cafe.Counter(_staff).Single(r => r.Pc == "PC1");
+        Assert.Equal((null, false), (free.Session, free.Locked)); // a free PC is not "locked by staff"
+        Assert.Throws<CafeException>(() => _cafe.Counter(_cust)); // customers never see the counter
+    }
+
+    [Fact]
+    public void Counter_finds_a_customer_by_phone_with_saved_time_and_wallet()
+    {
+        _cafe.BuyPlan(_staff, _cust, 120, 7, 10000, "cash");
+        _cafe.TopUp(_staff, _cust, "cash", 5000);
+        Assert.Equal(new CustomerInfo(_cust, "Ravi", "9000000003", 120, 5000), _cafe.FindCustomer(_staff, "9000000003"));
+        Assert.Throws<CafeException>(() => _cafe.FindCustomer(_staff, "9000000099"));
+        Assert.Throws<CafeException>(() => _cafe.FindCustomer(_staff, "9000000002")); // staff are not customers
+        Assert.Throws<CafeException>(() => _cafe.FindCustomer(_cust, "9000000003"));
+    }
+
+    [Fact]
     public void Unused_minutes_of_a_charged_block_are_kept_for_7_days_but_not_the_free_start()
     {
         Assert.Equal(0, PlayFor(5)); // free start: nothing charged, nothing kept

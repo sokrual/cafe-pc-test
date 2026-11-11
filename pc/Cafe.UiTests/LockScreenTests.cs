@@ -463,6 +463,35 @@ public sealed class ServerApiTests : IDisposable
         Assert.All(codes.Take(10), c => Assert.Equal(400, c)); // wrong phone or PIN
         Assert.All(codes.Skip(10), c => Assert.Equal(429, c)); // too many requests
     }
+
+    [Fact]
+    public async Task Counter_screen_page_is_locked_down_and_its_actions_work_for_staff_only()
+    {
+        using var page = _rig.Raw(HttpMethod.Get, "/staff/", null);
+        Assert.Equal(200, (int)page.StatusCode);
+        Assert.Contains("frame-ancestors 'none'", string.Join(" ", page.Headers.GetValues("Content-Security-Policy")));
+        Assert.Contains("/staff/counter.js", await page.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        using (var script = _rig.Raw(HttpMethod.Get, "/staff/counter.js", null)) Assert.Contains("textContent", await script.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        using (var noLogin = _rig.Raw(HttpMethod.Get, "/staff/counter", null)) Assert.Equal(401, (int)noLogin.StatusCode); // the page has no data without a login
+
+        var staff = await _rig.StaffToken();
+        using (var who = _rig.Raw(HttpMethod.Get, "/staff/customers/9000000003", staff)) Assert.Contains("Test Customer", await who.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        await _rig.Post("/staff/sessions", new { pc = "PC1", phone = "9000000003", mode = "prepaid", minutes = 30 }, staff);
+        var session = long.Parse(_rig.State(staff)["session"]!.ToString()!);
+        using (var counter = _rig.Raw(HttpMethod.Get, "/staff/counter", staff))
+        {
+            var text = await counter.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+            Assert.Contains("\"customer\":\"Test Customer\"", text);
+            Assert.Contains("\"toPay\":4000", text); // 30 min paid in advance: Rs 40 owed until paid
+        }
+        await _rig.Post($"/staff/sessions/{session}/time", new { minutes = 30 }, staff);
+        await _rig.Post($"/staff/sessions/{session}/pay", new { method = "cash", amount = 8000 }, staff);
+        await _rig.Post($"/staff/sessions/{session}/pause", new { }, staff);
+        await _rig.Post($"/staff/sessions/{session}/resume", new { }, staff);
+        await _rig.Post($"/staff/sessions/{session}/stop", new { }, staff);
+        Assert.Equal("0", _rig.Bill(staff, session)["due"]!.ToString());
+        Assert.Null(_rig.State(staff)["session"]);
+    }
 }
 
 // Starts the real admin server on a temp data folder; HTTPS with the server's pinned certificate, like a gaming PC.
@@ -602,6 +631,12 @@ sealed class Rig : IDisposable
         using var m = new HttpRequestMessage(HttpMethod.Post, path) { Content = JsonContent.Create(body) };
         m.Headers.Authorization = new("Bearer", token);
         (await _http.SendAsync(m)).EnsureSuccessStatusCode();
+    }
+    public HttpResponseMessage Raw(HttpMethod method, string path, string? token)
+    {
+        using var m = new HttpRequestMessage(method, path);
+        if (token is not null) m.Headers.Authorization = new("Bearer", token);
+        return _http.Send(m);
     }
     Dictionary<string, object?> Get(string path, string token)
     {
