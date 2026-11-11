@@ -96,6 +96,11 @@ B5  Owner features                                                  IN PROGRESS
     B5.8 Owner access from his phone (Tailscale) and a view-only screen view
     B5.9 Turning PCs on and off from the counter
 
+A1  Generic names (decided 11 Nov): no cafe's name anywhere in the files; folders GamingCafe, display
+    name "Gaming Cafe" until the product name is decided; the pilot cafe's logo removed (setup adds a
+    cafe's own name and logo in B5.10). After A0 (#17), before PR A (#11). Git history is left as it is:
+    the public version will be a new repo with generic names.
+
 B6  Load and long-run tests (all PCs at once, 12-hour runs)        NOT STARTED
 
 AFTER THE BUILD, WHILE THE CAFE TESTS
