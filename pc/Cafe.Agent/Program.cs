@@ -70,6 +70,10 @@ static class LockSetting
 sealed class Agent : ApplicationContext
 {
     readonly WatchdogPipeClient _watchdog = new();
+    readonly List<string> _unacceptedActions = [];
+    readonly object _unacceptedActionsGate = new();
+    readonly SemaphoreSlim _pendingActionReplay = new(1, 1);
+    readonly SemaphoreSlim _sendGate = new(1, 1);
     readonly LockScreen _lock;
     readonly TimerWidget _timer;
     PcState _state = new(true, null, null, null, 0, null, LockWhenTimeRunsOut: LockSetting.Read()); // locked until the admin PC says otherwise
@@ -108,6 +112,7 @@ sealed class Agent : ApplicationContext
     {
         try
         {
+            await ReplayUnacceptedActions();
             var serverState = await _watchdog.GetFromJsonAsync<PcState>("/pc/state");
             var offlineInfo = await _watchdog.GetFromJsonAsync<OfflineUnlockInfo>("/local/offline-unlock-info");
             if (offlineInfo?.PendingSales > 0)
@@ -218,20 +223,47 @@ sealed class Agent : ApplicationContext
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Program.Log($"could not ask for the logout clean-up (error code {e.HResult & 0xffff})"); }
     }
 
+    async Task ReplayUnacceptedActions()
+    {
+        await _pendingActionReplay.WaitAsync();
+        try
+        {
+            while (true)
+            {
+                string? path;
+                lock (_unacceptedActionsGate)
+                    path = _unacceptedActions.Count == 0 ? null : _unacceptedActions[0];
+                if (path is null) return;
+
+                using var response = await _watchdog.PostAsJsonAsync("/local/queue-action", new { path });
+                response.EnsureSuccessStatusCode();
+                lock (_unacceptedActionsGate) _unacceptedActions.RemoveAt(0);
+                Program.Log($"watchdog accepted previously unqueued {path}");
+            }
+        }
+        finally { _pendingActionReplay.Release(); }
+    }
+
     // The SYSTEM watchdog saves each action to its protected, flushed queue before acknowledging it.
     async void Send(string path, bool lockNow)
     {
         if (path == "/pc/logout") AskForWipe();
+        await _sendGate.WaitAsync();
         try
         {
-            using var response = await _watchdog.PostAsJsonAsync("/local/queue-action", new { path });
-            response.EnsureSuccessStatusCode();
-            Program.Log($"watchdog saved {path} for ordered delivery");
+            try
+            {
+                using var response = await _watchdog.PostAsJsonAsync("/local/queue-action", new { path });
+                response.EnsureSuccessStatusCode();
+                Program.Log($"watchdog saved {path} for ordered delivery");
+            }
+            catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException)
+            {
+                lock (_unacceptedActionsGate) _unacceptedActions.Add(path);
+                Program.Log($"watchdog did not accept {path}; queued in memory (error code {e.HResult & 0xffff})");
+            }
         }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException)
-        {
-            Program.Log($"watchdog could not save {path} (error code {e.HResult & 0xffff})");
-        }
+        finally { _sendGate.Release(); }
         if (lockNow) Apply(_state with { Locked = true, Message = path == "/pc/logout" ? "Logged out. Please pay at the counter." : "Locked. Your time is still running." });
         await Refresh();
     }
