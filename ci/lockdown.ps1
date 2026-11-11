@@ -11,6 +11,12 @@ function Check($id, $test, $ok, $detail) {
     Write-Host "[$res] $id $test - $detail"
 }
 function WaitFor($seconds, $test) { for ($i = 0; $i -lt $seconds * 2; $i++) { if (& $test) { return $true }; Start-Sleep -Milliseconds 500 }; $false }
+function Get-QueuedActionCount($path) {
+    if (-not (Test-Path -LiteralPath $path)) { return 0 }
+    $items = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $path -Raw)
+    if ($null -eq $items) { return 0 }
+    return @($items).Count
+}
 if (-not ("CafeDpapiProbe" -as [type])) {
     Add-Type @'
 using System;
@@ -157,6 +163,10 @@ try {
     $tokenRead = CustomerPs "[IO.File]::ReadAllText('$data\keys\pc.token') | Out-Null"
     $pinRead = CustomerPs "[IO.File]::ReadAllText('$data\keys\server.pin') | Out-Null"
     Check "B3.C4b" "Customer cannot read the PC token or certificate pin" ($tokenRead -ne 0 -and $pinRead -ne 0 -and -not (Test-Path "$app\pc.token") -and -not (Test-Path "$app\server.pin") -and -not (Test-Path "$stage\pc.token") -and -not (Test-Path "$stage\server.pin")) "token read exit $tokenRead, pin read exit $pinRead; source copies removed"
+    $tokenDisk = [IO.File]::ReadAllBytes("$data\keys\pc.token")
+    $tokenDiskText = [Text.Encoding]::UTF8.GetString($tokenDisk).Trim()
+    $tokenClear = [Text.Encoding]::UTF8.GetString([CafeDpapiProbe]::Unprotect($tokenDisk)).Trim()
+    Check "B3.C4e" "PC token on disk is machine-DPAPI encrypted, not the plain token" ($tokenClear -eq $token -and $tokenDiskText -ne $token) "decrypted token matches server; disk bytes differ"
     $offlineCache = "$data\keys\offline-unlock.bin"
     for ($i = 0; $i -lt 30 -and -not (Test-Path $offlineCache); $i++) { Start-Sleep -Seconds 1 }
     $offlineCacheRead = CustomerPs "try { [IO.File]::ReadAllBytes('$offlineCache') | Out-Null; exit 0 } catch { exit 1 }"
@@ -388,6 +398,32 @@ try {
     Check "B3.F10" "Customer's autostart entry removed, the owner's kept" ($runMade -eq 0 -and $ownerRun -eq 0 -and $resetRun.OwnerApp -eq "C:\owner.exe" -and -not $resetRun.Evil) "made: customer exit $runMade, owner exit $ownerRun"
     cmd.exe /c "schtasks /query /tn ShinzxCustomerTask >nul 2>&1"
     Check "B3.F11" "Customer's scheduled task removed" ($taskMade -eq 0 -and $LASTEXITCODE -ne 0) "made: exit $taskMade"
+    # A queued logout must outlive both the lock-screen process and a watchdog service restart.
+    $loginState = Pc "/pc/login" @{ phone = "9000000003"; pin = "2222" }
+    $sessionBeforeLogout = $loginState.Session
+    Stop-Process -Id $server.Id -Force
+    $offlineSelfLock = AsCustomer "$app\Cafe.Agent.exe" "--test-queue-selflock"
+    $selfLockQueued = $offlineSelfLock.WaitForExit(15000) -and $offlineSelfLock.ExitCode -eq 0
+    $offlineLogout = AsCustomer "$app\Cafe.Agent.exe" "--test-queue-logout"
+    $logoutQueued = $offlineLogout.WaitForExit(15000) -and $offlineLogout.ExitCode -eq 0
+    $queuedLogoutFile = "$data\keys\pending-actions.json"
+    $queuedActions = if (Test-Path $queuedLogoutFile) { @(Get-Content $queuedLogoutFile -Raw | ConvertFrom-Json) } else { @() }
+    $logoutDurable = $selfLockQueued -and $logoutQueued -and $queuedActions.Count -eq 2 -and
+        $queuedActions[0].Path -eq "/pc/selflock" -and $queuedActions[1].Path -eq "/pc/logout"
+    Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force
+    Restart-Service CafeWatchdog -Force
+    $server = Start-Process "$out\server\Cafe.Server.exe" -ArgumentList "--data $tdata --seed-test" -PassThru -WindowStyle Hidden
+    $replayObserved = WaitFor 90 {
+        try {
+            $state = Invoke-RestMethod "https://127.0.0.1:5443/pc/state" -Headers @{ "X-Pc-Token" = $token }
+            $pending = Get-QueuedActionCount $queuedLogoutFile
+            $null -eq $state.Session -and $pending -eq 0
+        } catch { $false }
+    }
+    $finalLogoutState = try { Invoke-RestMethod "https://127.0.0.1:5443/pc/state" -Headers @{ "X-Pc-Token" = $token } } catch { $null }
+    $remainingActions = Get-QueuedActionCount $queuedLogoutFile
+    $logoutReplayed = [bool]($finalLogoutState -and $null -eq $finalLogoutState.Session -and $remainingActions -eq 0)
+    Check "B3.F12" "Offline self-lock and logout survive lock-screen kill and watchdog restart, then end the server session" ($sessionBeforeLogout -and $logoutDurable -and $logoutReplayed) "session before $sessionBeforeLogout; self-lock queued $selfLockQueued; logout queued $logoutQueued; queue ordered $logoutDurable; wait observed $replayObserved; final session $($finalLogoutState.Session); pending actions $remainingActions"
     Stop-Process -Id $p3.Id -Force -ErrorAction SilentlyContinue
 
     # ===== G. what a customer cannot do =====

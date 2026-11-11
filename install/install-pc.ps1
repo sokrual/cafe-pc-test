@@ -115,10 +115,46 @@ icacls $data /inheritance:r /grant "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)
 $keys = "$data\keys"
 New-Item $keys -ItemType Directory -Force | Out-Null
 icacls $keys /inheritance:r /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" | Out-Null
+Add-Type -AssemblyName System.Security
+if (-not ("CafeAtomicMove" -as [type])) {
+    Add-Type -TypeDefinition @'
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class CafeAtomicMove
+{
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool MoveFileEx(string existingFileName, string newFileName, uint flags);
+    public static void Replace(string source, string destination)
+    {
+        if (!MoveFileEx(source, destination, 0x1u | 0x8u))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+}
+'@
+}
 foreach ($f in "pc.token", "server.pin") {
     $source = if (Test-Path "$src\$f") { "$src\$f" } elseif (Test-Path "$app\$f") { "$app\$f" } else { $null }
     if ($source) { Copy-Item $source "$keys\$f" -Force }
     if (-not (Test-Path "$keys\$f")) { throw "The protected key file $f is missing." }
+    if ($f -eq "pc.token") {
+        $tokenBytes = [IO.File]::ReadAllBytes("$keys\pc.token")
+        $alreadyProtected = $tokenBytes.Length -gt 8 -and $tokenBytes[0] -eq 1 -and $tokenBytes[1] -eq 0 -and
+            $tokenBytes[2] -eq 0 -and $tokenBytes[3] -eq 0 -and $tokenBytes[4] -eq 0xD0 -and
+            $tokenBytes[5] -eq 0x8C -and $tokenBytes[6] -eq 0x9D -and $tokenBytes[7] -eq 0xDF
+        if ($alreadyProtected) {
+            try { [void][Security.Cryptography.ProtectedData]::Unprotect($tokenBytes, $null, [Security.Cryptography.DataProtectionScope]::LocalMachine) }
+            catch { throw "The existing machine-protected PC token cannot be decrypted on this PC." }
+        } else {
+            $plainToken = [Text.Encoding]::UTF8.GetString($tokenBytes).Trim()
+            if ([string]::IsNullOrWhiteSpace($plainToken)) { throw "The PC token is empty." }
+            $protectedToken = [Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes($plainToken), $null, [Security.Cryptography.DataProtectionScope]::LocalMachine)
+            $tempToken = "$keys\pc.token.new"
+            $tokenStream = [IO.File]::Open($tempToken, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            try { $tokenStream.Write($protectedToken, 0, $protectedToken.Length); $tokenStream.Flush($true) }
+            finally { $tokenStream.Dispose() }
+            [CafeAtomicMove]::Replace($tempToken, "$keys\pc.token")
+        }
+    }
     if ($src -ne $app -and (Test-Path "$src\$f")) { Remove-Item "$src\$f" -Force }
     Remove-Item "$app\$f" -Force -ErrorAction SilentlyContinue
 }
@@ -164,16 +200,19 @@ if (-not $DnsServer) { $DnsServer = $Server }
 $dnsOk = $false
 if ($DnsServer -as [ipaddress]) { try { Resolve-DnsName "example.com" -Server $DnsServer -DnsOnly -QuickTimeout -ErrorAction Stop | Out-Null; $dnsOk = $true } catch { } }
 if ($dnsOk) {
-    $nics = @(Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq "Up" })
+    # Get-NetIPConfiguration can fail to construct its NetAdapter property on some Windows 11 ARM images.
+    # Resolve the same default-route interfaces directly through Get-NetAdapter instead.
+    $routeIndexes = @(Get-NetRoute -DestinationPrefix "0.0.0.0/0" | Sort-Object RouteMetric | Select-Object -ExpandProperty InterfaceIndex -Unique)
+    $nics = @($routeIndexes | ForEach-Object { Get-NetAdapter -InterfaceIndex $_ -ErrorAction SilentlyContinue } | Where-Object { $_.Status -eq "Up" })
     if (-not (Test-Path "$data\dns-before.json")) {
         @($nics | ForEach-Object { # "servers" empty = the address came automatically from the router
-            $static = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($_.NetAdapter.InterfaceGuid)").NameServer
-            [pscustomobject]@{ index = $_.InterfaceIndex; servers = "$static" }
+            $static = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($_.InterfaceGuid)").NameServer
+            [pscustomobject]@{ index = $_.ifIndex; servers = "$static" }
         }) | ConvertTo-Json | Set-Content "$data\dns-before.json" -Encoding utf8
     }
     Remove-NetFirewallRule -Group "Shinzx PC" -ErrorAction SilentlyContinue
     $DnsServer | Set-Content "$data\dns-server.txt" -Encoding ascii
-    foreach ($n in $nics) { Set-DnsClientServerAddress -InterfaceIndex $n.InterfaceIndex -ServerAddresses $DnsServer }
+    foreach ($n in $nics) { Set-DnsClientServerAddress -InterfaceIndex $n.ifIndex -ServerAddresses $DnsServer }
     # block DNS (53) and private DNS (853) to every address except the filter; all of IPv6
     $b = ([ipaddress]$DnsServer).GetAddressBytes(); [array]::Reverse($b); $n = [BitConverter]::ToUInt32($b, 0)
     function Ip($v) { $x = [BitConverter]::GetBytes([uint32]$v); [array]::Reverse($x); ([ipaddress]$x).ToString() }

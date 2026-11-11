@@ -18,9 +18,16 @@ static class PcProxy
     static Action<string> _log = message => Console.Error.WriteLine(message);
     static int _refusalLogged;
     static OfflineUnlockStore? _offline;
+    static string? _actionQueuePath;
+    static readonly object ActionQueueGate = new();
+    static int _syncingActions;
     static DateTime _lastOfflineRefresh = DateTime.MinValue;
     sealed record Request(string Method, string Path, string? Body);
     sealed record Response(int Status, string Content);
+    sealed record ActionRequest(string Path);
+    sealed record QueuedAction(string Id, string Path, DateTime CreatedUtc);
+    [StructLayout(LayoutKind.Sequential)]
+    struct DataBlob { public int Length; public IntPtr Data; }
     [StructLayout(LayoutKind.Sequential)]
     struct SecurityAttributes { public int Length; public IntPtr Descriptor; [MarshalAs(UnmanagedType.Bool)] public bool Inherit; }
 
@@ -77,7 +84,7 @@ static class PcProxy
             sid,
             Option(args, "--agent-path") ?? throw new InvalidOperationException("test Cafe.Agent.exe path missing"),
             CancellationToken.None,
-            message => Console.Error.WriteLine(message));
+            message => Console.Error.WriteLine(message), allowPlainTextToken: true);
     }
 
     public static void StartFromWatchdogArgs(string line, string agentPath, CancellationToken stop, Action<string> log)
@@ -97,13 +104,13 @@ static class PcProxy
         Start(server.Groups[1].Value, token, pin, sid, agentPath, stop, log);
     }
 
-    static void Start(string server, string tokenFile, string pinFile, string clientSid, string agentPath, CancellationToken stop, Action<string> log)
+    static void Start(string server, string tokenFile, string pinFile, string clientSid, string agentPath, CancellationToken stop, Action<string> log, bool allowPlainTextToken = false)
     {
         if (_http is not null) throw new InvalidOperationException("PC proxy already started");
         var serverUri = new Uri(server, UriKind.Absolute);
         if (serverUri.Scheme != Uri.UriSchemeHttps) throw new InvalidOperationException("PC server must use HTTPS");
         var pin = File.ReadAllText(pinFile).Trim();
-        var token = File.ReadAllText(tokenFile).Trim();
+        var token = ReadToken(tokenFile, allowPlainTextToken);
         if (pin.Length != 64 || !Regex.IsMatch(pin, @"\A[0-9a-fA-F]{64}\z")) throw new InvalidOperationException("certificate pin is missing or invalid");
         if (string.IsNullOrWhiteSpace(token)) throw new InvalidOperationException("PC token is missing or empty");
 
@@ -121,7 +128,9 @@ static class PcProxy
             client = new HttpClient(handler) { BaseAddress = serverUri, Timeout = TimeSpan.FromSeconds(10) };
             client.DefaultRequestHeaders.Add("X-Pc-Token", token);
             var resolvedAgentPath = Path.GetFullPath(agentPath);
-            _offline = new OfflineUnlockStore(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(tokenFile))!, "offline-unlock.bin"));
+            var keysDirectory = Path.GetDirectoryName(Path.GetFullPath(tokenFile))!;
+            _offline = new OfflineUnlockStore(Path.Combine(keysDirectory, "offline-unlock.bin"));
+            _actionQueuePath = Path.Combine(keysDirectory, "pending-actions.json");
             firstPipe = NewPipe(clientSid); // proves the protected listener can actually be created
             _agentPath = resolvedAgentPath;
             _log = log;
@@ -139,11 +148,17 @@ static class PcProxy
             client = null; // ownership transferred to _http
             _ = Task.Run(async () =>
             {
+                var nextOfflineRefresh = DateTime.MinValue;
                 while (!stop.IsCancellationRequested)
                 {
-                    RefreshOfflineUnlockData();
-                    SyncOfflineSales();
-                    try { await Task.Delay(TimeSpan.FromSeconds(30), stop); }
+                    if (DateTime.UtcNow >= nextOfflineRefresh)
+                    {
+                        RefreshOfflineUnlockData();
+                        SyncOfflineSales();
+                        nextOfflineRefresh = DateTime.UtcNow.AddSeconds(30);
+                    }
+                    if (_offline?.PendingSales().Count == 0) SyncQueuedActions();
+                    try { await Task.Delay(TimeSpan.FromSeconds(5), stop); }
                     catch (OperationCanceledException) { break; }
                 }
             }, CancellationToken.None);
@@ -193,6 +208,117 @@ static class PcProxy
             { _log("offline sale sync deferred: " + e.Message); break; }
         }
     }
+
+    static string ReadToken(string path, bool allowPlainText)
+    {
+        var bytes = File.ReadAllBytes(path);
+        try { return Encoding.UTF8.GetString(UnprotectToken(bytes)).Trim(); }
+        catch (System.ComponentModel.Win32Exception) when (allowPlainText) { return Encoding.UTF8.GetString(bytes).Trim(); }
+    }
+
+    static byte[] UnprotectToken(byte[] protectedBytes)
+    {
+        var handle = GCHandle.Alloc(protectedBytes, GCHandleType.Pinned);
+        try
+        {
+            var input = new DataBlob { Length = protectedBytes.Length, Data = handle.AddrOfPinnedObject() };
+            if (!CryptUnprotectData(ref input, out var description, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0, out var output))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            if (description != IntPtr.Zero) LocalFree(description);
+            try { var clear = new byte[output.Length]; Marshal.Copy(output.Data, clear, 0, clear.Length); return clear; }
+            finally { LocalFree(output.Data); }
+        }
+        finally { handle.Free(); }
+    }
+
+    static void EnqueueAction(string path)
+    {
+        lock (ActionQueueGate)
+        {
+            var actions = ReadActions();
+            actions.Add(new QueuedAction(Guid.NewGuid().ToString("N"), path, DateTime.UtcNow));
+            WriteActions(actions);
+        }
+    }
+
+    static List<QueuedAction> ReadActions()
+    {
+        var path = _actionQueuePath ?? throw new InvalidOperationException("action queue is not initialized");
+        if (!File.Exists(path)) return [];
+        return JsonSerializer.Deserialize<List<QueuedAction>>(File.ReadAllBytes(path)) ?? [];
+    }
+
+    static void WriteActions(List<QueuedAction> actions)
+    {
+        var path = _actionQueuePath ?? throw new InvalidOperationException("action queue is not initialized");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var temp = path + ".new";
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(actions);
+        using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            stream.Write(bytes);
+            stream.Flush(true);
+        }
+        ReplaceDurably(temp, path);
+    }
+
+    public static void SyncQueuedActions()
+    {
+        if (Interlocked.Exchange(ref _syncingActions, 1) != 0) return;
+        try
+        {
+            var client = _http;
+            if (client is null) return;
+            while (true)
+            {
+                QueuedAction? action;
+                lock (ActionQueueGate) { action = ReadActions().FirstOrDefault(); }
+                if (action is null) return;
+                var path = action.Path;
+                if (path == "/pc/logout")
+                {
+                    var ago = Math.Clamp((long)(DateTime.UtcNow - action.CreatedUtc).TotalSeconds, 0, 9_999_999_999L);
+                    path += "?ago=" + ago.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                }
+                try
+                {
+                    using var request = new HttpRequestMessage(HttpMethod.Post, path);
+                    using var response = client.Send(request);
+                    if (!response.IsSuccessStatusCode && (int)response.StatusCode is not (400 or 409))
+                    {
+                        _log($"queued action sync deferred: {(int)response.StatusCode}");
+                        return;
+                    }
+                    lock (ActionQueueGate)
+                    {
+                        var actions = ReadActions();
+                        actions.RemoveAll(item => item.Id == action.Id);
+                        WriteActions(actions);
+                    }
+                    _log($"queued {action.Path} from {action.CreatedUtc:O} reconciled: {(int)response.StatusCode}");
+                }
+                catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException)
+                {
+                    _log("queued action sync deferred: " + e.Message);
+                    return;
+                }
+            }
+        }
+        finally { Interlocked.Exchange(ref _syncingActions, 0); }
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool MoveFileEx(string existingFileName, string newFileName, uint flags);
+
+    public static void ReplaceDurably(string source, string destination)
+    {
+        if (!MoveFileEx(source, destination, 0x1u | 0x8u))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+    }
+
+    [DllImport("crypt32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern bool CryptUnprotectData(ref DataBlob input, out IntPtr description, IntPtr entropy, IntPtr reserved,
+        IntPtr prompt, uint flags, out DataBlob output);
 
     public static HttpResponseMessage SendServerRequest(HttpMethod method, string path)
     {
@@ -258,6 +384,24 @@ static class PcProxy
                 if (line is null) return;
                 var request = JsonSerializer.Deserialize<Request>(line);
                 using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true) { AutoFlush = true };
+                if (request is not null && request.Method == "POST" && request.Path == "/local/queue-action" && request.Body is not null)
+                {
+                    var action = JsonSerializer.Deserialize<ActionRequest>(request.Body, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                        ?? throw new JsonException("invalid queued action");
+                    if (action.Path is not ("/pc/logout" or "/pc/selflock"))
+                    {
+                        await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(400, ""))).WaitAsync(TimeSpan.FromSeconds(2));
+                        return;
+                    }
+                    EnqueueAction(action.Path);
+                    _ = Task.Run(() =>
+                    {
+                        SyncOfflineSales();
+                        if (_offline?.PendingSales().Count == 0) SyncQueuedActions();
+                    });
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(200, "{}"))).WaitAsync(TimeSpan.FromSeconds(2));
+                    return;
+                }
                 if (request is not null && request.Method == "GET" && request.Path == "/local/offline-unlock-info" && request.Body is null)
                 {
                     var info = _offline?.InfoJson() ?? "{}";
