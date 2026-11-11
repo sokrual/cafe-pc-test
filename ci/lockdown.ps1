@@ -552,7 +552,13 @@ try {
     if ($serverReady) {
         $staffCode = [CafeTotpProbe]::Current($fixture.staffCounter)
         $staffBody = @{ phone = "9000000002"; pin = "111111"; code = $staffCode } | ConvertTo-Json
-        $staff = Invoke-F12CurlJson @("-X", "POST", "-H", "Content-Type: application/json", "--data-binary", $staffBody, "https://127.0.0.1:5443/staff/login")
+        $staffBodyPath = Join-Path $env:TEMP ("cafe-f12-staff-" + [guid]::NewGuid().ToString("N") + ".json")
+        try {
+            [IO.File]::WriteAllText($staffBodyPath, $staffBody, (New-Object System.Text.UTF8Encoding($false)))
+            $staff = Invoke-F12CurlJson @("-X", "POST", "-H", "Content-Type: application/json", "--data-binary", "@$staffBodyPath", "https://127.0.0.1:5443/staff/login")
+        } finally {
+            Remove-Item -LiteralPath $staffBodyPath -Force -ErrorAction SilentlyContinue
+        }
         if ($null -ne $staff -and $staff.token) {
             $script:staffHeaders = @{ Authorization = "Bearer $($staff.token)" }
             $staffLogin = $true
