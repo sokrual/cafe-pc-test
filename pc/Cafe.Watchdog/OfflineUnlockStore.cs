@@ -13,7 +13,8 @@ sealed record OfflineUnlockRequest(string SaleId, string Phone, string Code, int
 sealed record OfflineUnlockSale(string SaleId, string Phone, string Code, long Step, int Minutes,
     string Method, string? UpiLast4, long? Session);
 sealed record OfflineUnlockResult(bool Success, string? Error, long? Step);
-sealed record OfflineUnlockInfo(OfflineUnlockRate? Rate, int EnabledAccounts, DateTime? LockedUntil, int PendingSales);
+sealed record OfflineUnlockInfo(OfflineUnlockRate? Rate, int EnabledAccounts, DateTime? LockedUntil, int PendingSales,
+    int MaxOfflineUnlockMinutes, DateTime? LastRefreshServerUtc);
 
 sealed class OfflineUnlockStore
 {
@@ -26,6 +27,8 @@ sealed class OfflineUnlockStore
         public Dictionary<string, long> UsedSteps { get; set; } = new(StringComparer.Ordinal);
         public int WrongTries { get; set; }
         public DateTime? LockedUntil { get; set; }
+        public DateTime? LastRefreshServerUtc { get; set; }
+        public int MaxOfflineUnlockMinutes { get; set; } = 180;
         public List<OfflineUnlockSale> Pending { get; set; } = [];
     }
 
@@ -73,8 +76,11 @@ sealed class OfflineUnlockStore
         lock (_gate)
         {
             var state = Read();
+            if (data.ServerTimeUtc == default) throw new InvalidDataException("server time is missing from offline unlock data");
             state.Rate = data.Rate;
             state.Accounts = data.Accounts ?? [];
+            state.LastRefreshServerUtc = data.ServerTimeUtc.ToUniversalTime();
+            state.MaxOfflineUnlockMinutes = data.MaxOfflineUnlockMinutes;
             // The cache-version migration clears old counter-login steps. Preserve every locally consumed
             // offline step, including refused sales, and merge the server's reconciled offline-sale steps.
             foreach (var account in state.Accounts)
@@ -90,7 +96,18 @@ sealed class OfflineUnlockStore
         lock (_gate)
         {
             var state = Read();
-            return JsonSerializer.Serialize(new OfflineUnlockInfo(state.Rate, state.Accounts.Count, state.LockedUntil, state.Pending.Count));
+            return JsonSerializer.Serialize(new OfflineUnlockInfo(state.Rate, state.Accounts.Count, state.LockedUntil,
+                state.Pending.Count, state.MaxOfflineUnlockMinutes, state.LastRefreshServerUtc));
+        }
+    }
+
+    public void SetLastRefreshServerUtcForTest(DateTime serverTimeUtc)
+    {
+        lock (_gate)
+        {
+            var state = Read();
+            state.LastRefreshServerUtc = serverTimeUtc.ToUniversalTime();
+            Write(state);
         }
     }
 
@@ -100,6 +117,12 @@ sealed class OfflineUnlockStore
         {
             var state = Read();
             var now = DateTime.UtcNow;
+            if (state.LastRefreshServerUtc is not DateTime lastRefresh)
+                return new(false, "Offline unlock is off: this PC has not reached the counter for 7 days.", null);
+            if (now < lastRefresh)
+                return new(false, "Offline unlock is off: this PC clock is earlier than its last counter refresh.", null);
+            if (now - lastRefresh >= TimeSpan.FromDays(7))
+                return new(false, "Offline unlock is off: this PC has not reached the counter for 7 days.", null);
             if (state.LockedUntil is DateTime until && until > now)
                 return new(false, "Offline unlock is paused for 10 minutes after three wrong attempts.", null);
             if (state.LockedUntil is not null) { state.LockedUntil = null; state.WrongTries = 0; }
@@ -124,9 +147,9 @@ sealed class OfflineUnlockStore
             if (string.IsNullOrEmpty(request.Phone) || request.Phone.Length is < 10 or > 13 || !request.Phone.All(char.IsAsciiDigit)
                 || string.IsNullOrEmpty(request.Code) || request.Code.Length != 6 || !request.Code.All(char.IsAsciiDigit))
                 return new(false, Fail("Wrong phone number or code."), null);
-            if (request.Minutes < state.Rate.MinimumMin || request.Minutes > 10080
+            if (request.Minutes < state.Rate.MinimumMin || request.Minutes > state.MaxOfflineUnlockMinutes
                 || request.Minutes % Math.Max(1, state.Rate.BlockMin) != 0)
-                return new(false, $"Minutes must be a {state.Rate.BlockMin}-minute block from the last rate card.", null);
+                return new(false, $"Minutes must be a {state.Rate.BlockMin}-minute block, no more than {state.MaxOfflineUnlockMinutes} minutes.", null);
             if (request.Method == "upi")
             {
                 if (request.UpiLast4 is not { Length: 4 } || !request.UpiLast4.All(char.IsAsciiDigit))
@@ -242,5 +265,6 @@ sealed class OfflineUnlockStore
         return (binary % 1_000_000).ToString("D6", System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    sealed record ServerData(OfflineUnlockRate Rate, List<OfflineUnlockAccount>? Accounts);
+    sealed record ServerData(OfflineUnlockRate Rate, List<OfflineUnlockAccount>? Accounts, DateTime ServerTimeUtc,
+        int MaxOfflineUnlockMinutes = 180);
 }
