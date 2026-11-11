@@ -450,6 +450,8 @@ try {
     $queuedActions = if (Test-Path $queuedLogoutFile) { @(Get-Content $queuedLogoutFile -Raw | ConvertFrom-Json) } else { @() }
     $logoutDurable = $selfLockQueued -and $logoutQueued -and $queuedActions.Count -eq 2 -and
         $queuedActions[0].Path -eq "/pc/selflock" -and $queuedActions[1].Path -eq "/pc/logout"
+    # Pay-at-end has a 5-minute start grace; keep the outage beyond it so the staff bill must contain a charge.
+    Start-Sleep -Seconds 310
     Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force
     Restart-Service CafeWatchdog -Force
     $server = Start-Process "$out\server\Cafe.Server.exe" -ArgumentList "--data $tdata --seed-test" -PassThru -WindowStyle Hidden
