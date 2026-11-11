@@ -486,8 +486,10 @@ public sealed class ServerApiTests : IDisposable
         }
         await _rig.Post($"/staff/sessions/{session}/time", new { minutes = 30 }, staff);
         await _rig.Post($"/staff/sessions/{session}/pay", new { method = "cash", amount = 8000 }, staff);
-        await _rig.Post($"/staff/sessions/{session}/pause", new { }, staff);
-        await _rig.Post($"/staff/sessions/{session}/resume", new { }, staff);
+        await _rig.Post("/staff/lock", new { pc = "PC1" }, staff); // locking pauses the time
+        Assert.Equal("True", _rig.State(staff)["locked"]!.ToString());
+        await _rig.Post("/staff/unlock", new { pc = "PC1" }, staff);
+        using (var gone = _rig.Raw(HttpMethod.Post, $"/staff/sessions/{session}/pause", staff)) Assert.Equal(404, (int)gone.StatusCode); // no pause without a lock
         await _rig.Post($"/staff/sessions/{session}/stop", new { }, staff);
         Assert.Equal("0", _rig.Bill(staff, session)["due"]!.ToString());
         Assert.Null(_rig.State(staff)["session"]);

@@ -166,8 +166,6 @@ app.MapPost("/staff/sessions", (HttpContext c, StartBody b) =>
     };
 });
 app.MapPost("/staff/sessions/{id:long}/stop", (HttpContext c, long id) => cafe.Stop(Staff(c), id));
-app.MapPost("/staff/sessions/{id:long}/pause", (HttpContext c, long id) => { cafe.Pause(Staff(c), id); return Results.Ok(); });
-app.MapPost("/staff/sessions/{id:long}/resume", (HttpContext c, long id) => { cafe.Resume(Staff(c), id); return Results.Ok(); });
 app.MapPost("/staff/sessions/{id:long}/time", (HttpContext c, long id, MinutesBody b) => { cafe.AddTime(Staff(c), id, b.Minutes); return Results.Ok(); });
 app.MapPost("/staff/sessions/{id:long}/pay", (HttpContext c, long id, PayBody b) => { cafe.Pay(Staff(c), id, b.Method, b.Amount, b.UpiLast4); return cafe.BillFor(id); });
 app.MapPost("/staff/shift/open", (HttpContext c) => new { shift = cafe.OpenShift(Staff(c)) });

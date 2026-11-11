@@ -28,9 +28,8 @@ const act = (fn, done) => async () => { try { const r = await fn(); if (done) sa
 
 function status(r) {
   if (!r.online) return ["Offline", "off"];
-  if (r.locked) return ["Locked by staff", "lock"];
+  if (r.locked) return [r.session ? "Paused, locked by staff" : "Locked by staff", "lock"];
   if (r.selfLocked) return ["Locked by customer", "lock"];
-  if (r.session && r.paused) return ["Paused", "lock"];
   return r.session ? ["In use", "use"] : ["Free", "free"];
 }
 const timeText = r => r.session ? (r.leftSec != null ? clock(r.leftSec) + " left" : clock(r.elapsedSec) + " played") : "";
@@ -48,7 +47,7 @@ async function refresh(forcePanel = false) {
   if (!forcePanel && (panelKey === "bill" || panelKey === "side")) return; // a bill or form is open: keep it
   const r = rows.find(x => x.pc === selected);
   if (!r) { if (forcePanel) $("panel").replaceChildren(el("p", { className: "small", textContent: "Pick a PC to see what you can do." })); return; }
-  const key = [r.pc, r.session, r.locked, r.selfLocked, r.paused, r.mode, r.toPay > 0].join("|");
+  const key = [r.pc, r.session, r.locked, r.selfLocked, r.mode, r.toPay > 0].join("|");
   if (forcePanel || key !== panelKey) { panelKey = key; showPc(r); }
   else if ($("live")) $("live").textContent = liveText(r);
 }
@@ -65,8 +64,11 @@ function payForm(session, amount) {
     el("label", { htmlFor: "how", textContent: "How" }),
     el("select", { id: "how" }, el("option", { value: "cash", textContent: "Cash" }), el("option", { value: "upi", textContent: "UPI" })),
     el("label", { htmlFor: "last4", textContent: "UPI: last 4 digits of the payment reference" }), el("input", { id: "last4", inputMode: "numeric", maxLength: 4 }),
-    el("div", { className: "row" }, el("button", { textContent: "Take payment", onclick: act(() => api("POST", `/staff/sessions/${session}/pay`,
-      { method: $("how").value, amount: Math.round(parseFloat($("amt").value) * 100), upiLast4: $("last4").value || null }), "Payment saved.") })));
+    el("div", { className: "row" }, el("button", { textContent: "Take payment", onclick: act(() => {
+      const amount = Math.round(parseFloat($("amt").value) * 100);
+      if (!(amount > 0)) throw new Error("Type the amount in rupees.");
+      return api("POST", `/staff/sessions/${session}/pay`, { method: $("how").value, amount, upiLast4: $("last4").value || null });
+    }, "Payment saved.") })));
 }
 
 function showPc(r) {
@@ -96,18 +98,17 @@ function showPc(r) {
     if (r.mode === "prepaid") p.push(el("label", { htmlFor: "addMins", textContent: "Add time" }),
       el("div", { className: "row" }, minutesPick("addMins"), el("button", { className: "quiet", textContent: "Add time",
         onclick: act(() => api("POST", `/staff/sessions/${r.session}/time`, { minutes: +$("addMins").value }), "Time added.") })));
-    row.append(r.paused
-      ? el("button", { className: "quiet", textContent: "Resume", onclick: act(() => api("POST", `/staff/sessions/${r.session}/resume`), "Resumed.") })
-      : el("button", { className: "quiet", textContent: "Pause", onclick: act(() => api("POST", `/staff/sessions/${r.session}/pause`), "Paused. The time has stopped.") }),
-      el("button", { className: "danger", textContent: "Stop and bill", onclick: () => stop(r) }));
+    // to pause, lock the PC below: locking stops the time and unlocking starts it again (a pause alone would leave the PC playable)
+    row.append(el("button", { className: "danger", textContent: "Stop and bill", onclick: () => stop(r) }));
     p.push(row);
-    if (r.toPay > 0) p.push(el("hr"), payForm(r.session, r.toPay));
+    // pay-at-end is charged when it stops, so only time paid in advance can be paid during the session
+    if (r.toPay > 0 && r.mode === "prepaid") p.push(el("hr"), payForm(r.session, r.toPay));
   }
   p.push(el("hr")); // locking is used less often, so it comes last
-  if (r.locked) p.push(el("div", { className: "row" }, el("button", { textContent: "Unlock", onclick: act(() => api("POST", "/staff/unlock", { pc: r.pc }), "Unlocked.") })));
-  else p.push(el("label", { htmlFor: "lockMsg", textContent: "Message on the lock screen (optional)" }), el("input", { id: "lockMsg" }),
-    el("div", { className: "row" }, el("button", { className: "quiet", textContent: "Lock this PC",
-      onclick: act(() => api("POST", "/staff/lock", { pc: r.pc, message: $("lockMsg").value || null }), "Locked.") })));
+  if (r.locked) p.push(el("div", { className: "row" }, el("button", { textContent: "Unlock", onclick: act(() => api("POST", "/staff/unlock", { pc: r.pc }), r.session ? "Unlocked. The time is running again." : "Unlocked.") })));
+  else p.push(el("label", { htmlFor: "lockMsg", textContent: r.session ? "Lock to pause: the time stops until you unlock. Message on the lock screen (optional)" : "Message on the lock screen (optional)" }), el("input", { id: "lockMsg" }),
+    el("div", { className: "row" }, el("button", { className: "quiet", textContent: r.session ? "Lock and pause" : "Lock this PC",
+      onclick: act(() => api("POST", "/staff/lock", { pc: r.pc, message: $("lockMsg").value || null }), r.session ? "Locked. The time has stopped." : "Locked.") })));
   $("panel").replaceChildren(...p);
 }
 async function find() {
