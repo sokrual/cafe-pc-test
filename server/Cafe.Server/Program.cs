@@ -106,20 +106,20 @@ app.MapPost("/staff/two-step/start", (HttpContext c) =>
 {
     Owner(c);
     var secret = CafeCore.NewTwoStepSecret();
-    return new { secret, uri = $"otpauth://totp/Shinzx%20Cafe?secret={secret}&issuer=Shinzx%20Cafe" };
+    return new { secret, uri = $"otpauth://totp/Gaming%20Cafe?secret={secret}&issuer=Gaming%20Cafe" };
 });
 app.MapPost("/staff/two-step/on", (HttpContext c, TwoStepBody b) => new { recovery = cafe.TurnOnTwoStep(Owner(c), b.Secret, b.Code) });
 app.MapPost("/staff/two-step/staff/start", (HttpContext c, PhoneBody b) =>
 {
     var secret = cafe.StartTwoStepFor(Owner(c), b.Phone);
-    return new { secret, uri = $"otpauth://totp/Shinzx%20Cafe?secret={secret}&issuer=Shinzx%20Cafe" };
+    return new { secret, uri = $"otpauth://totp/Gaming%20Cafe?secret={secret}&issuer=Gaming%20Cafe" };
 });
 app.MapPost("/staff/two-step/staff/on", (HttpContext c, StaffTwoStepBody b) =>
     new { recovery = cafe.TurnOnTwoStepFor(Owner(c), b.Phone, b.Secret, b.Code) });
 app.MapPost("/staff/two-step/offline/start", (HttpContext c, PhoneBody b) =>
 {
     var secret = cafe.StartOfflineUnlockFor(Owner(c), b.Phone);
-    return new { secret, uri = $"otpauth://totp/Shinzx%20Cafe%20Offline?secret={secret}&issuer=Shinzx%20Cafe%20Offline" };
+    return new { secret, uri = $"otpauth://totp/Gaming%20Cafe%20Offline?secret={secret}&issuer=Gaming%20Cafe%20Offline" };
 });
 app.MapPost("/staff/two-step/offline/on", (HttpContext c, StaffTwoStepBody b) =>
 {
@@ -178,8 +178,23 @@ app.MapDelete("/staff/membership-plans/{name}", (HttpContext c, string name) => 
 app.MapPost("/staff/memberships", (HttpContext c, MembershipSaleBody b) =>
 {
     var by = Staff(c);
-    return new { ends = cafe.SellMembership(by, cafe.FindCustomer(by, b.Phone).Id, b.Plan, b.Method, b.UpiLast4) };
+    return new { ends = cafe.SellMembership(by, cafe.FindCustomer(by, b.Phone).Id, b.Plan, b.Method, b.UpiLast4, b.Offer) };
 });
+app.MapGet("/staff/offers", (HttpContext c) => { Staff(c); return new { offers = cafe.Offers(), happyHours = cafe.HappyHours() }; });
+app.MapPost("/staff/offers", (HttpContext c, Offer b) => { cafe.SaveOffer(Staff(c), b); return Results.Ok(); });
+app.MapDelete("/staff/offers/{name}", (HttpContext c, string name) => { cafe.DeleteOffer(Staff(c), name); return Results.Ok(); });
+app.MapPost("/staff/happy-hours", (HttpContext c, HappyHour b) => new { id = cafe.AddHappyHour(Staff(c), b) });
+app.MapDelete("/staff/happy-hours/{id:long}", (HttpContext c, long id) => { cafe.DeleteHappyHour(Staff(c), id); return Results.Ok(); });
+app.MapPost("/staff/sessions/{id:long}/offer", (HttpContext c, long id, NameBody b) => { cafe.ApplyOffer(Staff(c), id, b.Name); return cafe.BillFor(id); });
+// Items (B5.11): the owner keeps the lists and prices, staff add items to a visit or sell at the counter.
+app.MapGet("/staff/items", (HttpContext c) => cafe.Items(Staff(c)));
+app.MapPost("/staff/item-categories", (HttpContext c, NameBody b) => { cafe.SaveCategory(Staff(c), b.Name); return Results.Ok(); });
+app.MapDelete("/staff/item-categories/{name}", (HttpContext c, string name) => { cafe.DeleteCategory(Staff(c), name); return Results.Ok(); });
+app.MapPost("/staff/items", (HttpContext c, ItemBody b) => { cafe.SaveItem(Staff(c), b.Category, b.Name, b.Price); return Results.Ok(); });
+app.MapDelete("/staff/items/{id:long}", (HttpContext c, long id) => { cafe.DeleteItem(Staff(c), id); return Results.Ok(); });
+app.MapPost("/staff/sessions/{id:long}/items", (HttpContext c, long id, SaleBody b) => { cafe.SellItem(Staff(c), id, b.Item, b.Qty, b.Note); return cafe.BillFor(id); });
+app.MapPost("/staff/counter-sales", (HttpContext c, SaleBody b) => new { amount = cafe.CounterSale(Staff(c), b.Item, b.Qty, b.Note, b.Method ?? "", b.UpiLast4, b.Offer) });
+app.MapGet("/staff/reports/items", (HttpContext c, DateOnly from, DateOnly to) => cafe.ItemReport(Staff(c), from, to));
 app.MapPost("/staff/shift/open", (HttpContext c) => new { shift = cafe.OpenShift(Staff(c)) });
 app.MapPost("/staff/shift/close", (HttpContext c, CashBody b) => { var (expected, difference) = cafe.CloseShift(Staff(c), b.Counted); return new { expected, difference }; });
 
@@ -282,4 +297,6 @@ record PayBody(string Method, long Amount, string? UpiLast4);
 record CashBody(long Counted);
 record RateCardBody(string Name, Rate Rate);
 record NameBody(string Name);
-record MembershipSaleBody(string Phone, string Plan, string Method, string? UpiLast4);
+record ItemBody(string Category, string Name, long Price);
+record SaleBody(long Item, int Qty, string? Note, string? Method = null, string? UpiLast4 = null, string? Offer = null);
+record MembershipSaleBody(string Phone, string Plan, string Method, string? UpiLast4, string? Offer = null);

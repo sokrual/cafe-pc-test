@@ -6,13 +6,13 @@ using System.Security.Principal;
 using System.Text.RegularExpressions;
 using Microsoft.Win32;
 
-// Logout reset. The lock screen (running as Customer) leaves a note in ProgramData\\ShinzxCafe\\wipe.
+// Logout reset. The lock screen (running as Customer) leaves a note in ProgramData\\GamingCafe\\wipe.
 // The watchdog, as SYSTEM, logs off Customer and swaps the entire profile folder and both registry hives to the
 // protected owner baseline, clears Steam's saved logins and customer tasks, then releases the lock screen.
 static class Wipe
 {
     public const string User = "Customer";
-    static readonly string Data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ShinzxCafe");
+    static readonly string Data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe");
     public static readonly string Request = Path.Combine(Data, "wipe", "request");
 
     // Any object at the request path is a request. Errors are treated as pending so the PC stays blocked.

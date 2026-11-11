@@ -7,7 +7,7 @@ namespace Cafe.Agent;
 
 // The gaming PC program: a lock screen until a customer logs in, then a small timer that hides during games.
 // It asks the admin PC every 2 s what to show; the admin PC is always right about time and money.
-// Usage: Cafe.Agent --server https://ADMIN-PC:5443 [--token-file pc.token] [--pin-file server.pin] [--name "Shinzx Gaming Hub"] [--logs dir]
+// Usage: Cafe.Agent --server https://ADMIN-PC:5443 [--token-file pc.token] [--pin-file server.pin] [--name "Gaming Cafe"] [--logs dir]
 static class Program
 {
     static string _logDir = "";
@@ -16,7 +16,6 @@ static class Program
     static void Main(string[] args)
     {
         string? Arg(string n) => Array.IndexOf(args, n) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
-        _logDir = Arg("--logs") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Cafe", "logs");
         var testQueuePath = args.Contains("--test-queue-selflock", StringComparer.OrdinalIgnoreCase) ? "/pc/selflock"
             : args.Contains("--test-queue-logout", StringComparer.OrdinalIgnoreCase) ? "/pc/logout" : null;
         if (testQueuePath is not null)
@@ -25,9 +24,10 @@ static class Program
             Environment.ExitCode = response.IsSuccessStatusCode ? 0 : 1;
             return;
         }
+        _logDir = Arg("--logs") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Cafe", "logs");
         Log($"started v{typeof(Program).Assembly.GetName().Version}");
         ApplicationConfiguration.Initialize();
-        Application.Run(new Agent(Arg("--name") ?? "Shinzx Gaming Hub"));
+        Application.Run(new Agent(Arg("--name") ?? "Gaming Cafe"));
     }
 
     // never logs PINs or tokens; a log that can't be written must not stop the PC program
@@ -48,7 +48,7 @@ record OfflineUnlockRate(long Paise30, long Paise60, long Paise90, long ExtraBlo
 
 static class LockSetting
 {
-    const string KeyPath = @"Software\ShinzxCafe\Agent";
+    const string KeyPath = @"Software\GamingCafe\Agent";
     public static bool Read()
     {
         try { using var key = Registry.CurrentUser.OpenSubKey(KeyPath); return key?.GetValue("LockWhenTimeRunsOut") is int value && value == 1; }
@@ -76,7 +76,7 @@ sealed class Agent : ApplicationContext
     DateTime _stateAt = DateTime.UtcNow;
     bool _online = true;
     // installed cafe PCs only: the SYSTEM watchdog cleans the Customer account when this note appears, then deletes it
-    static readonly string WipeNote = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ShinzxCafe", "wipe", "request");
+    static readonly string WipeNote = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "wipe", "request");
 
     public Agent(string name)
     {
@@ -264,10 +264,8 @@ sealed class LockScreen : Form
         Name = "LockScreen"; Text = cafeName;
         FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true;
         StartPosition = FormStartPosition.Manual; BackColor = Color.FromArgb(14, 14, 22);
-        // the cafe's logo (built into the program); the name in text if it is ever missing
-        Control title = typeof(LockScreen).Assembly.GetManifestResourceStream("logo.png") is { } logo
-            ? new PictureBox { Image = Image.FromStream(logo), SizeMode = PictureBoxSizeMode.Zoom, Width = 520, Height = 300, AccessibleName = cafeName }
-            : new Label { Text = cafeName, AutoSize = false, Width = 520, Height = 70, ForeColor = Color.White, Font = new Font("Segoe UI", 28, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter };
+        // Show the generic name until first-run setup can supply each cafe's own name.
+        Control title = new Label { Text = cafeName, AutoSize = false, Width = 520, Height = 70, ForeColor = Color.White, Font = new Font("Segoe UI", 28, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter };
         var box = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
         _method.Items.AddRange(["cash", "upi"]); _method.SelectedIndex = 0;
         foreach (Control c in new Control[] { title, _message, _phone, _pin, _go, _staffUnlock, _offlineRate, _staffPhone, _staffCode, _minutes, _method, _upi, _submitOffline, _error })

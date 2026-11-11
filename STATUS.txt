@@ -59,14 +59,50 @@ B5  Owner features                                                  IN PROGRESS
             carried over only for members (non-members lose leftover minutes); the customer sees a
             reminder before it ends                                                              DONE
             (follow-up on the PC side: show the reminder on screen)
-         c) members-only offers, happy hours, discounts and promotions
+         c) members-only offers, happy hours, discounts and promotions                          DONE
          d) reservations
-    B5.10 First-run setup screens for the owner: rate card, carry-over rule, memberships, offers,
-          discounts, promotions, logo. Shinzx runs it again after testing. Rate cards are set by the owner after install, not in the code:
+    B5.10 First-run setup for any cafe, anywhere: country, currency, time zone, date format, payment
+          methods, phone number format, then rate card, carry-over rule, memberships, offers, discounts,
+          promotions, logo. Nothing a cafe might want differently stays fixed in the code.
+          The pilot cafe runs it again after testing.
+          Decided 11 Nov: the country fills in currency, decimals, time zone, date format, phone format and
+          payment methods; the owner can change each one. Phone numbers from any country (stored with the
+          country code). Tax follows the country with an owner-set rate; a cafe not registered for tax
+          shows and charges no tax.
+          Phone check: format check plus staff or owner checking the number on the customer's phone.
+          No SMS codes (they cost money). A tourist with no working number plays as Walk-in (no wallet,
+          no membership); the owner records an identity check in a pop-up (same data as B4 sign-up).
+          Tax in v1, three choices at setup, each with a short hover note: "Tax not applicable (below the
+          limit)", "GST registered (regular)", "GST composition scheme" (no tax on the bill, the bill is
+          called "Bill of Supply" and carries the fixed sentence; reports show 6% of takings as tax owed).
+          Found: server runs with InvariantGlobalization=true (must go), Indian time is fixed in
+          Offers.cs and Memberships.cs, money is called "paise" everywhere.
+    B5.11 Food, drinks, snacks and merchandise on the bill: a list per category with custom text per sale,
+          shown in the log, the bill and the reports. Offers choose what they apply to (time, items, both,
+          or chosen plans and categories).
+          Built 11 Nov (PR #16, CI green): item lists and prices (owner), add to a visit with a note,
+          counter sale, bill lines, offers on the whole bill / play time / chosen lists, owner item report.
+          Offers cover anything sold, as the owner ticks: all play time, pay-at-the-end time, extra time,
+          a time package (e.g. 90 min), an item list, one item, a membership plan; also on counter sales
+          and membership sales.
+    B5.12 Owner controls any gaming PC from the counter PC or his phone (remote control).
+          Decided 11 Nov: our own buttons for daily use (lock, unlock, message, log out, restart, shut down,
+          wake). v1: MeshCentral (Apache-2.0) as it is, for screen view and control from the phone or the
+          counter PC. Version 1.3.1 or newer only. v2: our own screen view and control, replacing it.
+    Build order: on hold until the project owner says go.
+    Rate cards are set by the owner after install, not in the code:
          the first set-up asks for the rate card; the owner can add more rate cards, discounts and promotions,
          edit them and delete them (other cafes will have their own). Today's rate card becomes the default.
     B5.8 Owner access from his phone (Tailscale) and a view-only screen view
     B5.9 Turning PCs on and off from the counter
+
+A0  Stable lockdown CI: DONE (PR #17, 11 Nov). Lockdown registry check reads the restored hive file; job result
+    = failed checks only; PC installer waits for old programs to close and retries in-use copies by error code.
+A1  Generic names: DONE (PR #18, 11 Nov). No cafe name in files; GamingCafe folders; lock screen shows --name.
+    Generic names (decided 11 Nov): no cafe's name anywhere in the files; folders GamingCafe, display
+    name "Gaming Cafe" until the product name is decided; the pilot cafe's logo removed (setup adds a
+    cafe's own name and logo in B5.10). After A0 (#17), before PR A (#11). Git history is left as it is:
+    the public version will be a new repo with generic names.
 
 B6  Load and long-run tests (all PCs at once, 12-hour runs)        NOT STARTED
 

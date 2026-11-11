@@ -2,14 +2,14 @@
 # Checks that depend on real games, a GPU, speakers or Windows 11 25H2 are reported as warnings only.
 param([int]$Round)
 $ErrorActionPreference = "Stop"
-$root = "C:\ShinzxTest"
+$root = "C:\CafeTest"
 $hard = [System.Collections.Generic.List[string]]::new()
 $summary = [System.Collections.Generic.List[string]]::new()
 
 $done = Get-ChildItem $root -Directory -Filter "logs-done-*" | Sort-Object LastWriteTime | Select-Object -Last 1
 if (-not $done) { throw "No logs-done folder: FINISH-TEST did not complete." }
 if (Test-Path "$root\logs") { $hard.Add("logs folder still there after FINISH-TEST") }
-if (-not (Get-ChildItem $root -Filter "Shinzx-Test-Report-*.zip")) { $hard.Add("no report zip") }
+if (-not (Get-ChildItem $root -Filter "Cafe-Test-Report-*.zip")) { $hard.Add("no report zip") }
 
 $lines = Get-Content (Join-Path $done.FullName "REPORT.txt")
 $res = foreach ($l in $lines) { if ($l -match '^\[(PASS|FAIL|NOT TESTED)\] (\S+) (.*)$') { [pscustomobject]@{ r = $Matches[1]; id = $Matches[2]; text = $Matches[3] } } }
@@ -28,17 +28,17 @@ if ($blocks.Count -lt 6) { $hard.Add("only $($blocks.Count) folder block checks 
 foreach ($b in $blocks) { if ($b.r -ne "PASS") { $hard.Add("T0.2b $($b.r): $($b.text)") } }
 
 # no customer account may change the kit (measure.ps1 runs as SYSTEM, start/finish as admin)
-foreach ($f in "$root\measure.ps1", "$root\start.ps1", "$root\finish.ps1", "$root\ShinzxTimerTest.exe") {
+foreach ($f in "$root\measure.ps1", "$root\start.ps1", "$root\finish.ps1", "$root\CafeTimerTest.exe") {
     if ((Get-Acl $f).Access | Where-Object { $_.IdentityReference -match "Authenticated Users|Everyone|\\Users$" -and $_.FileSystemRights -match "Write|Modify|FullControl" }) {
         $hard.Add("customers can change $f"); icacls $f | Write-Host
     }
 }
 
 # the PC must really be back to normal
-if (Get-LocalUser "ShinzxTest" -ErrorAction SilentlyContinue) { $hard.Add("temporary user ShinzxTest still exists") }
-if (Get-CimInstance Win32_UserProfile | Where-Object LocalPath -like "*\ShinzxTest*") { $hard.Add("ShinzxTest profile still exists") }
-if (Get-ScheduledTask -TaskName "ShinzxTest*" -ErrorAction SilentlyContinue) { $hard.Add("test tasks still registered") }
-if (Get-Process ShinzxTimerTest -ErrorAction SilentlyContinue) { $hard.Add("timer still running") }
+if (Get-LocalUser "CafeTest" -ErrorAction SilentlyContinue) { $hard.Add("temporary user CafeTest still exists") }
+if (Get-CimInstance Win32_UserProfile | Where-Object LocalPath -like "*\CafeTest*") { $hard.Add("CafeTest profile still exists") }
+if (Get-ScheduledTask -TaskName "CafeTest*" -ErrorAction SilentlyContinue) { $hard.Add("test tasks still registered") }
+if (Get-Process CafeTimerTest -ErrorAction SilentlyContinue) { $hard.Add("timer still running") }
 $rules = @(([xml](Get-AppLockerPolicy -Effective -Xml)).SelectNodes("//*[@Action]")).Count
 if ($rules -ne 0) { $hard.Add("$rules AppLocker rules still active (cloud machine had none before)") }
 Start-Sleep -Seconds 12
@@ -47,10 +47,10 @@ if (Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object
 # soft: expected to differ on a cloud machine, shown so a real problem is not missed
 # the audit log must have caught the program run from Downloads (proves the day-long check works without a restart)
 $wb = Import-Csv (Join-Path $done.FullName "would-be-blocked.csv")
-$sawDownload = [bool]($wb | Where-Object path -match "shinzx-ci-download")
+$sawDownload = [bool]($wb | Where-Object path -match "cafe-ci-download")
 # Level A watch-only must have logged our own unsigned timer (proves the events are read and the paths decoded)
 $la = @(Import-Csv (Join-Path $done.FullName "levelA-would-block.csv"))
-$sawTimer = [bool]($la | Where-Object { $_.path -like "$root\ShinzxTimerTest.exe" })
+$sawTimer = [bool]($la | Where-Object { $_.path -like "$root\CafeTimerTest.exe" })
 foreach ($f in "installed-programs.csv", "services-and-drivers.csv", "startup.csv") { if (-not (Test-Path (Join-Path $done.FullName $f))) { $hard.Add("$f missing") } }
 foreach ($r in $res) { $summary.Add("| $($r.r) | $($r.id) | $($r.text -replace '\|', '/') |") }
 
@@ -59,6 +59,6 @@ $out = @("## Round $Round on $((Get-CimInstance Win32_OperatingSystem).Caption)"
     "| Result | ID | Check |", "|---|---|---|") + $summary + @("", "**Must-pass problems: $($hard.Count)**") + ($hard | ForEach-Object { "- $_" })
 $out | Write-Host
 if ($env:GITHUB_STEP_SUMMARY) { $out | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
-if (-not $sawTimer) { $hard.Add("Level A watch-only did not list ShinzxTimerTest.exe"); $la | Select-Object -First 20 | Format-Table | Out-String | Write-Host }
+if (-not $sawTimer) { $hard.Add("Level A watch-only did not list CafeTimerTest.exe"); $la | Select-Object -First 20 | Format-Table | Out-String | Write-Host }
 if (-not $sawDownload) { $hard.Add("audit log did not record the program run from Downloads") }
 if ($hard.Count) { exit 1 }

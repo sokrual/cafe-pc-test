@@ -96,7 +96,7 @@ static class PcProxy
             var m = Regex.Match(line, Regex.Escape(name) + @"\s+(?:""([^""]+)""|(\S+))");
             return m.Success ? (m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value) : null;
         }
-        var data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ShinzxCafe", "keys");
+        var data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "keys");
         var token = FileOption("--token-file") ?? Path.Combine(data, "pc.token");
         var pin = FileOption("--pin-file") ?? Path.Combine(data, "server.pin");
         var sid = FileOption("--pipe-sid") ?? Wipe.CustomerSid()

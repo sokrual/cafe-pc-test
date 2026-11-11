@@ -7,13 +7,13 @@
 param([switch]$Uninstall, [switch]$Ci)
 $ErrorActionPreference = "Stop"
 $src = $PSScriptRoot
-$app = "$env:ProgramFiles\ShinzxCafe\Server"
+$app = "$env:ProgramFiles\GamingCafe\Server"
 $agh = "$env:ProgramFiles\AdGuardHome"
 $svc = "CafeServer"
 function Say($text) {
     if ($Ci) { Write-Host $text; return }
     Add-Type -AssemblyName System.Windows.Forms
-    [System.Windows.Forms.MessageBox]::Show($text, "Shinzx setup") | Out-Null
+    [System.Windows.Forms.MessageBox]::Show($text, "Gaming Cafe setup") | Out-Null
 }
 trap { Say "Setup stopped:`n$_`n`nRun it again. If it stops again, take a photo of this window. Send the photo and the file install-log.txt (in this folder) on Discord to the person who gave you this software."; break }
 Start-Transcript "$src\install-log.txt" -Append | Out-Null   # what happened, step by step: send this file on Discord if setup stops
@@ -21,7 +21,7 @@ Start-Transcript "$src\install-log.txt" -Append | Out-Null   # what happened, st
 if ($Uninstall) {
     if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force; sc.exe delete $svc | Out-Null }
     if (Test-Path "$agh\AdGuardHome.exe") { Start-Process "$agh\AdGuardHome.exe" "-s uninstall" -Wait -WindowStyle Hidden }
-    Remove-NetFirewallRule -Group "Shinzx counter" -ErrorAction SilentlyContinue
+    Remove-NetFirewallRule -Group "Cafe counter" -ErrorAction SilentlyContinue
     $keep = "$env:ProgramData\Cafe\before-install.json"
     if (Test-Path $keep) { # clock settings back as they were
         foreach ($p in (Get-Content $keep -Raw | ConvertFrom-Json).PSObject.Properties) {
@@ -42,13 +42,13 @@ Get-Process Cafe.Server -ErrorAction SilentlyContinue | Stop-Process -Force; Sta
 New-Item $app -ItemType Directory -Force | Out-Null   # inside Program Files: only admins can change it
 Copy-Item "$src\Cafe.Server.exe" $app -Force
 if (-not (Get-Service $svc -ErrorAction SilentlyContinue)) {
-    New-Service -Name $svc -BinaryPathName "`"$app\Cafe.Server.exe`"" -DisplayName "Shinzx Cafe server" -StartupType Automatic | Out-Null
+    New-Service -Name $svc -BinaryPathName "`"$app\Cafe.Server.exe`"" -DisplayName "Gaming Cafe server" -StartupType Automatic | Out-Null
 }
 sc.exe failure $svc reset= 86400 actions= restart/2000/restart/2000/restart/2000 | Out-Null
 Start-Service $svc
 
 # what this install changes outside its own folders, kept once so uninstall can put it back (admins and Windows only)
-$keep = "$env:ProgramData\Cafe"   # the server's own data folder; kept at uninstall (a gaming PC uses ProgramData\ShinzxCafe)
+$keep = "$env:ProgramData\Cafe"   # the server's own data folder; kept at uninstall (a gaming PC uses ProgramData\GamingCafe)
 New-Item $keep -ItemType Directory -Force | Out-Null
 icacls $keep /inheritance:r /grant "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" | Out-Null
 $timeKeys = @("HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters|NtpServer", "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters|Type",
@@ -73,11 +73,11 @@ Set-Service w32time -StartupType Automatic; Restart-Service w32time -Force
 w32tm.exe /resync /nowait | Out-Null
 
 # --- firewall: the server and the filter answer the shop network only, never the internet ---
-Remove-NetFirewallRule -Group "Shinzx counter" -ErrorAction SilentlyContinue
-New-NetFirewallRule -Group "Shinzx counter" -DisplayName "Shinzx cafe server (shop network only)" -Direction Inbound -Action Allow -Profile Any `
+Remove-NetFirewallRule -Group "Cafe counter" -ErrorAction SilentlyContinue
+New-NetFirewallRule -Group "Cafe counter" -DisplayName "Gaming Cafe server (shop network only)" -Direction Inbound -Action Allow -Profile Any `
     -Program "$app\Cafe.Server.exe" -Protocol TCP -LocalPort 5443 -RemoteAddress LocalSubnet | Out-Null
 foreach ($proto in "UDP", "TCP") {
-    New-NetFirewallRule -Group "Shinzx counter" -DisplayName "Shinzx internet filter $proto (shop network only)" -Direction Inbound -Action Allow -Profile Any `
+    New-NetFirewallRule -Group "Cafe counter" -DisplayName "Cafe internet filter $proto (shop network only)" -Direction Inbound -Action Allow -Profile Any `
         -Program "$agh\AdGuardHome.exe" -Protocol $proto -LocalPort 53 -RemoteAddress LocalSubnet | Out-Null
 }
 

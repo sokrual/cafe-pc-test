@@ -25,7 +25,7 @@ public sealed class LockScreenTests : IDisposable
     [Fact]
     public async Task Pending_cleanup_keeps_the_lock_screen_blocked_with_counter_message()
     {
-        var note = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ShinzxCafe", "wipe", "request");
+        var note = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "wipe", "request");
         var wipeDirectory = Path.GetDirectoryName(note)!;
         var createdWipeDirectory = !Directory.Exists(wipeDirectory);
         var createdNote = false;
@@ -360,7 +360,7 @@ public sealed class WatchdogTests : IDisposable
             Rig.WaitFor(() => app.GetAllTopLevelWindows(_rig.Ui).Any(w =>
                 w.Properties.AutomationId.ValueOrDefault == "LockScreen" && !w.IsOffscreen),
                 15, "lock screen did not remain visible without the PC token");
-            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ShinzxCafe", "logs");
+            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "logs");
             var log = Directory.GetFiles(logs, "watchdog-*").Select(File.ReadAllText).LastOrDefault() ?? "";
             Assert.Contains("PC pipe proxy start failed", log);
             Assert.Contains("retrying in 30 seconds", log);
@@ -419,7 +419,7 @@ public sealed class WatchdogTests : IDisposable
         catch
         {
             Rig.Screenshot();
-            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ShinzxCafe", "logs");
+            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "logs");
             if (Directory.Exists(logs)) foreach (var f in Directory.GetFiles(logs, "watchdog-*")) Console.WriteLine($"--- {f}\n{File.ReadAllText(f)}");
             throw;
         }
@@ -462,6 +462,51 @@ public sealed class ServerApiTests : IDisposable
         for (var i = 0; i < 12; i++) codes.Add(await _rig.TryStaffLogin("9000000009", $"{i:000000}"));
         Assert.All(codes.Take(10), c => Assert.Equal(400, c)); // wrong phone or PIN
         Assert.All(codes.Skip(10), c => Assert.Equal(429, c)); // too many requests
+    }
+
+    [Fact]
+    public async Task Owner_sets_offers_and_happy_hours_and_staff_put_an_offer_on_a_bill()
+    {
+        var owner = await _rig.OwnerToken();
+        var staff = await _rig.StaffToken();
+        await _rig.Post("/staff/rate-cards", new { name = "Happy", rate = new { paise30 = 2000, paise60 = 3000, paise90 = 5000, extraBlockPaise = 2000,
+            graceMin = 5, minimumMin = 30, blockMin = 30, blockGraceMin = 5, carryOverDays = 7, carryOverMembersOnly = true } }, owner);
+        await _rig.Post("/staff/happy-hours", new { card = "Happy", days = new[] { 6 }, fromMin = 0, toMin = 1, membersOnly = true }, owner);
+        await _rig.Post("/staff/offers", new { name = "Diwali", percent = 20, membersOnly = false }, owner);
+        await _rig.Post("/staff/sessions", new { pc = "PC1", phone = "9000000003", mode = "prepaid", minutes = 30 }, staff);
+        var session = long.Parse(_rig.State(staff)["session"]!.ToString()!);
+        await _rig.Post($"/staff/sessions/{session}/offer", new { name = "Diwali" }, staff);
+        Assert.Equal("3200", _rig.Bill(staff, session)["due"]!.ToString()); // Rs 40 less 20%
+        using var offers = _rig.Raw(HttpMethod.Get, "/staff/offers", staff);
+        Assert.Contains("\"card\":\"Happy\"", await offers.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Owner_keeps_item_lists_and_staff_sell_items_on_a_bill_and_at_the_counter()
+    {
+        var owner = await _rig.OwnerToken();
+        var staff = await _rig.StaffToken();
+        var ct = TestContext.Current.CancellationToken;
+        await _rig.Post("/staff/items", new { category = "Beverages", name = "Coke", price = 5000 }, owner);
+        using (var byStaff = new HttpRequestMessage(HttpMethod.Post, "/staff/items") { Content = JsonContent.Create(new { category = "Beverages", name = "Tea", price = 1 }) })
+        {
+            byStaff.Headers.Authorization = new("Bearer", staff);
+            Assert.Equal(400, (int)(await _rig.Http.SendAsync(byStaff, ct)).StatusCode); // only the owner sets prices
+        }
+        using var list = _rig.Raw(HttpMethod.Get, "/staff/items", staff);
+        var coke = System.Text.Json.JsonDocument.Parse(await list.Content.ReadAsStringAsync(ct)).RootElement.GetProperty("items")[0].GetProperty("id").GetInt64();
+        await _rig.Post("/staff/offers", new { name = "Half drinks", percent = 50, membersOnly = false, scope = new[] { "List: Beverages" } }, owner);
+        await _rig.Post("/staff/sessions", new { pc = "PC1", phone = "9000000003", mode = "prepaid", minutes = 30 }, staff);
+        var session = long.Parse(_rig.State(staff)["session"]!.ToString()!);
+        await _rig.Post($"/staff/sessions/{session}/offer", new { name = "Half drinks" }, staff);
+        await _rig.Post($"/staff/sessions/{session}/items", new { item = coke, qty = 2, note = "cold" }, staff);
+        Assert.Equal("9000", _rig.Bill(staff, session)["due"]!.ToString()); // Rs 40 of time + Rs 100 of drinks, half off the drinks
+        Assert.Contains("2 x Coke (cold)", _rig.Bill(staff, session)["lines"]!.ToString());
+        await _rig.Post("/staff/counter-sales", new { item = coke, qty = 1, method = "cash" }, staff);
+        var today = DateTime.UtcNow.AddHours(5.5).ToString("yyyy-MM-dd");
+        using (var report = _rig.Raw(HttpMethod.Get, $"/staff/reports/items?from={today}&to={today}", owner))
+            Assert.Contains("\"qty\":3", await report.Content.ReadAsStringAsync(ct));
+        using (var notStaff = _rig.Raw(HttpMethod.Get, $"/staff/reports/items?from={today}&to={today}", staff)) Assert.Equal(400, (int)notStaff.StatusCode);
     }
 
     [Fact]

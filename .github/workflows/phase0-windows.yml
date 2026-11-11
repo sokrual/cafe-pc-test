@@ -146,33 +146,33 @@ jobs:
         shell: pwsh
         run: |
           New-Item kitzip -ItemType Directory | Out-Null
-          Copy-Item kit\*, out\ShinzxTimerTest.exe kitzip
-          Compress-Archive kitzip\* ShinzxPhase0.zip
+          Copy-Item kit\*, out\CafeTimerTest.exe kitzip
+          Compress-Archive kitzip\* CafePhase0.zip
       - uses: actions/upload-artifact@v4
         if: matrix.os == 'windows-latest'
         with:
-          name: ShinzxPhase0
-          path: ShinzxPhase0.zip
+          name: CafePhase0
+          path: CafePhase0.zip
 
       - name: Put the kit where the owner puts it
         shell: powershell
         run: |
-          New-Item C:\ShinzxTest -ItemType Directory -Force | Out-Null
-          Copy-Item kit\* C:\ShinzxTest -Force
-          Copy-Item out\ShinzxTimerTest.exe C:\ShinzxTest -Force
+          New-Item C:\CafeTest -ItemType Directory -Force | Out-Null
+          Copy-Item kit\* C:\CafeTest -Force
+          Copy-Item out\CafeTimerTest.exe C:\CafeTest -Force
           "OS: " + (Get-CimInstance Win32_OperatingSystem).Caption
           "Is admin: " + ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole("Administrators")
 
       # Round 1: first run on a clean PC
       - name: Round 1 START-TEST
         shell: cmd
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File C:\ShinzxTest\start.ps1 -Ci
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File C:\CafeTest\start.ps1 -Ci
       - name: Round 1 short day
         shell: powershell
         run: .\ci\simulate-day.ps1
       - name: Round 1 FINISH-TEST
         shell: cmd
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File C:\ShinzxTest\finish.ps1 -Ci -VoiceHeard No
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File C:\CafeTest\finish.ps1 -Ci -VoiceHeard No
       - name: Round 1 check
         shell: powershell
         run: .\ci\check.ps1 -Round 1
@@ -180,13 +180,13 @@ jobs:
       # Round 2: the owner runs it again on the same PC (must start clean and restore again)
       - name: Round 2 START-TEST
         shell: cmd
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File C:\ShinzxTest\start.ps1 -Ci
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File C:\CafeTest\start.ps1 -Ci
       - name: Round 2 short day
         shell: powershell
         run: .\ci\simulate-day.ps1
       - name: Round 2 FINISH-TEST
         shell: cmd
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File C:\ShinzxTest\finish.ps1 -Ci -VoiceHeard No
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File C:\CafeTest\finish.ps1 -Ci -VoiceHeard No
       - name: Round 2 check
         shell: powershell
         run: .\ci\check.ps1 -Round 2
@@ -195,16 +195,16 @@ jobs:
       - name: FINISH-TEST with no test running says so and exits 1
         shell: cmd
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File C:\ShinzxTest\finish.ps1 -Ci
+          powershell -NoProfile -ExecutionPolicy Bypass -File C:\CafeTest\finish.ps1 -Ci
           if %ERRORLEVEL%==1 (exit /b 0) else (exit /b 1)
 
       - name: On failure, show the kit folder's permissions
         if: failure()
         shell: cmd
         run: |
-          icacls C:\ShinzxTest
-          icacls C:\ShinzxTest\ShinzxTimerTest.exe
-          icacls C:\ShinzxTest\start.ps1
+          icacls C:\CafeTest
+          icacls C:\CafeTest\CafeTimerTest.exe
+          icacls C:\CafeTest\start.ps1
 
       - name: Keep the reports
         if: always()
@@ -212,6 +212,6 @@ jobs:
         with:
           name: reports-${{ matrix.os }}
           path: |
-            C:\ShinzxTest\*.zip
-            C:\ShinzxTest\logs*\**
+            C:\CafeTest\*.zip
+            C:\CafeTest\logs*\**
           if-no-files-found: warn

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Counter - Shinzx Gaming Hub</title>
+<title>Counter - Gaming Cafe</title>
 <style>
   :root { --bg: #0e0e16; --card: #1a1a26; --line: #2c2c3c; --text: #f2f2f7; --dim: #a0a0b4; --ok: #3ccf7a; --warn: #f5b84a; --bad: #ef5a5a; --act: #4a8cff; }
   * { box-sizing: border-box; }
@@ -40,6 +40,8 @@
   #login input { width: 100%; }
   hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
   ul { padding-left: 18px; margin: 8px 0; }
+  .check { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 15px; margin: 6px 12px 0 0; }
+  #panel .check input { width: auto; min-height: 0; }
 </style>
 </head>
 <body>
@@ -53,12 +55,14 @@
 </form>
 <div id="app" hidden>
   <header>
-    <h1>Shinzx Gaming Hub - Counter</h1>
+    <h1>Gaming Cafe - Counter</h1>
     <button class="quiet" id="shiftOpen">Open shift</button>
     <button class="quiet" id="shiftClose">Close shift</button>
     <button class="quiet" id="reviewBtn">Review</button>
     <button class="quiet" id="ratesBtn">Rate cards</button>
     <button class="quiet" id="membersBtn">Memberships</button>
+    <button class="quiet" id="offersBtn">Offers</button>
+    <button class="quiet" id="itemsBtn">Items</button>
     <button class="quiet" id="logout">Sign out</button>
   </header>
   <p id="msg" role="status" aria-live="polite"></p>
