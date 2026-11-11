@@ -1,0 +1,94 @@
+LOST PHONE AND KEY RENEWAL
+===========================
+
+Use these steps at the counter. Do not ask customers to help.
+
+1. LOST PHONE
+
+1. If the owner's counter-login phone is lost, sign in with the owner's PIN and the
+   one-use recovery code printed when counter two-step was set up. If a staff phone
+   is lost, the owner signs in normally.
+
+2. Open "Owner security". Choose the person who lost the phone.
+
+3. Select "Replace counter two-step". Add the new secret or setup link to the
+   authenticator app on the new phone. Type the new 6-digit code and confirm.
+   Keep the new one-use recovery code somewhere safe. The old counter code stops
+   working when the new one is confirmed.
+
+4. Select "Replace offline authenticator". Add this separate secret to the new
+   phone's authenticator app. Type its new 6-digit code and confirm. Do not use
+   the counter two-step code for offline unlock.
+
+5. In "People allowed to unlock offline", switch that person's offline unlock off.
+   This removes the person from the list sent to PCs at their next refresh. It does
+   not delete their counter login.
+
+6. Reconnect every gaming PC to the counter network. Leave each one on until it
+   has checked in. A PC that stays disconnected keeps the old offline secret for
+   up to 7 days. After 7 days without a counter refresh, that PC refuses offline
+   unlock. A PC whose clock is earlier than its last counter refresh also refuses.
+
+7. End every counter login for that person. In "End counter logins", choose the
+   person's phone number and select "End this person's logins". They must sign in
+   again. If the person is the owner using this screen, switch off offline unlock
+   and reconnect the PCs first; then end the owner's logins and sign in again.
+
+8. Open "Review" and check for refused offline sales or other items that need
+   attention.
+
+2. REPLACE A GAMING PC TOKEN
+
+1. Open "Owner security". Stop the PC's session first. A PC in use cannot be removed.
+
+2. Under "PC keys", select "Remove PC". Its old token stops working immediately.
+
+3. Type the same PC name under "Add or re-add a PC" and select "Add PC and show its
+   key". The screen shows a new PC token and the server pin. Save the token now;
+   it is shown only once.
+
+4. Copy the new pc.token and server.pin into that PC's install folder. Run INSTALL-PC
+   on that gaming PC as administrator. Keep the PC name the same.
+
+5. Check the counter screen. The PC should appear online again and its lock screen
+   should work. If it stays offline, check that the new files were copied and read
+   the watchdog log in C:\ProgramData\GamingCafe\logs.
+
+3. RENEW THE COUNTER CERTIFICATE
+
+The counter certificate made by the software lasts 10 years. Renew it before it
+expires. Do this after closing all sessions, because the counter server is stopped
+briefly.
+
+1. On the counter PC, open PowerShell as administrator.
+
+2. Stop the server and remove only its certificate file:
+
+   Stop-Service CafeServer
+   Remove-Item "$env:ProgramData\Cafe\server.pfx.dpapi" -Force
+   Start-Service CafeServer
+
+   The server makes a new certificate when it starts and writes its new fingerprint
+   to C:\ProgramData\Cafe\server.pin. Do not delete cafe.db, db.key, or the Cafe
+   data folder.
+
+3. Check that CafeServer is running and that server.pin has a new value.
+
+4. On every gaming PC, copy the new server.pin from the counter PC into that PC's
+   install folder. Keep that PC's existing pc.token; certificate renewal does not
+   rotate the PC token.
+
+5. Run INSTALL-PC on every gaming PC as administrator. This copies the new pin into
+   the protected keys folder and restarts CafeWatchdog.
+
+6. Check every PC on the counter screen. Each should come online. Check that its
+   lock screen works and that the watchdog log does not report a certificate-pin
+   error. Do not leave a PC disconnected with the old pin.
+
+TEST STATUS
+
+- The server tests cover removing and adding PC keys and rejecting removed PC keys.
+  The complete token replacement and reinstall steps have not been tested on a
+  real cafe PC.
+- Certificate renewal is documented only. It has not been run in CI or tested on a
+  real counter PC and gaming PC. Test it on spare machines before relying on it.
