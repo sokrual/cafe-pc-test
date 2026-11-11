@@ -534,14 +534,21 @@ public sealed partial class CafeCore : IDisposable
         Minutes(sale.Minutes);
         if (sale.Minutes < Rate.MinimumMin || sale.Minutes % Math.Max(1, Rate.BlockMin) != 0)
             throw new CafeException($"Minutes must be a {Rate.BlockMin}-minute block from the rate card.");
-        if (sale.Minutes > MaxOfflineUnlockMinutes)
-            throw new CafeException($"One offline unlock can add no more than {MaxOfflineUnlockMinutes} minutes.");
+        if (sale.Minutes > 10080)
+            throw new CafeException("Minutes must be from 1 to 10080 (one week).");
         CashOrUpi(sale.Method, sale.UpiLast4);
-        using var r = Query("SELECT id, offline_totp FROM users WHERE phone = @p0 AND role IN (@p1, @p2)", sale.Phone, (int)Role.Owner, (int)Role.Staff);
+        using var r = Query("SELECT id, offline_totp, offline_unlock_enabled, name FROM users WHERE phone = @p0 AND role IN (@p1, @p2)", sale.Phone, (int)Role.Owner, (int)Role.Staff);
         if (!r.Read() || r.IsDBNull(1)) throw new CafeException("This account has not set up offline unlock.");
         var staff = r.GetInt64(0);
         var key = (byte[])r[1];
+        var offlineEnabled = r.GetInt64(2) == 1;
+        var person = r.GetString(3);
         r.Close();
+        if (!offlineEnabled) throw new CafeException("This person's offline unlock is switched off.");
+        var currentLimit = MaxOfflineUnlockMinutes;
+        if (sale.Minutes > currentLimit)
+            Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'offline_unlock_alert', @p1)",
+                Iso(_now()), $"{person} sold {sale.Minutes} min on {pc}, above the current limit of {currentLimit}");
         var nowStep = new DateTimeOffset(_now()).ToUnixTimeSeconds() / 30;
         if (sale.Step < nowStep - 7 * 24 * 60 * 60 / 30 || sale.Step > nowStep + 1
             || string.IsNullOrEmpty(sale.Code) || sale.Code.Length != 6 || !sale.Code.All(char.IsAsciiDigit)
@@ -627,13 +634,20 @@ public sealed partial class CafeCore : IDisposable
                 var previousMinutes = duplicate.GetInt32(1);
                 var person = duplicate.GetString(2);
                 duplicate.Close();
-                Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'review_offline_sale_duplicate', @p1)",
-                    Iso(_now()), $"Duplicate offline unlock: {person} used the same code on {previousPc} and {pc}; {previousMinutes} minutes on {previousPc}, {minutes ?? 0} minutes on {pc}.");
+                var detail = $"Duplicate offline unlock: {person} used the same code on {previousPc} and {pc}; {previousMinutes} minutes on {previousPc}, {minutes ?? 0} minutes on {pc}.";
+                Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'review_offline_sale_duplicate', @p1)", Iso(_now()), detail);
+                Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'offline_unlock_alert', @p1)", Iso(_now()), detail);
                 return;
             }
         }
-        Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'review_offline_sale', @p1)",
-            Iso(_now()), $"PC {pc}, sale {saleId}, account {phone}: {reason}");
+        var reviewDetail = $"PC {pc}, sale {saleId}, account {phone}: {reason}";
+        Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'review_offline_sale', @p1)", Iso(_now()), reviewDetail);
+        if (reason == "This person's offline unlock is switched off.")
+        {
+            var person = Scalar<string?>("SELECT name FROM users WHERE phone = @p0", phone) ?? phone;
+            Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'offline_unlock_alert', @p1)",
+                Iso(_now()), $"{person} attempted offline unlock on {pc}; offline unlock is switched off.");
+        }
     });
 
     /// Called on every status check, so a queued logout knows when the PC was last online.
@@ -763,7 +777,7 @@ public sealed partial class CafeCore : IDisposable
     public List<string> OfflineUnlockAlerts(long by) => Tx(() =>
     {
         RequireOwner(by);
-        using var r = Query("SELECT at, detail FROM audit WHERE action = 'review_offline_sale_duplicate' ORDER BY id DESC LIMIT 10");
+        using var r = Query("SELECT at, detail FROM audit WHERE action = 'offline_unlock_alert' ORDER BY id DESC LIMIT 10");
         var list = new List<string>();
         while (r.Read()) list.Add($"{r.GetString(0)} {r.GetString(1)}");
         return list;
