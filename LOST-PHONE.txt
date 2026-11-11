@@ -20,19 +20,25 @@ Use these steps at the counter. Do not ask customers to help.
    phone's authenticator app. Type its new 6-digit code and confirm. Do not use
    the counter two-step code for offline unlock.
 
-5. In "People allowed to unlock offline", switch that person's offline unlock off.
+5. End every counter login for that person. In "End counter logins", choose the
+   person's phone number and select "End this person's logins". They must sign in
+   again. If the person is the owner using this screen, do steps 6 and 7 first;
+   then return here, end the owner's logins, and sign in again.
+
+6. In "People allowed to unlock offline", switch that person's offline unlock off.
    This removes the person from the list sent to PCs at their next refresh. It does
    not delete their counter login.
 
-6. Reconnect every gaming PC to the counter network. Leave each one on until it
+   Risk to know: a gaming PC taken over by its Windows administrator or SYSTEM can
+   expose the offline secrets currently stored on that PC. The owner switch limits
+   which accounts are sent to each PC, and the 7-day expiry limits how long an old
+   cached secret can unlock it. It does not stop an administrator reading a secret
+   while that secret is still valid.
+
+7. Reconnect every gaming PC to the counter network. Leave each one on until it
    has checked in. A PC that stays disconnected keeps the old offline secret for
    up to 7 days. After 7 days without a counter refresh, that PC refuses offline
    unlock. A PC whose clock is earlier than its last counter refresh also refuses.
-
-7. End every counter login for that person. In "End counter logins", choose the
-   person's phone number and select "End this person's logins". They must sign in
-   again. If the person is the owner using this screen, switch off offline unlock
-   and reconnect the PCs first; then end the owner's logins and sign in again.
 
 8. Open "Review" and check for refused offline sales or other items that need
    attention.
