@@ -493,6 +493,10 @@ public sealed class ServerApiTests : IDisposable
         await _rig.Post($"/staff/sessions/{session}/stop", new { }, staff);
         Assert.Equal("0", _rig.Bill(staff, session)["due"]!.ToString());
         Assert.Null(_rig.State(staff)["session"]);
+        using (var cards = _rig.Raw(HttpMethod.Get, "/staff/rate-cards", staff)) Assert.Contains("\"name\":\"Standard\"", await cards.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        using var save = new HttpRequestMessage(HttpMethod.Post, "/staff/rate-cards") { Content = JsonContent.Create(new { name = "Cheap", rate = new { paise30 = 100, paise60 = 200, paise90 = 300, extraBlockPaise = 100, graceMin = 5, minimumMin = 30, blockMin = 30, blockGraceMin = 5, carryOverDays = 7 } }) };
+        save.Headers.Authorization = new("Bearer", staff);
+        Assert.Equal(400, (int)(await _rig.Http.SendAsync(save, TestContext.Current.CancellationToken)).StatusCode); // only the owner changes prices
     }
 }
 
@@ -634,6 +638,7 @@ sealed class Rig : IDisposable
         m.Headers.Authorization = new("Bearer", token);
         (await _http.SendAsync(m)).EnsureSuccessStatusCode();
     }
+    public HttpClient Http => _http;
     public HttpResponseMessage Raw(HttpMethod method, string path, string? token)
     {
         using var m = new HttpRequestMessage(method, path);

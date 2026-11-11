@@ -115,6 +115,7 @@ public sealed partial class CafeCore : IDisposable
             Exec("ALTER TABLE users ADD COLUMN offline_totp BLOB; CREATE UNIQUE INDEX IF NOT EXISTS offline_sales_person_step ON offline_sales(staff_id, step);");
         Exec($"PRAGMA user_version = {SchemaVersion}");
         _ready = true;
+        LoadRateCards();
     }
 
     public void Dispose() => _db.Dispose();
