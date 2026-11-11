@@ -34,8 +34,9 @@ B3  Lockdown and installers                                         BUILT - fina
       #8a offline lock: with "lock when time runs out" on, the PC locks itself at zero even with no
           connection; one failing session must not stop the other sessions from ending      DONE (merged)
       #8b offline unlock codes: owner and staff unlock an offline PC with their own authenticator
-          codes and add time for a new payment, which reaches the money records on reconnect
-      #9 final end-to-end security pass against CHECKS.txt
+          codes and add time for a new payment, which reaches the money records on reconnect   DONE (merged;
+          each person has a separate offline secret, PCs never get counter sign-in secrets)
+      #9 final end-to-end security pass against CHECKS.txt                          in progress
     After #9: a final review by two separate reviewers. Then B4.
     Level A switches to blocking after the cafe trial, with an "allow or not" prompt for the owner (part of B5.3).
 

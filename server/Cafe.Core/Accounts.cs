@@ -5,6 +5,7 @@ using System.Text;
 
 namespace Cafe;
 
+public record OfflineUnlockAccount(string Phone, string Secret, long LastStep);
 public record PcInfo(string Name, bool InUse, bool Locked, string? LastSeen);
 
 public sealed partial class CafeCore
@@ -52,6 +53,74 @@ public sealed partial class CafeCore
     // That also gives a one-time recovery code to print and keep: it replaces the app code once, if the phone is lost.
 
     public static string NewTwoStepSecret() => Base32(RandomNumberGenerator.GetBytes(20));
+
+    /// Owner enrollment for a staff account; staff use the same TOTP login and replay protection as the owner.
+    public string StartTwoStepFor(long owner, string phone) => Tx(() =>
+    {
+        RequireOwner(owner);
+        _ = Scalar<long?>( "SELECT id FROM users WHERE phone = @p0 AND role IN (@p1, @p2)", phone, (int)Role.Owner, (int)Role.Staff)
+            ?? throw new CafeException("No owner or staff account has this phone number.");
+        return NewTwoStepSecret();
+    });
+
+    public string TurnOnTwoStepFor(long owner, string phone, string secret, string code) => Tx(() =>
+    {
+        RequireOwner(owner);
+        var user = Scalar<long?>( "SELECT id FROM users WHERE phone = @p0 AND role IN (@p1, @p2)", phone, (int)Role.Owner, (int)Role.Staff)
+            ?? throw new CafeException("No owner or staff account has this phone number.");
+        var key = FromBase32(secret);
+        if (key.Length < 10 || TotpStep(key, code) is not long step)
+            throw new CafeException("That code does not match. Type the 6 digits the app shows now.");
+        var recovery = Convert.ToHexString(RandomNumberGenerator.GetBytes(8));
+        Exec("UPDATE users SET totp = @p0, totp_step = @p1, recovery = @p2, fails = 0, locked_until = NULL WHERE id = @p3",
+            key, step, SHA256.HashData(Encoding.UTF8.GetBytes(recovery)), user);
+        Audit(owner, "two_step_on", $"user {user}");
+        return recovery;
+    });
+
+    /// Each account has a second authenticator dedicated to offline unlock, separate from counter login.
+    public string StartOfflineUnlockFor(long owner, string phone) => Tx(() =>
+    {
+        RequireOwner(owner);
+        _ = Scalar<long?>("SELECT id FROM users WHERE phone = @p0 AND role IN (@p1, @p2) AND totp IS NOT NULL",
+            phone, (int)Role.Owner, (int)Role.Staff)
+            ?? throw new CafeException("Turn on counter two-step before setting up offline unlock.");
+        return NewTwoStepSecret();
+    });
+
+    public void TurnOnOfflineUnlockFor(long owner, string phone, string secret, string code) => Tx(() =>
+    {
+        RequireOwner(owner);
+        using var r = Query("SELECT id, totp FROM users WHERE phone = @p0 AND role IN (@p1, @p2) AND totp IS NOT NULL",
+            phone, (int)Role.Owner, (int)Role.Staff);
+        if (!r.Read() || r.IsDBNull(1)) throw new CafeException("Turn on counter two-step before setting up offline unlock.");
+        var user = r.GetInt64(0);
+        r.Close();
+        var key = FromBase32(secret);
+        if (key.Length < 10 || TotpStep(key, code) is null)
+            throw new CafeException("That offline unlock code does not match. Type the 6 digits the app shows now.");
+        if (Scalar<long?>("SELECT id FROM users WHERE totp = @p0", key) is not null)
+            throw new CafeException("Offline unlock must use a different authenticator from every counter two-step account.");
+        if (Scalar<long?>("SELECT id FROM users WHERE offline_totp = @p0 AND id <> @p1", key, user) is not null)
+            throw new CafeException("Each account must have its own offline unlock authenticator.");
+        Exec("UPDATE users SET offline_totp = @p0 WHERE id = @p1", key, user);
+        Audit(owner, "offline_unlock_on", $"user {user}");
+    });
+
+    /// PCs receive only the dedicated offline-unlock secret, never the counter-login secret.
+    public List<OfflineUnlockAccount> OfflineUnlockAccounts() => Tx(() =>
+    {
+        using var r = Query("""
+            SELECT u.phone, u.offline_totp,
+                coalesce((SELECT max(s.step) FROM offline_sales s WHERE s.staff_id = u.id), -1)
+            FROM users u
+            WHERE u.role IN (@p0, @p1) AND u.offline_totp IS NOT NULL
+            ORDER BY u.id
+            """, (int)Role.Owner, (int)Role.Staff);
+        var accounts = new List<OfflineUnlockAccount>();
+        while (r.Read()) accounts.Add(new OfflineUnlockAccount(r.GetString(0), Base32((byte[])r[1]), r.GetInt64(2)));
+        return accounts;
+    });
 
     public string TurnOnTwoStep(long owner, string secret, string code) => Tx(() =>
     {

@@ -174,6 +174,111 @@ public sealed class LockScreenTests : IDisposable
 [Collection("desktop")]
 public sealed class OfflineLockTests
 {
+    [Fact]
+    public async Task Staff_authenticator_unlocks_offline_and_the_sale_reaches_the_server_ledger()
+    {
+        using var rig = new Rig();
+        var agent = rig.StartAgent();
+        try
+        {
+            using var app = Application.Attach(agent.Id);
+            var secret = await rig.EnrollStaffTwoStep();
+            var enrolledStep = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30;
+            var cacheAfterSetup = DateTime.UtcNow;
+            Rig.WaitFor(() => File.Exists(rig.OfflineCacheFile)
+                && File.GetLastWriteTimeUtc(rig.OfflineCacheFile) > cacheAfterSetup, 20,
+                "watchdog did not refresh the enrolled staff key");
+            Rig.WaitFor(() => DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30 > enrolledStep, 35,
+                "authenticator did not advance to a fresh step after enrollment");
+            rig.StopServer();
+
+            Window? Find() => app.GetAllTopLevelWindows(rig.Ui).FirstOrDefault(w => w.Properties.AutomationId.ValueOrDefault == "LockScreen");
+            Window LockWindow()
+            {
+                Window? window = null;
+                Rig.WaitFor(() => (window = Find()) is { IsOffscreen: false }, 20, "lock screen never appeared");
+                return window!;
+            }
+            static AutomationElement Part(AutomationElement root, string id) =>
+                root.FindFirstDescendant(c => c.ByAutomationId(id)) ?? throw new InvalidOperationException($"no {id} on screen");
+            var lockScreen = LockWindow();
+            Rig.WaitFor(() => !Part(LockWindow(), "StaffUnlock").IsOffscreen, 15, "offline staff unlock button did not appear");
+            Part(lockScreen, "StaffUnlock").AsButton().Invoke();
+            var code = Rig.AppCode(secret);
+            Part(lockScreen, "StaffPhone").AsTextBox().Text = "9000000002";
+            Part(lockScreen, "StaffCode").AsTextBox().Text = code;
+            Part(lockScreen, "Minutes").AsTextBox().Text = "30";
+            Part(lockScreen, "OfflineUnlockSubmit").AsButton().Invoke();
+            Rig.WaitFor(() => Find() is null or { IsOffscreen: true }, 15, "offline staff unlock did not hide the lock screen");
+
+            Window? timer = null;
+            Rig.WaitFor(() => (timer = app.GetAllTopLevelWindows(rig.Ui).FirstOrDefault(w => w.Properties.AutomationId.ValueOrDefault == "TimerWidget")) is { IsOffscreen: false },
+                15, "offline timer did not appear");
+            Part(timer!, "SelfLock").AsButton().Invoke();
+            var lockedAgain = LockWindow();
+            Rig.WaitFor(() => !Part(lockedAgain, "StaffUnlock").IsOffscreen, 10, "offline staff unlock button did not return");
+            Part(lockedAgain, "StaffUnlock").AsButton().Invoke();
+            Part(lockedAgain, "StaffPhone").AsTextBox().Text = "9000000002";
+            Part(lockedAgain, "StaffCode").AsTextBox().Text = code;
+            Part(lockedAgain, "Minutes").AsTextBox().Text = "30";
+            Part(lockedAgain, "OfflineUnlockSubmit").AsButton().Invoke();
+            Rig.WaitFor(() => Part(lockedAgain, "Error").Name.Contains("Wrong phone number or code", StringComparison.OrdinalIgnoreCase),
+                10, "the same authenticator step was accepted twice on one PC");
+
+            rig.StartServer();
+            var staff = await rig.OwnerToken();
+            long? session = null;
+            Rig.WaitFor(() => (session = rig.State(staff)["session"] is { } value && value.ToString() != "null"
+                ? long.Parse(value.ToString()!) : null) is not null, 60, "offline sale was not reconciled to a server session");
+            var bill = rig.Bill(staff, session!.Value);
+            Assert.Equal(4000L, long.Parse(bill["paid"]!.ToString()!));
+        }
+        finally { Rig.Kill(agent); }
+    }
+
+    [Fact]
+    public async Task Three_wrong_offline_codes_pause_unlock_for_ten_minutes()
+    {
+        using var rig = new Rig();
+        var agent = rig.StartAgent();
+        try
+        {
+            using var app = Application.Attach(agent.Id);
+            var secret = await rig.EnrollStaffTwoStep();
+            var cacheAfterSetup = DateTime.UtcNow;
+            Rig.WaitFor(() => File.Exists(rig.OfflineCacheFile)
+                && File.GetLastWriteTimeUtc(rig.OfflineCacheFile) > cacheAfterSetup, 20, "watchdog did not cache staff keys");
+            rig.StopServer();
+            Window? Find() => app.GetAllTopLevelWindows(rig.Ui).FirstOrDefault(w => w.Properties.AutomationId.ValueOrDefault == "LockScreen");
+            Window LockWindow()
+            {
+                Window? window = null;
+                Rig.WaitFor(() => (window = Find()) is { IsOffscreen: false }, 20, "lock screen never appeared");
+                return window!;
+            }
+            static AutomationElement Part(AutomationElement root, string id) =>
+                root.FindFirstDescendant(c => c.ByAutomationId(id)) ?? throw new InvalidOperationException($"no {id} on screen");
+            var screen = LockWindow();
+            Rig.WaitFor(() => !Part(LockWindow(), "StaffUnlock").IsOffscreen, 15, "offline staff unlock button did not appear");
+            Part(screen, "StaffUnlock").AsButton().Invoke();
+            var valid = Rig.AppCode(secret);
+            var wrong = valid == "000000" ? "000001" : "000000";
+            for (var i = 0; i < 3; i++)
+            {
+                Part(screen, "StaffPhone").AsTextBox().Text = "9000000002";
+                Part(screen, "StaffCode").AsTextBox().Text = wrong;
+                Part(screen, "Minutes").AsTextBox().Text = "30";
+                Part(screen, "OfflineUnlockSubmit").AsButton().Invoke();
+                var expected = i == 2 ? "10 minutes" : "Wrong phone number or code";
+                Rig.WaitFor(() => Part(screen, "Error").Name.Contains(expected, StringComparison.OrdinalIgnoreCase),
+                    10, "wrong offline code was not rejected");
+            }
+            Rig.WaitFor(() => Part(screen, "Error").Name.Contains("10 minutes", StringComparison.OrdinalIgnoreCase), 10,
+                "third wrong code did not pause offline unlock for ten minutes");
+        }
+        finally { Rig.Kill(agent); }
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -374,6 +479,7 @@ sealed class Rig : IDisposable
 
     public Rig(bool offlineLockTest = false) => StartServer(offlineLockTest);
     public string TokenFile => Path.Combine(_pcDir, "pc.token");
+    public string OfflineCacheFile => Path.Combine(_pcDir, "offline-unlock.bin");
     public string AgentArgs => $"--server {Url} --token-file \"{TokenFile}\" --pin-file \"{Path.Combine(_pcDir, "server.pin")}\" --name \"Test Cafe\" --logs \"{Path.Combine(_pcDir, "logs")}\"";
 
     public void StartServer(bool offlineLockTest = false)
@@ -446,6 +552,49 @@ sealed class Rig : IDisposable
         var r = await _http.PostAsJsonAsync("/staff/login", new { phone = "9000000001", pin = "432100" });
         r.EnsureSuccessStatusCode();
         return (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["token"];
+    }
+    public async Task<string> EnrollStaffTwoStep()
+    {
+        var token = await OwnerToken();
+        using var start = new HttpRequestMessage(HttpMethod.Post, "/staff/two-step/staff/start") { Content = JsonContent.Create(new { phone = "9000000002" }) };
+        start.Headers.Authorization = new("Bearer", token);
+        using var started = await _http.SendAsync(start);
+        started.EnsureSuccessStatusCode();
+        var secret = (await started.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["secret"];
+        using var confirm = new HttpRequestMessage(HttpMethod.Post, "/staff/two-step/staff/on")
+        { Content = JsonContent.Create(new { phone = "9000000002", secret, code = AppCode(secret) }) };
+        confirm.Headers.Authorization = new("Bearer", token);
+        using var enabled = await _http.SendAsync(confirm);
+        enabled.EnsureSuccessStatusCode();
+
+        using var offlineStart = new HttpRequestMessage(HttpMethod.Post, "/staff/two-step/offline/start")
+        { Content = JsonContent.Create(new { phone = "9000000002" }) };
+        offlineStart.Headers.Authorization = new("Bearer", token);
+        using var offlineStarted = await _http.SendAsync(offlineStart);
+        offlineStarted.EnsureSuccessStatusCode();
+        var offlineSecret = (await offlineStarted.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["secret"];
+        Assert.NotEqual(secret, offlineSecret);
+        using var offlineConfirm = new HttpRequestMessage(HttpMethod.Post, "/staff/two-step/offline/on")
+        { Content = JsonContent.Create(new { phone = "9000000002", secret = offlineSecret, code = AppCode(offlineSecret) }) };
+        offlineConfirm.Headers.Authorization = new("Bearer", token);
+        using var offlineEnabled = await _http.SendAsync(offlineConfirm);
+        offlineEnabled.EnsureSuccessStatusCode();
+        return offlineSecret;
+    }
+    public static string AppCode(string secret)
+    {
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+        var key = new List<byte>(); int buffer = 0, bits = 0;
+        foreach (var c in secret)
+        {
+            buffer = ((buffer << 5) | alphabet.IndexOf(c)) & 0xFFFF; bits += 5;
+            if (bits >= 8) { key.Add((byte)(buffer >> (bits - 8))); bits -= 8; }
+        }
+        var step = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30;
+        var message = BitConverter.GetBytes(step); if (BitConverter.IsLittleEndian) Array.Reverse(message);
+        var hash = HMACSHA1.HashData(key.ToArray(), message); var offset = hash[^1] & 15;
+        var binary = ((hash[offset] & 127) << 24) | (hash[offset + 1] << 16) | (hash[offset + 2] << 8) | hash[offset + 3];
+        return (binary % 1_000_000).ToString("D6");
     }
     public async Task<int> TryStaffLogin(string phone, string pin) => (int)(await _http.PostAsJsonAsync("/staff/login", new { phone, pin })).StatusCode;
     public async Task Post(string path, object body, string token)

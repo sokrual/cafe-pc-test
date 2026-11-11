@@ -1,4 +1,5 @@
 using System.IO.Pipes;
+using System.Net.Http.Json;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Principal;
@@ -16,6 +17,8 @@ static class PcProxy
     static string? _agentPath;
     static Action<string> _log = message => Console.Error.WriteLine(message);
     static int _refusalLogged;
+    static OfflineUnlockStore? _offline;
+    static DateTime _lastOfflineRefresh = DateTime.MinValue;
     sealed record Request(string Method, string Path, string? Body);
     sealed record Response(int Status, string Content);
     [StructLayout(LayoutKind.Sequential)]
@@ -118,6 +121,7 @@ static class PcProxy
             client = new HttpClient(handler) { BaseAddress = serverUri, Timeout = TimeSpan.FromSeconds(10) };
             client.DefaultRequestHeaders.Add("X-Pc-Token", token);
             var resolvedAgentPath = Path.GetFullPath(agentPath);
+            _offline = new OfflineUnlockStore(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(tokenFile))!, "offline-unlock.bin"));
             firstPipe = NewPipe(clientSid); // proves the protected listener can actually be created
             _agentPath = resolvedAgentPath;
             _log = log;
@@ -133,12 +137,60 @@ static class PcProxy
                 throw;
             }
             client = null; // ownership transferred to _http
+            _ = Task.Run(async () =>
+            {
+                while (!stop.IsCancellationRequested)
+                {
+                    RefreshOfflineUnlockData();
+                    SyncOfflineSales();
+                    try { await Task.Delay(TimeSpan.FromSeconds(30), stop); }
+                    catch (OperationCanceledException) { break; }
+                }
+            }, CancellationToken.None);
         }
         catch
         {
             firstPipe?.Dispose();
             client?.Dispose();
             throw;
+        }
+    }
+
+    public static void RefreshOfflineUnlockData()
+    {
+        try
+        {
+            var client = _http ?? throw new InvalidOperationException("PC proxy is not initialized");
+            using var response = client.GetAsync("/pc/offline-unlock-data").GetAwaiter().GetResult();
+            response.EnsureSuccessStatusCode();
+            _offline?.UpdateFromServer(response.Content.ReadAsStringAsync().GetAwaiter().GetResult());
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException or InvalidOperationException)
+        { _log("offline unlock data refresh deferred: " + e.Message); }
+    }
+
+    public static void SyncOfflineSales()
+    {
+        var client = _http;
+        var store = _offline;
+        if (client is null || store is null) return;
+        foreach (var sale in store.PendingSales())
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, "/pc/offline-sales")
+                { Content = JsonContent.Create(sale) };
+                using var response = client.Send(request);
+                if (response.IsSuccessStatusCode || (int)response.StatusCode is 400 or 409)
+                {
+                    store.RemovePending(sale.SaleId);
+                    _log($"offline sale {sale.SaleId} reconciled: {(int)response.StatusCode}");
+                    continue;
+                }
+                break;
+            }
+            catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException)
+            { _log("offline sale sync deferred: " + e.Message); break; }
         }
     }
 
@@ -206,6 +258,20 @@ static class PcProxy
                 if (line is null) return;
                 var request = JsonSerializer.Deserialize<Request>(line);
                 using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true) { AutoFlush = true };
+                if (request is not null && request.Method == "GET" && request.Path == "/local/offline-unlock-info" && request.Body is null)
+                {
+                    var info = _offline?.InfoJson() ?? "{}";
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(200, info))).WaitAsync(TimeSpan.FromSeconds(2));
+                    return;
+                }
+                if (request is not null && request.Method == "POST" && request.Path == "/local/offline-unlock" && request.Body is not null)
+                {
+                    var attempt = JsonSerializer.Deserialize<OfflineUnlockRequest>(request.Body, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                        ?? throw new JsonException("invalid offline unlock request");
+                    var result = _offline?.TryUnlock(attempt) ?? new OfflineUnlockResult(false, "Offline unlock is not set up on this PC.", null);
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(result.Success ? 200 : 400, JsonSerializer.Serialize(result)))).WaitAsync(TimeSpan.FromSeconds(2));
+                    return;
+                }
                 if (request is null || !Allowed(request))
                 {
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(404, ""))).WaitAsync(TimeSpan.FromSeconds(2));
@@ -217,6 +283,11 @@ static class PcProxy
                 requestTimeout.CancelAfter(TimeSpan.FromSeconds(3));
                 using var response = await (_http ?? throw new InvalidOperationException("PC proxy is not initialized")).SendAsync(message, requestTimeout.Token);
                 var content = await response.Content.ReadAsStringAsync(stop);
+                if (request.Method == "GET" && request.Path == "/pc/state" && DateTime.UtcNow - _lastOfflineRefresh > TimeSpan.FromSeconds(5))
+                {
+                    _lastOfflineRefresh = DateTime.UtcNow;
+                    _ = Task.Run(RefreshOfflineUnlockData);
+                }
                 await writer.WriteLineAsync(JsonSerializer.Serialize(new Response((int)response.StatusCode, content))).WaitAsync(TimeSpan.FromSeconds(2));
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { }

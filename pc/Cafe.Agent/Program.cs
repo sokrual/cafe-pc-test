@@ -34,6 +34,9 @@ static class Program
 
 public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec, bool SelfLocked = false, bool LockWhenTimeRunsOut = false);
 record ErrorBody(string Error);
+record OfflineUnlockReply(bool Success, string? Error, long? Step);
+record OfflineUnlockInfo(OfflineUnlockRate? Rate, int EnabledAccounts, DateTime? LockedUntil, int PendingSales);
+record OfflineUnlockRate(long Paise30, long Paise60, long Paise90, long ExtraBlockPaise, int MinimumMin, int BlockMin);
 
 static class LockSetting
 {
@@ -70,7 +73,7 @@ sealed class Agent : ApplicationContext
 
     public Agent(string name)
     {
-        _lock = new LockScreen(name, Login);
+        _lock = new LockScreen(name, Login, OfflineUnlock);
         _timer = new TimerWidget(Now, () => Send("/pc/logout", lockNow: true), () => Send("/pc/selflock", lockNow: true), () => Apply(_state with { Locked = true, Message = "Time is up. Please ask at the counter." }));
         KeyBlocker.Install(() => _lock.Visible);
         var poll = new System.Windows.Forms.Timer { Interval = 2000 };
@@ -98,6 +101,18 @@ sealed class Agent : ApplicationContext
     {
         try
         {
+            var serverState = await _watchdog.GetFromJsonAsync<PcState>("/pc/state");
+            var offlineInfo = await _watchdog.GetFromJsonAsync<OfflineUnlockInfo>("/local/offline-unlock-info");
+            if (offlineInfo?.PendingSales > 0)
+            {
+                _online = true;
+                _lock.SetOffline(false);
+                return; // never replay a logout or overwrite the local timer before the paid sale is reconciled
+            }
+            if (_state.Session == -1 && serverState is { Session: null })
+                _queue.RemoveAll(item => item.path == "/pc/logout");
+            if (_state.Session == -1 && serverState is not null)
+                Apply(serverState); // the server decides whether the offline walk-in was accepted
             while (_queue.Count > 0) // replay in order; the admin PC is told how long ago each one happened
             {
                 var (path, since) = _queue[0];
@@ -112,11 +127,13 @@ sealed class Agent : ApplicationContext
             }
             if (!_online) Program.Log("admin PC reachable again");
             _online = true;
+            _lock.SetOffline(false);
         }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException or System.Text.Json.JsonException)
         {
             if (_online) Program.Log($"admin PC unreachable, timing goes on here: {e.Message}");
             _online = false; // the session keeps running on the admin PC; this screen keeps counting from the last state
+            _lock.SetOffline(true);
         }
     }
 
@@ -124,7 +141,7 @@ sealed class Agent : ApplicationContext
     {
         if (WipePending()) s = s with { Locked = true, Message = WipeMessage() };
         _lock.SetBusy(WipePending());
-        if (_state.Session is not null && s.Session is null) AskForWipe(); // logged out, here or at the counter
+        if (_state.Session is > 0 && s.Session is null) AskForWipe(); // a server session ended, here or at the counter
         if (s.Locked != _state.Locked) Program.Log(s.Locked ? $"locked: {s.Message}" : $"unlocked, session {s.Session} ({s.Mode})");
         (_state, _stateAt) = (s, DateTime.UtcNow);
         if (s.Locked) { _timer.Hide(); _lock.ShowLocked(s.Message); }
@@ -144,6 +161,37 @@ sealed class Agent : ApplicationContext
             return null;
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { return "This PC cannot reach the counter right now. Please ask at the counter."; }
+    }
+
+    async Task<string?> OfflineUnlock(string phone, string code, int minutes, string method, string? upiLast4)
+    {
+        if (_online) return "The counter is reachable. Please use normal login.";
+        if (WipePending()) return WipeMessage();
+        try
+        {
+            var request = new
+            {
+                saleId = Guid.NewGuid().ToString("N"),
+                phone,
+                code,
+                minutes,
+                method,
+                upiLast4,
+                session = _state.Session == -1 ? -1 : _state.Session is > 0 ? _state.Session : null
+            };
+            using var response = await _watchdog.PostAsJsonAsync("/local/offline-unlock", request);
+            var result = await response.Content.ReadFromJsonAsync<OfflineUnlockReply>();
+            if (!response.IsSuccessStatusCode || result?.Success != true)
+                return result?.Error ?? "Offline unlock was refused. Please ask at the counter.";
+            var (state, elapsed, left) = Now();
+            var unlocked = state.Session is > 0
+                ? state with { Locked = false, Message = null, Mode = "prepaid", ElapsedSec = elapsed, LeftSec = (left ?? 0) + minutes * 60L, SelfLocked = false }
+                : state with { Locked = false, Message = null, Session = -1, Mode = "prepaid", ElapsedSec = 0, LeftSec = minutes * 60L, SelfLocked = false };
+            Apply(unlocked);
+            return null;
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
+        { return "The watchdog is not available. Please ask at the counter."; }
     }
 
     static bool WipePending()
@@ -188,11 +236,24 @@ sealed class LockScreen : Form
     readonly TextBox _phone = new() { Name = "Phone", Width = 320, Font = new Font("Segoe UI", 16), PlaceholderText = "Phone number" };
     readonly TextBox _pin = new() { Name = "Pin", Width = 320, Font = new Font("Segoe UI", 16), PlaceholderText = "PIN", UseSystemPasswordChar = true };
     readonly Button _go = new() { Name = "Login", Text = "Log in", Width = 320, Height = 48, Font = new Font("Segoe UI", 14, FontStyle.Bold), BackColor = Color.FromArgb(0, 120, 215), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+    readonly Button _staffUnlock = new() { Name = "StaffUnlock", Text = "Staff unlock", Width = 320, Height = 44, Visible = false };
+    readonly TextBox _staffPhone = new() { Name = "StaffPhone", Width = 320, PlaceholderText = "Staff phone number" };
+    readonly TextBox _staffCode = new() { Name = "StaffCode", Width = 320, PlaceholderText = "6-digit authenticator code" };
+    readonly TextBox _minutes = new() { Name = "Minutes", Width = 320, PlaceholderText = "Minutes from the rate card" };
+    readonly ComboBox _method = new() { Name = "PaymentMethod", Width = 320, DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly TextBox _upi = new() { Name = "UpiLast4", Width = 320, PlaceholderText = "UPI reference last 4 digits", Visible = false };
+    readonly Label _offlineRate = new() { Name = "OfflineRate", Width = 520, Height = 42, ForeColor = Color.LightGray, TextAlign = ContentAlignment.MiddleCenter };
+    readonly Button _submitOffline = new() { Name = "OfflineUnlockSubmit", Text = "Unlock and add time", Width = 320, Height = 48, Visible = false };
+    bool _offlinePanel;
     readonly Label _error = new() { Name = "Error", AutoSize = false, Width = 520, Height = 40, ForeColor = Color.Salmon, Font = new Font("Segoe UI", 12), TextAlign = ContentAlignment.MiddleCenter };
     bool _busy;
 
-    public LockScreen(string cafeName, Func<string, string, Task<string?>> login)
+    readonly Func<string, string, int, string, string?, Task<string?>> _offlineUnlock;
+
+    public LockScreen(string cafeName, Func<string, string, Task<string?>> login,
+        Func<string, string, int, string, string?, Task<string?>> offlineUnlock)
     {
+        _offlineUnlock = offlineUnlock;
         Name = "LockScreen"; Text = cafeName;
         FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true;
         StartPosition = FormStartPosition.Manual; BackColor = Color.FromArgb(14, 14, 22);
@@ -201,7 +262,28 @@ sealed class LockScreen : Form
             ? new PictureBox { Image = Image.FromStream(logo), SizeMode = PictureBoxSizeMode.Zoom, Width = 520, Height = 300, AccessibleName = cafeName }
             : new Label { Text = cafeName, AutoSize = false, Width = 520, Height = 70, ForeColor = Color.White, Font = new Font("Segoe UI", 28, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter };
         var box = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
-        foreach (Control c in new Control[] { title, _message, _phone, _pin, _go, _error }) { c.Margin = new Padding(100, 8, 100, 8); box.Controls.Add(c); }
+        _method.Items.AddRange(["cash", "upi"]); _method.SelectedIndex = 0;
+        foreach (Control c in new Control[] { title, _message, _phone, _pin, _go, _staffUnlock, _offlineRate, _staffPhone, _staffCode, _minutes, _method, _upi, _submitOffline, _error })
+        { c.Margin = new Padding(100, 5, 100, 5); box.Controls.Add(c); }
+        foreach (var c in new Control[] { _offlineRate, _staffPhone, _staffCode, _minutes, _method, _upi, _submitOffline }) c.Visible = false;
+        _staffUnlock.Click += async (_, _) =>
+        {
+            _offlinePanel = !_offlinePanel;
+            foreach (var c in new Control[] { _offlineRate, _staffPhone, _staffCode, _minutes, _method, _submitOffline }) c.Visible = _offlinePanel;
+            _upi.Visible = _offlinePanel && _method.SelectedItem?.ToString() == "upi";
+            if (_offlinePanel) await LoadOfflineRate();
+        };
+        _method.SelectedIndexChanged += (_, _) => _upi.Visible = _offlinePanel && _method.SelectedItem?.ToString() == "upi";
+        _submitOffline.Click += async (_, _) =>
+        {
+            _submitOffline.Enabled = false;
+            _error.Text = "";
+            if (!int.TryParse(_minutes.Text.Trim(), out var minutes)) _error.Text = "Enter the minutes to add.";
+            else _error.Text = await _offlineUnlock(_staffPhone.Text.Trim(), _staffCode.Text.Trim(), minutes,
+                _method.SelectedItem?.ToString() ?? "cash", _upi.Visible ? _upi.Text.Trim() : null) ?? "";
+            _staffCode.Text = "";
+            _submitOffline.Enabled = !_busy;
+        };
         Controls.Add(box);
         Resize += (_, _) => box.Location = new Point((ClientSize.Width - box.Width) / 2, (ClientSize.Height - box.Height) / 2);
         AcceptButton = _go;
@@ -217,9 +299,33 @@ sealed class LockScreen : Form
         keepFront.Start();
     }
 
+    async Task LoadOfflineRate()
+    {
+        try
+        {
+            var info = await new WatchdogPipeClient().GetFromJsonAsync<OfflineUnlockInfo>("/local/offline-unlock-info");
+            _offlineRate.Text = info?.Rate is { } r
+                ? $"Rate card: 30 min ₹{r.Paise30 / 100m:0.##}, 60 min ₹{r.Paise60 / 100m:0.##}, 90 min ₹{r.Paise90 / 100m:0.##}; then ₹{r.ExtraBlockPaise / 100m:0.##} per {r.BlockMin} min"
+                : "Offline unlock is not set up on this PC yet.";
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
+        { _offlineRate.Text = "Could not read the saved rate card. Please ask at the counter."; }
+    }
+
+    public void SetOffline(bool offline)
+    {
+        _staffUnlock.Visible = offline;
+        if (!offline) _offlinePanel = false;
+        foreach (var c in new Control[] { _offlineRate, _staffPhone, _staffCode, _minutes, _method, _submitOffline })
+            c.Visible = offline && _offlinePanel;
+        _upi.Visible = offline && _offlinePanel && _method.SelectedItem?.ToString() == "upi";
+    }
+
     public void ShowLocked(string? message)
     {
         _message.Text = message ?? "Log in with your phone number and PIN.";
+        _offlinePanel = false;
+        foreach (var c in new Control[] { _offlineRate, _staffPhone, _staffCode, _minutes, _method, _submitOffline, _upi }) c.Visible = false;
         _go.Text = message?.StartsWith("Locked by the customer") == true ? "Unlock" : "Log in";
         Bounds = SystemInformation.VirtualScreen; // every monitor
         if (!Visible) { _error.Text = ""; _phone.Text = ""; Show(); }
@@ -232,6 +338,8 @@ sealed class LockScreen : Form
     {
         _busy = busy;
         _go.Enabled = !busy;
+        _staffUnlock.Enabled = !busy;
+        _submitOffline.Enabled = !busy;
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e) { if (e.CloseReason == CloseReason.UserClosing) e.Cancel = true; base.OnFormClosing(e); }
