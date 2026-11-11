@@ -149,6 +149,13 @@ public sealed partial class CafeCore : IDisposable
         Audit(by, "setting_max_offline_unlock_minutes", minutes.ToString(CultureInfo.InvariantCulture));
     });
 
+    public long CounterLoginUser(long owner, string phone) => Tx(() =>
+    {
+        RequireOwner(owner);
+        return Scalar<long?>("SELECT id FROM users WHERE phone = @p0 AND role IN (@p1, @p2)", phone, (int)Role.Owner, (int)Role.Staff)
+            ?? throw new CafeException("No owner or staff account has this phone number.");
+    });
+
     public void AuditEndOtherCounterLogins(long owner, int ended) => Tx(() =>
     {
         RequireOwner(owner);
