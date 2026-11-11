@@ -205,34 +205,45 @@ public sealed partial class CafeCore
 /// Counter logins: a random token per login. It remains valid until the user logs out.
 public sealed class StaffTokens
 {
-    readonly ConcurrentDictionary<string, long> _tokens = new();
+    readonly object _gate = new();
+    readonly Dictionary<string, long> _tokens = new(StringComparer.Ordinal);
 
     public string Issue(long user)
     {
         var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-        _tokens[token] = user;
+        lock (_gate) _tokens[token] = user;
         return token;
     }
 
-    public long? Check(string token) => _tokens.TryGetValue(token, out var user) ? user : null;
+    public long? Check(string token)
+    {
+        lock (_gate) return _tokens.TryGetValue(token, out var user) ? user : null;
+    }
 
-    public void End(string token) => _tokens.TryRemove(token, out _);
+    public void End(string token)
+    {
+        lock (_gate) _tokens.Remove(token);
+    }
 
     public int EndAllExcept(string keepToken)
     {
-        var ended = 0;
-        foreach (var token in _tokens.Keys)
-            if (token != keepToken && _tokens.TryRemove(token, out _)) ended++;
-        return ended;
+        lock (_gate)
+        {
+            var ended = _tokens.Keys.Where(token => token != keepToken).ToArray();
+            foreach (var token in ended) _tokens.Remove(token);
+            return ended.Length;
+        }
     }
 
     public int EndFor(long user)
     {
-        var ended = 0;
-        foreach (var pair in _tokens)
-            if (pair.Value == user && _tokens.TryRemove(pair.Key, out _)) ended++;
-        return ended;
+        lock (_gate)
+        {
+            var ended = _tokens.Where(pair => pair.Value == user).Select(pair => pair.Key).ToArray();
+            foreach (var token in ended) _tokens.Remove(token);
+            return ended.Length;
+        }
     }
 
-    public int Count => _tokens.Count;
+    public int Count { get { lock (_gate) return _tokens.Count; } }
 }
