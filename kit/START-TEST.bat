@@ -1,5 +1,5 @@
 @echo off
-rem Asks for admin, then runs the automatic Shinzx tests.
+rem Asks for admin, then runs the automatic Cafe tests.
 net session >nul 2>&1 || (powershell -NoProfile -Command "Start-Process -Verb RunAs -FilePath \"%~f0\"" & exit /b)
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start.ps1"
 pause

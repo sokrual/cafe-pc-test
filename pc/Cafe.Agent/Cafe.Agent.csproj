@@ -7,7 +7,4 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
-  <ItemGroup>
-    <EmbeddedResource Include="logo.png" LogicalName="logo.png" />
-  </ItemGroup>
 </Project>

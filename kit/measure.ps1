@@ -1,5 +1,5 @@
 # Runs hidden as SYSTEM for the whole test. Every 5 s records CPU, memory and GPU of every running
-# ShinzxTimerTest.exe into logs\measure.csv. Stops when logs\stop.flag exists or the test expires.
+# CafeTimerTest.exe into logs\measure.csv. Stops when logs\stop.flag exists or the test expires.
 param([Parameter(Mandatory)][string]$Out, [Parameter(Mandatory)][string]$Expires, [int]$IntervalSec = 5)
 
 $stopFlag = Join-Path (Split-Path $Out) "stop.flag"
@@ -10,7 +10,7 @@ $last = @{} # pid -> @(cpuTime, wallTime)
 
 while ((Get-Date) -lt $until -and -not (Test-Path $stopFlag)) {
     Start-Sleep -Seconds $IntervalSec
-    foreach ($p in @(Get-Process -Name ShinzxTimerTest -ErrorAction SilentlyContinue)) {
+    foreach ($p in @(Get-Process -Name CafeTimerTest -ErrorAction SilentlyContinue)) {
         $now = Get-Date
         $prev = $last[$p.Id]
         $last[$p.Id] = @($p.TotalProcessorTime, $now)

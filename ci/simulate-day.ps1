@@ -1,13 +1,13 @@
 # Stands in for "use the PC for a day": runs the two test tasks without a restart, fakes a full-screen
 # game, and runs a program from Downloads so the audit log has something to report. About 3 minutes.
 $ErrorActionPreference = "Stop"
-$root = "C:\ShinzxTest"
+$root = "C:\CafeTest"
 
 # measurer: start the real SYSTEM task (proves the task itself works)
-Start-ScheduledTask -TaskName "ShinzxTestMeasure"
+Start-ScheduledTask -TaskName "CafeTestMeasure"
 
 # timer: start it with the exact program and arguments the logon task would use
-$a = (Get-ScheduledTask -TaskName "ShinzxTestTimer").Actions[0]
+$a = (Get-ScheduledTask -TaskName "CafeTestTimer").Actions[0]
 Write-Host "Timer task runs: $($a.Execute) $($a.Arguments)"
 $timer = Start-Process $a.Execute -ArgumentList $a.Arguments -PassThru
 Start-Sleep -Seconds 15
@@ -34,8 +34,8 @@ catch { Write-Host "::warning::fake game did not start: $_" }
 # something Level B would block: a program started from Downloads (audit mode, so it still runs)
 $dl = Join-Path $env:USERPROFILE "Downloads"
 New-Item $dl -ItemType Directory -Force | Out-Null
-Copy-Item "$env:WINDIR\System32\whoami.exe" "$dl\shinzx-ci-download.exe" -Force
-& "$dl\shinzx-ci-download.exe" | Out-Null
+Copy-Item "$env:WINDIR\System32\whoami.exe" "$dl\cafe-ci-download.exe" -Force
+& "$dl\cafe-ci-download.exe" | Out-Null
 
 if ($g) { $g.WaitForExit(170000) | Out-Null } else { Start-Sleep -Seconds 150 }   # 2.5 min of "play": long enough for the voice rule (2 min in a game)
 Start-Sleep -Seconds 15             # a few samples after the game

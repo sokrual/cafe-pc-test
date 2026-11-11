@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 
-namespace ShinzxTimerTest;
+namespace CafeTimerTest;
 
 // Phase 0 test build: desktop stopwatch that hides in the tray while a game is in front.
 // With --log it also records every hide/show, missed game detections, focus steals and
@@ -44,7 +44,7 @@ sealed class TimerWidget : Form
 {
     readonly Stopwatch _clock = Stopwatch.StartNew();
     readonly Label _text = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Font = new Font("Segoe UI", 20, FontStyle.Bold), ForeColor = Color.White };
-    readonly NotifyIcon _tray = new() { Icon = SystemIcons.Application, Visible = true, Text = "Shinzx timer" };
+    readonly NotifyIcon _tray = new() { Icon = SystemIcons.Application, Visible = true, Text = "Cafe timer" };
     readonly System.Windows.Forms.Timer _tick = new() { Interval = 1000 };
     readonly string? _log;
     readonly HashSet<string> _games = new(StringComparer.OrdinalIgnoreCase);
@@ -84,7 +84,7 @@ sealed class TimerWidget : Form
     {
         var s = Program.Fmt(_clock.Elapsed);
         _text.Text = s;
-        _tray.Text = "Shinzx timer " + s;
+        _tray.Text = "Cafe timer " + s;
         if (_peek && DateTime.UtcNow > _peekUntil) _peek = false;
 
         var fg = Native.GetForegroundWindow();
@@ -113,7 +113,7 @@ sealed class TimerWidget : Form
         catch (Exception e) { Log($"VOICE_DONE {_spoken} same_window=True error={e.Message}"); return; } // no sound device must not crash the timer
         System.Media.SystemSounds.Asterisk.Play();
         _tts.SpeakCompleted += Done;
-        _tts.SpeakAsync("Shinzx Gaming Hub test message. No action needed.");
+        _tts.SpeakAsync("Gaming Cafe test message. No action needed.");
         void Done(object? _, System.Speech.Synthesis.SpeakCompletedEventArgs e)
         {
             _tts!.SpeakCompleted -= Done;

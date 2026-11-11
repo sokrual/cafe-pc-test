@@ -1,4 +1,4 @@
-SHINZX CAFE SOFTWARE - HOW TO INSTALL
+Gaming Cafe SOFTWARE - HOW TO INSTALL
 
 You need: the admin password of each PC. Do the counter PC first.
 If something goes wrong, send a photo of the screen and the file install-log.txt
@@ -35,7 +35,7 @@ their app logins (Discord, Steam, browsers, Epic, Riot), and puts the clean copy
 This takes a few seconds. Nobody can log in until it is done.
 
 To change the Customer account later (a new game shortcut, a Discord update):
-log in on the lock screen with your own phone number, open C:\Program Files\ShinzxCafe,
+log in on the lock screen with your own phone number, open C:\Program Files\GamingCafe,
 double-click SETUP-MODE, then do steps B2 and B3 again.
 
 A new game: right-click it, choose "Run as administrator" and type the admin password. Do this once.
