@@ -44,6 +44,47 @@ public static class CafeDpapiProbe {
 }
 '@
 }
+if (-not ("CafeTotpProbe" -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Security.Cryptography;
+public static class CafeTotpProbe
+{
+    const string Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    public static string Current(string secret)
+    {
+        var key = Decode(secret);
+        long step = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30;
+        var msg = BitConverter.GetBytes(step);
+        if (BitConverter.IsLittleEndian) Array.Reverse(msg);
+        using (var hmac = new HMACSHA1(key))
+        {
+            var hash = hmac.ComputeHash(msg);
+            int offset = hash[hash.Length - 1] & 0x0F;
+            int binary = ((hash[offset] & 0x7F) << 24) | (hash[offset + 1] << 16) |
+                (hash[offset + 2] << 8) | hash[offset + 3];
+            return (binary % 1000000).ToString("D6", CultureInfo.InvariantCulture);
+        }
+    }
+    static byte[] Decode(string text)
+    {
+        var bytes = new List<byte>();
+        int buffer = 0, bits = 0;
+        foreach (char c in text.ToUpperInvariant().Replace(" ", "").TrimEnd('='))
+        {
+            int value = Alphabet.IndexOf(c);
+            if (value < 0) throw new FormatException("Invalid Base32 test secret.");
+            buffer = ((buffer << 5) | value) & 0xFFFF;
+            bits += 5;
+            if (bits >= 8) { bytes.Add((byte)(buffer >> (bits - 8))); bits -= 8; }
+        }
+        return bytes.ToArray();
+    }
+}
+'@
+}
 function AsCustomer($exe, $argList) { # start a program as Customer (password read from where auto sign-in keeps it)
     $pw = New-Object Security.SecureString; foreach ($c in ([Cafe.Lsa]::Read("DefaultPassword")).ToCharArray()) { $pw.AppendChar($c) }
     $cred = [pscredential]::new("Customer", $pw)
@@ -465,7 +506,9 @@ try {
     $staffLoginError = ""
     if ($serverReady) {
         try {
-            $staff = Invoke-RestMethod "https://127.0.0.1:5443/staff/login" -Method Post -ContentType "application/json" -Body '{"phone":"9000000002","pin":"111111"}'
+            $staffCode = [CafeTotpProbe]::Current($fixture.staffCounter)
+            $staffBody = @{ phone = "9000000002"; pin = "111111"; code = $staffCode } | ConvertTo-Json
+            $staff = Invoke-RestMethod "https://127.0.0.1:5443/staff/login" -Method Post -ContentType "application/json" -Body $staffBody
             $script:staffHeaders = @{ Authorization = "Bearer $($staff.token)" }
             $staffLogin = $true
         } catch { $staffLoginError = $_.Exception.Message }
