@@ -124,7 +124,7 @@ public sealed partial class CafeCore
         var id = Scalar<long?>("SELECT id FROM users WHERE phone = @p0 AND role IN (@p1, @p2) AND offline_totp IS NOT NULL",
             phone, (int)Role.Owner, (int)Role.Staff) ?? throw new CafeException("This person has not set up offline unlock.");
         Exec("UPDATE users SET offline_unlock_enabled = @p0 WHERE id = @p1", enabled ? 1 : 0, id);
-        Audit(owner, enabled ? "offline_unlock_on" : "offline_unlock_off", $"user {id}");
+        Audit(owner, enabled ? "offline_unlock_switch_on" : "offline_unlock_switch_off", $"user {id}");
     });
 
     /// PCs receive only the dedicated offline-unlock secret, never the counter-login secret.
