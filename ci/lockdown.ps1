@@ -334,7 +334,7 @@ try {
         }
         if ($attempt -lt 15) { Start-Sleep -Seconds 1 }
     }
-    Check "B3.F0b" "F0 test request removed" $f0Removed $(if ($f0Removed) { "request path is gone" } else { $f0RemoveError })
+    Check "B3.F0c" "F0 test request removed" $f0Removed $(if ($f0Removed) { "request path is gone" } else { $f0RemoveError })
     $p1 = AsCustomer "$env:WINDIR\System32\PING.EXE" "-t 127.0.0.1"
     $p2 = AsCustomer "$env:ProgramFiles\FakeGame\game.exe" "-t 127.0.0.1"
     $p3 = AsCustomer "$env:ProgramFiles\FakeMouse\lghub.exe" "-t 127.0.0.1"
@@ -514,41 +514,70 @@ try {
     Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force
     Restart-Service CafeWatchdog -Force
     $server = Start-Process "$out\server\Cafe.Server.exe" -ArgumentList "--data $tdata --seed-test" -PassThru -WindowStyle Hidden
-    $serverReady = WaitFor 90 {
+    $script:f12LastHttpStatus = "not called"
+    $script:f12LastCurlError = ""
+    function Invoke-F12CurlJson([string[]]$curlArguments) {
+        $curlOutput = & curl.exe -sSk -w "HTTPSTATUS:%{http_code}" @curlArguments 2>&1
+        $curlExit = $LASTEXITCODE
+        $curlText = ($curlOutput -join [char]10)
+        $httpStatus = ""
+        $responseBody = $curlText
+        if ($curlText -match '(?s)^(.*)HTTPSTATUS:(\d{3})\s*$') {
+            $responseBody = $matches[1]
+            $httpStatus = $matches[2]
+        }
+        $script:f12LastHttpStatus = if ($httpStatus) { $httpStatus } else { "none" }
+        if ($curlExit -ne 0) {
+            $script:f12LastCurlError = "curl exit $curlExit: $curlText"
+            return $null
+        }
+        if ($httpStatus -notmatch '^2\d\d$') {
+            $script:f12LastCurlError = "HTTP $($script:f12LastHttpStatus): $responseBody"
+            return $null
+        }
         try {
-            Invoke-RestMethod "https://127.0.0.1:5443/pc/state" -Headers @{ "X-Pc-Token" = $token } | Out-Null
-            $true
-        } catch { $false }
+            $script:f12LastCurlError = ""
+            return (ConvertFrom-Json -InputObject $responseBody)
+        } catch {
+            $script:f12LastCurlError = "HTTP $httpStatus; invalid JSON: $($_.Exception.Message)"
+            return $null
+        }
+    }
+    $serverReady = WaitFor 90 {
+        $probe = Invoke-F12CurlJson @("-H", "X-Pc-Token: $token", "https://127.0.0.1:5443/pc/state")
+        $null -ne $probe
     }
     $staffLogin = $false
     $staffLoginError = ""
     if ($serverReady) {
-        try {
-            $staffCode = [CafeTotpProbe]::Current($fixture.staffCounter)
-            $staffBody = @{ phone = "9000000002"; pin = "111111"; code = $staffCode } | ConvertTo-Json
-            $staff = Invoke-RestMethod "https://127.0.0.1:5443/staff/login" -Method Post -ContentType "application/json" -Body $staffBody
+        $staffCode = [CafeTotpProbe]::Current($fixture.staffCounter)
+        $staffBody = @{ phone = "9000000002"; pin = "111111"; code = $staffCode } | ConvertTo-Json
+        $staff = Invoke-F12CurlJson @("-X", "POST", "-H", "Content-Type: application/json", "--data-binary", $staffBody, "https://127.0.0.1:5443/staff/login")
+        if ($null -ne $staff -and $staff.token) {
             $script:staffHeaders = @{ Authorization = "Bearer $($staff.token)" }
             $staffLogin = $true
-        } catch { $staffLoginError = $_.Exception.Message }
+        } else {
+            $staffLoginError = $script:f12LastCurlError
+        }
+    } else {
+        $staffLoginError = "readiness probe: HTTP $($script:f12LastHttpStatus); $($script:f12LastCurlError)"
     }
     $staffHeaders = $script:staffHeaders
     $script:finalStaffState = $null
     $script:finalStaffBill = $null
     $replayObserved = $staffLogin -and (WaitFor 90 {
-        try {
-            $state = Invoke-RestMethod "https://127.0.0.1:5443/staff/state/PC1" -Headers $staffHeaders
-            $bill = Invoke-RestMethod "https://127.0.0.1:5443/staff/bill/$sessionBeforeLogout" -Headers $staffHeaders
-            $script:finalStaffState = $state
-            $script:finalStaffBill = $bill
-            $pending = Get-QueuedActionCount $queuedLogoutFile
-            $null -eq $state.Session -and $bill.Charged -gt 0 -and $pending -eq 0
-        } catch { $false }
+        $state = Invoke-F12CurlJson @("-H", "Authorization: $($staffHeaders.Authorization)", "https://127.0.0.1:5443/staff/state/PC1")
+        $bill = Invoke-F12CurlJson @("-H", "Authorization: $($staffHeaders.Authorization)", "https://127.0.0.1:5443/staff/bill/$sessionBeforeLogout")
+        $script:finalStaffState = $state
+        $script:finalStaffBill = $bill
+        $pending = Get-QueuedActionCount $queuedLogoutFile
+        ($null -ne $state) -and ($null -ne $bill) -and $null -eq $state.Session -and $bill.Charged -gt 0 -and $pending -eq 0
     })
     $finalStaffState = $script:finalStaffState
     $finalStaffBill = $script:finalStaffBill
     $remainingActions = Get-QueuedActionCount $queuedLogoutFile
     $logoutReplayed = [bool]($staffLogin -and $finalStaffState -and $null -eq $finalStaffState.Session -and $finalStaffBill.Charged -gt 0)
-    Check "B3.F12" "Offline self-lock and logout survive lock-screen kill and watchdog restart; staff API confirms ended session and charged bill" ($sessionBeforeLogout -and $logoutDurable -and $logoutReplayed -and $remainingActions -eq 0) "session before $sessionBeforeLogout; self-lock queued $selfLockQueued; logout queued $logoutQueued; queue ordered $logoutDurable; server ready $serverReady; staff login $staffLogin ($staffLoginError); staff session $($finalStaffState.Session); bill charged $($finalStaffBill.Charged); pending actions $remainingActions"
+    Check "B3.F12" "Offline self-lock and logout survive lock-screen kill and watchdog restart; staff API confirms ended session and charged bill" ($sessionBeforeLogout -and $logoutDurable -and $logoutReplayed -and $remainingActions -eq 0) "session before $sessionBeforeLogout; self-lock queued $selfLockQueued; logout queued $logoutQueued; queue ordered $logoutDurable; server ready $serverReady; staff login $staffLogin ($staffLoginError); staff session $($finalStaffState.Session); bill charged $($finalStaffBill.Charged); pending actions $remainingActions; last HTTP $script:f12LastHttpStatus; curl error $script:f12LastCurlError"
     Stop-Process -Id $p3.Id -Force -ErrorAction SilentlyContinue
 
     # ===== G. what a customer cannot do =====
