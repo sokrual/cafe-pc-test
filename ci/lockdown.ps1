@@ -240,7 +240,10 @@ try {
     }
     Check "B3.C4f" "Offline unlock refuses a cache whose last counter refresh is over seven days old" ($setRefreshExit -eq 0 -and $expiryExit -eq 0 -and ($expiryMessage -join " ") -match "this PC has not reached the counter for 7 days" -and $restoreRefreshExit -eq 0) "set $setRefreshExit; probe $expiryExit; message $($expiryMessage -join ' '); restore $restoreRefreshExit"
     $server = Start-Process "$out\server\Cafe.Server.exe" -ArgumentList "--data $tdata --seed-test --seed-offline-secret-test" -PassThru -WindowStyle Hidden
-    if (-not (WaitFor 30 { (Test-Path "$tdata\pc1.token") -and (Get-Process -Id $server.Id -ErrorAction SilentlyContinue) })) { throw "test server did not restart after offline expiry check" }
+    if (-not (WaitFor 30 {
+        $status = & curl.exe -sk -o NUL -w "%{http_code}" -H "X-Pc-Token: $token" "https://127.0.0.1:5443/pc/offline-unlock-data"
+        $LASTEXITCODE -eq 0 -and $status -eq "200"
+    })) { throw "test server did not restart after offline expiry check" }
     Start-Sleep -Seconds 5
     Check "B3.C5" "Setup mode: no lock screen yet" ((Test-Path "$app\setup.flag") -and -not (Get-Process Cafe.Agent -ErrorAction SilentlyContinue)) "setup.flag present"
     $other = try { Resolve-DnsName example.com -Server 8.8.8.8 -DnsOnly -QuickTimeout -ErrorAction Stop | Out-Null; "answered" } catch { "blocked" }
