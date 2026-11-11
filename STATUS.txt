@@ -69,6 +69,10 @@ B5  Owner features                                                  IN PROGRESS
           payment methods; the owner can change each one. Phone numbers from any country (stored with the
           country code). Tax follows the country with an owner-set rate; a cafe not registered for tax
           shows and charges no tax.
+          Phone check: format check plus staff or owner checking the number on the customer's phone.
+          No SMS codes (they cost money). A tourist with no working number plays as Walk-in (no wallet,
+          no membership); the owner records an identity check in a pop-up (same data as B4 sign-up).
+          Tax in v1: "GST registered" or "Tax not applicable (below the limit)" switch, usable by any cafe.
           Found: server runs with InvariantGlobalization=true (must go), Indian time is fixed in
           Offers.cs and Memberships.cs, money is called "paise" everywhere.
     B5.11 Food, drinks, snacks and merchandise on the bill: a list per category with custom text per sale,
@@ -76,8 +80,9 @@ B5  Owner features                                                  IN PROGRESS
           or chosen plans and categories).
     B5.12 Owner controls any gaming PC from the counter PC or his phone (remote control).
           Decided 11 Nov: our own buttons for daily use (lock, unlock, message, log out, restart, shut down,
-          wake), plus MeshCentral (Apache-2.0) under our name for the full screen view, so the owner
-          only sees our software. Version 1.3.1 or newer only.
+          wake). v1: MeshCentral (Apache-2.0) as it is, for screen view and control from the phone or the
+          counter PC. Version 1.3.1 or newer only. v2: our own screen view and control, replacing it.
+    Build order: on hold until the project owner says go.
     Rate cards are set by the owner after install, not in the code:
          the first set-up asks for the rate card; the owner can add more rate cards, discounts and promotions,
          edit them and delete them (other cafes will have their own). Today's rate card becomes the default.
