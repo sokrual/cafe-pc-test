@@ -465,6 +465,23 @@ public sealed class ServerApiTests : IDisposable
     }
 
     [Fact]
+    public async Task Owner_sets_offers_and_happy_hours_and_staff_put_an_offer_on_a_bill()
+    {
+        var owner = await _rig.OwnerToken();
+        var staff = await _rig.StaffToken();
+        await _rig.Post("/staff/rate-cards", new { name = "Happy", rate = new { paise30 = 2000, paise60 = 3000, paise90 = 5000, extraBlockPaise = 2000,
+            graceMin = 5, minimumMin = 30, blockMin = 30, blockGraceMin = 5, carryOverDays = 7, carryOverMembersOnly = true } }, owner);
+        await _rig.Post("/staff/happy-hours", new { card = "Happy", days = new[] { 6 }, fromMin = 0, toMin = 1, membersOnly = true }, owner);
+        await _rig.Post("/staff/offers", new { name = "Diwali", percent = 20, membersOnly = false }, owner);
+        await _rig.Post("/staff/sessions", new { pc = "PC1", phone = "9000000003", mode = "prepaid", minutes = 30 }, staff);
+        var session = long.Parse(_rig.State(staff)["session"]!.ToString()!);
+        await _rig.Post($"/staff/sessions/{session}/offer", new { name = "Diwali" }, staff);
+        Assert.Equal("3200", _rig.Bill(staff, session)["due"]!.ToString()); // Rs 40 less 20%
+        using var offers = _rig.Raw(HttpMethod.Get, "/staff/offers", staff);
+        Assert.Contains("\"card\":\"Happy\"", await offers.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Owner_sets_a_membership_plan_and_staff_sell_it_at_the_counter()
     {
         var owner = await _rig.OwnerToken();

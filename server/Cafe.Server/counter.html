@@ -40,6 +40,8 @@
   #login input { width: 100%; }
   hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
   ul { padding-left: 18px; margin: 8px 0; }
+  .check { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 15px; margin: 6px 12px 0 0; }
+  #panel .check input { width: auto; min-height: 0; }
 </style>
 </head>
 <body>
@@ -59,6 +61,7 @@
     <button class="quiet" id="reviewBtn">Review</button>
     <button class="quiet" id="ratesBtn">Rate cards</button>
     <button class="quiet" id="membersBtn">Memberships</button>
+    <button class="quiet" id="offersBtn">Offers</button>
     <button class="quiet" id="logout">Sign out</button>
   </header>
   <p id="msg" role="status" aria-live="polite"></p>

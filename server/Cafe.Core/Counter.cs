@@ -4,8 +4,9 @@ namespace Cafe;
 
 /// One row of the counter screen. Online: the PC asked for its state in the last 15 seconds.
 /// Locked: staff locked it. SelfLocked: the customer locked it. ToPay: owed right now, including a running pay-at-end bill.
+/// HappyHour: the happy-hour rate card this session is billed on. Offer: the offer on its bill.
 public record CounterRow(string Pc, bool Online, bool Locked, bool SelfLocked, string? Message, long? Session, string? Mode,
-    long ElapsedSec, long? LeftSec, string? Customer, long ToPay);
+    long ElapsedSec, long? LeftSec, string? Customer, long ToPay, string? HappyHour = null, string? Offer = null);
 public record CustomerInfo(long Id, string Name, string Phone, long PlanMinutes, long Wallet, Membership? Membership);
 
 public sealed partial class CafeCore
@@ -18,8 +19,10 @@ public sealed partial class CafeCore
         return Tx(() =>
         {
             var customer = Scalar<string>("SELECT u.name FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = @p0", id);
-            var toPay = BillFor(id).Due + (s.Mode == "postpaid" ? Charge(TimeSpan.FromSeconds(s.ElapsedSec)) : 0);
-            return new CounterRow(p.Name, online, p.Locked, s.SelfLocked, s.Message, id, s.Mode, s.ElapsedSec, s.LeftSec, customer, toPay);
+            var toPay = BillFor(id).Due + (s.Mode == "postpaid" ? WithSessionRate(id, () => Charge(TimeSpan.FromSeconds(s.ElapsedSec))) : 0);
+            var happy = Scalar<string?>("SELECT happy FROM sessions WHERE id = @p0", id);
+            var offer = Scalar<string?>("SELECT offer FROM sessions WHERE id = @p0", id);
+            return new CounterRow(p.Name, online, p.Locked, s.SelfLocked, s.Message, id, s.Mode, s.ElapsedSec, s.LeftSec, customer, toPay, happy, offer);
         });
     }).ToList();
 
