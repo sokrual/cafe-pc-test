@@ -217,5 +217,22 @@ public sealed class StaffTokens
     public long? Check(string token) => _tokens.TryGetValue(token, out var user) ? user : null;
 
     public void End(string token) => _tokens.TryRemove(token, out _);
+
+    public int EndAllExcept(string keepToken)
+    {
+        var ended = 0;
+        foreach (var token in _tokens.Keys)
+            if (token != keepToken && _tokens.TryRemove(token, out _)) ended++;
+        return ended;
+    }
+
+    public int EndFor(long user)
+    {
+        var ended = 0;
+        foreach (var pair in _tokens)
+            if (pair.Value == user && _tokens.TryRemove(pair.Key, out _)) ended++;
+        return ended;
+    }
+
     public int Count => _tokens.Count;
 }
