@@ -482,6 +482,34 @@ public sealed class ServerApiTests : IDisposable
     }
 
     [Fact]
+    public async Task Owner_keeps_item_lists_and_staff_sell_items_on_a_bill_and_at_the_counter()
+    {
+        var owner = await _rig.OwnerToken();
+        var staff = await _rig.StaffToken();
+        var ct = TestContext.Current.CancellationToken;
+        await _rig.Post("/staff/items", new { category = "Beverages", name = "Coke", price = 5000 }, owner);
+        using (var byStaff = new HttpRequestMessage(HttpMethod.Post, "/staff/items") { Content = JsonContent.Create(new { category = "Beverages", name = "Tea", price = 1 }) })
+        {
+            byStaff.Headers.Authorization = new("Bearer", staff);
+            Assert.Equal(400, (int)(await _rig.Http.SendAsync(byStaff, ct)).StatusCode); // only the owner sets prices
+        }
+        using var list = _rig.Raw(HttpMethod.Get, "/staff/items", staff);
+        var coke = System.Text.Json.JsonDocument.Parse(await list.Content.ReadAsStringAsync(ct)).RootElement.GetProperty("items")[0].GetProperty("id").GetInt64();
+        await _rig.Post("/staff/offers", new { name = "Half drinks", percent = 50, membersOnly = false, scope = new[] { "Beverages" } }, owner);
+        await _rig.Post("/staff/sessions", new { pc = "PC1", phone = "9000000003", mode = "prepaid", minutes = 30 }, staff);
+        var session = long.Parse(_rig.State(staff)["session"]!.ToString()!);
+        await _rig.Post($"/staff/sessions/{session}/offer", new { name = "Half drinks" }, staff);
+        await _rig.Post($"/staff/sessions/{session}/items", new { item = coke, qty = 2, note = "cold" }, staff);
+        Assert.Equal("9000", _rig.Bill(staff, session)["due"]!.ToString()); // Rs 40 of time + Rs 100 of drinks, half off the drinks
+        Assert.Contains("2 x Coke (cold)", _rig.Bill(staff, session)["lines"]!.ToString());
+        await _rig.Post("/staff/counter-sales", new { item = coke, qty = 1, method = "cash" }, staff);
+        var today = DateTime.UtcNow.AddHours(5.5).ToString("yyyy-MM-dd");
+        using (var report = _rig.Raw(HttpMethod.Get, $"/staff/reports/items?from={today}&to={today}", owner))
+            Assert.Contains("\"qty\":3", await report.Content.ReadAsStringAsync(ct));
+        using (var notStaff = _rig.Raw(HttpMethod.Get, $"/staff/reports/items?from={today}&to={today}", staff)) Assert.Equal(400, (int)notStaff.StatusCode);
+    }
+
+    [Fact]
     public async Task Owner_sets_a_membership_plan_and_staff_sell_it_at_the_counter()
     {
         var owner = await _rig.OwnerToken();

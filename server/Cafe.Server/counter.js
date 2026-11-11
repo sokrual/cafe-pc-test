@@ -62,6 +62,26 @@ function minutesPick(id) {
   return el("select", { id }, ...[1, 2, 3, 4, 5, 6].map(n => n * block).map(m => el("option", { value: m, textContent: span(m) })));
 }
 async function loadRate() { try { rate = (await api("GET", "/staff/rate-cards")).find(c => c.inUse)?.rate ?? null; } catch { } }
+// items grouped by list; loaded fresh when a form needs them
+async function fillItems(id) {
+  const d = await api("GET", "/staff/items");
+  $(id)?.replaceChildren(el("option", { value: "", textContent: d.items.length ? "Pick an item" : "No items yet (the owner adds them under Items)" }),
+    ...d.categories.filter(c => d.items.some(i => i.category === c)).map(c => el("optgroup", { label: c },
+      ...d.items.filter(i => i.category === c).map(i => el("option", { value: i.id, textContent: `${i.name} · ${rupees(i.price)}` })))));
+  return d;
+}
+function itemFields(prefix) {
+  return [el("select", { id: prefix + "Item" }, el("option", { value: "", textContent: "Loading items..." })),
+    el("div", { className: "row" }, el("input", { id: prefix + "Qty", inputMode: "numeric", value: 1, ariaLabel: "How many", size: 3 }),
+      el("input", { id: prefix + "Note", placeholder: "Note (optional), e.g. less sugar", maxLength: 100 }))];
+}
+function readItem(prefix) {
+  const item = +$(prefix + "Item").value, qty = parseInt($(prefix + "Qty").value, 10);
+  if (!item) throw new Error("Pick an item.");
+  if (!(qty >= 1)) throw new Error("Type how many.");
+  return { item, qty, note: $(prefix + "Note").value.trim() || null };
+}
+const billLines = b => (b.lines ?? []).length ? el("ul", {}, ...b.lines.map(l => el("li", { textContent: `${l.text} · ${l.kind === "pay" ? "" : l.amount < 0 ? "-" : ""}${rupees(Math.abs(l.amount))}` }))) : null;
 function payForm(session, amount) {
   return el("div", {},
     el("h2", { textContent: "Take payment" }),
@@ -112,6 +132,9 @@ function showPc(r) {
           if (!$("offerPick").value) throw new Error("Pick an offer.");
           return api("POST", `/staff/sessions/${r.session}/offer`, { name: $("offerPick").value });
         }, "Offer applied.") })));
+    p.push(el("label", { htmlFor: "sItem", textContent: "Add to the bill (food, drinks, merchandise)" }), ...itemFields("s"),
+      el("div", { className: "row" }, el("button", { className: "quiet", textContent: "Add to bill",
+        onclick: act(() => api("POST", `/staff/sessions/${r.session}/items`, readItem("s")), "Added to the bill.") })));
     // pay-at-end is charged when it stops, so only time paid in advance can be paid during the session
     if (r.toPay > 0 && r.mode === "prepaid") p.push(el("hr"), payForm(r.session, r.toPay));
   }
@@ -121,11 +144,12 @@ function showPc(r) {
     el("div", { className: "row" }, el("button", { className: "quiet", textContent: r.session ? "Lock and pause" : "Lock this PC",
       onclick: act(() => api("POST", "/staff/lock", { pc: r.pc, message: $("lockMsg").value || null }), r.session ? "Locked. The time has stopped." : "Locked.") })));
   $("panel").replaceChildren(...p);
+  if ($("sItem")) fillItems("sItem").catch(() => { });
   if ($("offerPick")) api("GET", "/staff/offers").then(d => {
     const today = new Date().toLocaleDateString("en-CA"); // yyyy-mm-dd, the PC's own date
     const live = d.offers.filter(o => (!o.from || o.from <= today) && (!o.to || o.to >= today));
     $("offerPick")?.replaceChildren(el("option", { value: "", textContent: live.length ? "Pick an offer" : "No offers today" }),
-      ...live.map(o => el("option", { value: o.name, textContent: `${o.name} · ${o.percent}% off${o.membersOnly ? " · members" : ""}` })));
+      ...live.map(o => el("option", { value: o.name, textContent: `${o.name} · ${o.percent}% off ${o.scope?.length ? o.scope.join(", ") : "whole bill"}${o.membersOnly ? " · members" : ""}` })));
   }).catch(() => { });
 }
 async function find() {
@@ -139,7 +163,7 @@ async function stop(r) {
     const due = b.due;
     panelKey = "bill";
     $("panel").replaceChildren(el("h2", { textContent: `${r.pc} · bill` }),
-      el("p", { textContent: `${r.customer} played ${b.used.split(".")[0]}. Charged ${rupees(b.charged)}, paid ${rupees(b.paid)}.` }),
+      el("p", { textContent: `${r.customer} played ${b.used.split(".")[0]}. Charged ${rupees(b.charged)}, paid ${rupees(b.paid)}.` }), billLines(b),
       el("p", { textContent: due > 0 ? "To pay now: " + rupees(due) : "Nothing more to pay." }),
       due > 0 ? payForm(b.sessionId, due) : null,
       el("div", { className: "row" }, el("button", { className: "quiet", textContent: "Done", onclick: () => { panelKey = ""; refresh(true); } })));
@@ -255,7 +279,8 @@ const hhmm = m => String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m %
 const mins = id => { const [h, m] = ($(id).value || "").split(":").map(Number); if (!Number.isFinite(h) || !Number.isFinite(m)) throw new Error("Fill in both times."); return h * 60 + m; };
 async function showOffers() {
   try {
-    const [d, cards] = await Promise.all([api("GET", "/staff/offers"), api("GET", "/staff/rate-cards")]);
+    const [d, cards, items] = await Promise.all([api("GET", "/staff/offers"), api("GET", "/staff/rate-cards"), api("GET", "/staff/items")]);
+    const scopes = ["Play time", ...items.categories];
     const run = (fn, msg) => async () => { try { await fn(); say(msg); showOffers(); } catch (e) { say(e.message, false); } };
     const check = (id, label, checked = false) => el("label", { className: "check" }, el("input", { type: "checkbox", id, checked }), label);
     panelKey = "side";
@@ -271,21 +296,63 @@ async function showOffers() {
       el("div", { className: "row" }, el("button", { textContent: "Add happy hour", onclick: run(() => api("POST", "/staff/happy-hours", {
         card: $("h_card").value, days: DAYS.map((_, i) => i + 1).filter(n => $("h_d" + n).checked), fromMin: mins("h_from"), toMin: mins("h_to"), membersOnly: $("h_members").checked }), "Happy hour added.") })),
       el("hr"), el("h2", { textContent: "Offers" }),
-      el("p", { className: "small", textContent: "Staff put one offer on a bill. It takes the % off every charge of that visit." }),
-      d.offers.length ? el("ul", {}, ...d.offers.map(o => el("li", {}, `${o.name} · ${o.percent}%${o.membersOnly ? " · members" : ""}${o.from || o.to ? ` · ${o.from ?? "..."} to ${o.to ?? "..."}` : ""} `,
+      el("p", { className: "small", textContent: "Staff put one offer on a bill. It takes the % off the parts of the bill you tick, or the whole bill." }),
+      d.offers.length ? el("ul", {}, ...d.offers.map(o => el("li", {}, `${o.name} · ${o.percent}% off ${o.scope?.length ? o.scope.join(", ") : "the whole bill"}${o.membersOnly ? " · members" : ""}${o.from || o.to ? ` · ${o.from ?? "..."} to ${o.to ?? "..."}` : ""} `,
         el("button", { className: "quiet", textContent: "Delete", onclick: run(() => api("DELETE", "/staff/offers/" + encodeURIComponent(o.name)), "Offer deleted.") })))) : el("p", { textContent: "No offers yet." }),
       el("label", { htmlFor: "o_name", textContent: "Name (an existing name changes that offer)" }), el("input", { id: "o_name" }),
       el("label", { htmlFor: "o_pct", textContent: "Discount, %" }), el("input", { id: "o_pct", inputMode: "numeric" }),
       check("o_members", "Members only"),
+      el("label", { textContent: "Takes % off (tick nothing for the whole bill)" }),
+      el("div", { className: "row" }, ...scopes.map((c, i) => check("o_s" + i, c))),
       el("div", { className: "row" }, el("div", {}, el("label", { htmlFor: "o_from", textContent: "From (optional)" }), el("input", { id: "o_from", type: "date" })),
         el("div", {}, el("label", { htmlFor: "o_to", textContent: "To (optional)" }), el("input", { id: "o_to", type: "date" }))),
       el("div", { className: "row" }, el("button", { textContent: "Save offer", onclick: run(() => {
           const percent = parseInt($("o_pct").value, 10);
           if (!Number.isFinite(percent)) throw new Error("Type the discount in %.");
-          return api("POST", "/staff/offers", { name: $("o_name").value.trim(), percent, membersOnly: $("o_members").checked, from: $("o_from").value || null, to: $("o_to").value || null });
+          return api("POST", "/staff/offers", { name: $("o_name").value.trim(), percent, membersOnly: $("o_members").checked, from: $("o_from").value || null, to: $("o_to").value || null,
+            scope: scopes.filter((_, i) => $("o_s" + i).checked) });
         }, "Offer saved.") }),
         el("button", { className: "quiet", textContent: "Close", onclick: () => { panelKey = ""; refresh(true); } })));
   } catch (e) { say(e.message, false); }
 }
 $("offersBtn").onclick = () => showOffers();
 if (token) start(); else $("login").hidden = false;
+
+// Items: staff sell at the counter; the owner keeps the lists and prices and sees what sold today.
+async function showItems() {
+  try {
+    const d = await api("GET", "/staff/items");
+    const run = (fn, msg) => async () => { try { const r = await fn(); say(typeof msg === "function" ? msg(r) : msg); showItems(); } catch (e) { say(e.message, false); } };
+    const today = new Date().toLocaleDateString("en-CA");
+    panelKey = "side";
+    $("panel").replaceChildren(el("h2", { textContent: "Counter sale (not on a PC)" }), ...itemFields("c"),
+      el("label", { htmlFor: "c_how", textContent: "How" }),
+      el("select", { id: "c_how" }, el("option", { value: "cash", textContent: "Cash" }), el("option", { value: "upi", textContent: "UPI" })),
+      el("label", { htmlFor: "c_last4", textContent: "UPI: last 4 digits of the payment reference" }), el("input", { id: "c_last4", inputMode: "numeric", maxLength: 4 }),
+      el("div", { className: "row" }, el("button", { textContent: "Sell", onclick: run(() => api("POST", "/staff/counter-sales",
+        { ...readItem("c"), method: $("c_how").value, upiLast4: $("c_last4").value || null }), r => `Sold. ${rupees(r.amount)} taken.`) })),
+      el("div", { id: "report" }),
+      el("hr"), el("h2", { textContent: "Lists and prices (owner)" }),
+      ...d.categories.map(c => el("div", {}, el("h3", { textContent: c }),
+        el("ul", {}, ...d.items.filter(i => i.category === c).map(i => el("li", {}, `${i.name} · ${rupees(i.price)} `,
+          el("button", { className: "quiet", textContent: "Delete", onclick: run(() => api("DELETE", "/staff/items/" + i.id), `"${i.name}" deleted.`) })))),
+        d.items.some(i => i.category === c) ? null : el("button", { className: "quiet", textContent: `Delete the list "${c}"`,
+          onclick: run(() => api("DELETE", "/staff/item-categories/" + encodeURIComponent(c)), `"${c}" deleted.`) }))),
+      el("label", { htmlFor: "i_cat", textContent: "List" }), el("select", { id: "i_cat" }, ...d.categories.map(c => el("option", { value: c, textContent: c }))),
+      el("label", { htmlFor: "i_name", textContent: "Item name (an existing name changes its price)" }), el("input", { id: "i_name", maxLength: 40 }),
+      el("label", { htmlFor: "i_price", textContent: "Price, ₹" }), el("input", { id: "i_price", inputMode: "decimal" }),
+      el("div", { className: "row" }, el("button", { textContent: "Save item", onclick: run(() => {
+        const price = Math.round(parseFloat($("i_price").value) * 100);
+        if (!(price > 0)) throw new Error("Type the price in rupees.");
+        return api("POST", "/staff/items", { category: $("i_cat").value, name: $("i_name").value.trim(), price });
+      }, "Item saved.") })),
+      el("label", { htmlFor: "i_new", textContent: "New list (for example Combos)" }), el("input", { id: "i_new", maxLength: 30 }),
+      el("div", { className: "row" }, el("button", { className: "quiet", textContent: "Add list", onclick: run(() => api("POST", "/staff/item-categories", { name: $("i_new").value.trim() }), "List added.") }),
+        el("button", { className: "quiet", textContent: "Close", onclick: () => { panelKey = ""; refresh(true); } })));
+    fillItems("cItem").catch(() => { });
+    // only the owner may see the report; staff simply do not get this part
+    api("GET", `/staff/reports/items?from=${today}&to=${today}`).then(rows => $("report")?.replaceChildren(el("hr"), el("h2", { textContent: "Sold today (before offers)" }),
+      rows.length ? el("ul", {}, ...rows.map(x => el("li", { textContent: `${x.category} · ${x.item} · ${x.qty} sold · ${rupees(x.amount)}` }))) : el("p", { textContent: "Nothing sold yet today." }))).catch(() => { });
+  } catch (e) { say(e.message, false); }
+}
+$("itemsBtn").onclick = () => showItems();

@@ -627,6 +627,79 @@ public sealed class BillingTests : IDisposable
         Assert.Equal(6000, _cafe.BillFor(s).Due); // unchanged
     }
 
+    long Coke()
+    {
+        _cafe.SaveItem(_owner, "Beverages", "Coke", 5000);
+        return _cafe.Items(_staff).Items.Single(i => i.Name == "Coke").Id;
+    }
+
+    [Fact]
+    public void Items_are_kept_by_the_owner_sold_by_staff_and_shown_on_the_bill()
+    {
+        _cafe.AddPc(_owner, "PC1");
+        Assert.Equal(["Beverages", "Food", "Merchandise", "Snacks"], _cafe.Items(_staff).Categories); // a new install starts with four lists
+        Assert.Throws<CafeException>(() => _cafe.SaveItem(_staff, "Beverages", "Tea", 2000)); // only the owner sets prices
+        Assert.Throws<CafeException>(() => _cafe.SaveItem(_owner, "Drinks", "Tea", 2000)); // no such list
+        Assert.Throws<CafeException>(() => _cafe.SaveItem(_owner, "Beverages", "Tea", 0));
+        Assert.Throws<CafeException>(() => _cafe.SaveCategory(_owner, "play time")); // kept for offers
+        var coke = Coke();
+        Assert.Throws<CafeException>(() => _cafe.DeleteCategory(_owner, "Beverages")); // it still has items
+
+        var s = _cafe.StartPostpaid(_staff, "PC1", _cust);
+        _cafe.SellItem(_staff, s, coke, 2, "  less ice ");
+        Assert.Throws<CafeException>(() => _cafe.SellItem(_staff, s, coke, 0));
+        Assert.Throws<CafeException>(() => _cafe.SellItem(_staff, s, coke, 1, new string('x', 101)));
+        Assert.Throws<CafeException>(() => _cafe.SellItem(_cust, s, coke, 1)); // a customer cannot add to bills
+        _cafe.SaveItem(_owner, "Beverages", "Coke", 9900); // a new price does not change what was sold
+        Wait(30);
+        var bill = _cafe.Stop(_staff, s);
+        Assert.Equal(4000 + 10000, bill.Charged);
+        Assert.Contains(bill.Lines!, l => l.Text == "2 x Coke (less ice)" && l.Amount == 10000 && l.Category == "Beverages");
+        Assert.Contains(bill.Lines!, l => l.Text == "Play time: 30 min" && l.Category == CafeCore.PlayTime);
+        Assert.Throws<CafeException>(() => _cafe.SellItem(_staff, s, coke, 1)); // the visit is over: use a counter sale
+    }
+
+    [Fact]
+    public void Counter_sale_is_paid_at_once_counted_in_the_shift_and_in_the_owners_report()
+    {
+        var coke = Coke();
+        var shift = _cafe.OpenShift(_staff);
+        Assert.Throws<CafeException>(() => _cafe.CounterSale(_staff, coke, 1, null, "upi")); // UPI needs the last 4 digits
+        Assert.Equal(15000, _cafe.CounterSale(_staff, coke, 3, null, "cash"));
+        _cafe.CounterSale(_staff, coke, 1, "takeaway", "upi", "1234");
+        Assert.Equal(15000, _cafe.ShiftTotal(shift, "cash"));
+        Assert.Equal(5000, _cafe.ShiftTotal(shift, "upi"));
+        var day = new DateOnly(2026, 11, 9);
+        Assert.Throws<CafeException>(() => _cafe.ItemReport(_staff, day, day)); // the owner's report
+        Assert.Equal([new ItemSale("Beverages", "Coke", 4, 20000)], _cafe.ItemReport(_owner, day, day));
+        Assert.Empty(_cafe.ItemReport(_owner, day.AddDays(1), day.AddDays(1)));
+    }
+
+    [Fact]
+    public void An_offer_takes_off_only_the_parts_of_the_bill_it_covers()
+    {
+        _cafe.AddPc(_owner, "PC1");
+        _cafe.AddPc(_owner, "PC2");
+        var coke = Coke();
+        Assert.Throws<CafeException>(() => _cafe.SaveOffer(_owner, new Offer("Bad", 10, false, Scope: ["Drinks"]))); // no such list
+        _cafe.SaveOffer(_owner, new Offer("Half drinks", 50, false, Scope: ["Beverages"]));
+        _cafe.SaveOffer(_owner, new Offer("Time 25", 25, false, Scope: [CafeCore.PlayTime]));
+
+        var drinks = _cafe.StartPostpaid(_staff, "PC1", _cust);
+        _cafe.ApplyOffer(_staff, drinks, "Half drinks");
+        _cafe.SellItem(_staff, drinks, coke, 2);
+        var time = _cafe.StartPostpaid(_staff, "PC2", _cust);
+        _cafe.ApplyOffer(_staff, time, "Time 25");
+        _cafe.SellItem(_staff, time, coke, 1);
+        _cafe.SaveOffer(_owner, new Offer("Half drinks", 50, false)); // changing the offer later does not change a bill it is on
+        Wait(30);
+
+        Assert.Equal(-5000, _cafe.Stop(_staff, drinks).Adjusted); // half of ₹100 of drinks, nothing off the ₹40 of time
+        var b = _cafe.Stop(_staff, time);
+        Assert.Equal(-1000, b.Adjusted); // a quarter of ₹40 of time, nothing off the drink
+        Assert.Contains(b.Lines!, l => l.Kind == "adjust" && l.Text == "offer Time 25" && l.Amount == -1000);
+    }
+
     [Fact]
     public void A_logout_dated_long_ago_is_flagged_for_the_owner()
     {
