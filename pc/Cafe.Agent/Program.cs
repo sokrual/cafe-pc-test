@@ -72,7 +72,6 @@ sealed class Agent : ApplicationContext
     readonly WatchdogPipeClient _watchdog = new();
     readonly List<string> _unacceptedActions = [];
     readonly object _unacceptedActionsGate = new();
-    readonly SemaphoreSlim _pendingActionReplay = new(1, 1);
     readonly SemaphoreSlim _sendGate = new(1, 1);
     readonly LockScreen _lock;
     readonly TimerWidget _timer;
@@ -223,25 +222,35 @@ sealed class Agent : ApplicationContext
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Program.Log($"could not ask for the logout clean-up (error code {e.HResult & 0xffff})"); }
     }
 
-    async Task ReplayUnacceptedActions()
+    async Task<bool> ReplayUnacceptedActionsLocked()
     {
-        await _pendingActionReplay.WaitAsync();
-        try
+        while (true)
         {
-            while (true)
-            {
-                string? path;
-                lock (_unacceptedActionsGate)
-                    path = _unacceptedActions.Count == 0 ? null : _unacceptedActions[0];
-                if (path is null) return;
+            string? path;
+            lock (_unacceptedActionsGate)
+                path = _unacceptedActions.Count == 0 ? null : _unacceptedActions[0];
+            if (path is null) return true;
 
+            try
+            {
                 using var response = await _watchdog.PostAsJsonAsync("/local/queue-action", new { path });
                 response.EnsureSuccessStatusCode();
-                lock (_unacceptedActionsGate) _unacceptedActions.RemoveAt(0);
-                Program.Log($"watchdog accepted previously unqueued {path}");
             }
+            catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException)
+            {
+                Program.Log($"watchdog still has not accepted {path} (error code {e.HResult & 0xffff})");
+                return false;
+            }
+            lock (_unacceptedActionsGate) _unacceptedActions.RemoveAt(0);
+            Program.Log($"watchdog accepted previously unqueued {path}");
         }
-        finally { _pendingActionReplay.Release(); }
+    }
+
+    async Task ReplayUnacceptedActions()
+    {
+        await _sendGate.WaitAsync();
+        try { await ReplayUnacceptedActionsLocked(); }
+        finally { _sendGate.Release(); }
     }
 
     // The SYSTEM watchdog saves each action to its protected, flushed queue before acknowledging it.
@@ -251,16 +260,24 @@ sealed class Agent : ApplicationContext
         await _sendGate.WaitAsync();
         try
         {
-            try
-            {
-                using var response = await _watchdog.PostAsJsonAsync("/local/queue-action", new { path });
-                response.EnsureSuccessStatusCode();
-                Program.Log($"watchdog saved {path} for ordered delivery");
-            }
-            catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException)
+            if (!await ReplayUnacceptedActionsLocked())
             {
                 lock (_unacceptedActionsGate) _unacceptedActions.Add(path);
-                Program.Log($"watchdog did not accept {path}; queued in memory (error code {e.HResult & 0xffff})");
+                Program.Log($"watchdog did not accept {path}; queued in memory behind earlier actions");
+            }
+            else
+            {
+                try
+                {
+                    using var response = await _watchdog.PostAsJsonAsync("/local/queue-action", new { path });
+                    response.EnsureSuccessStatusCode();
+                    Program.Log($"watchdog saved {path} for ordered delivery");
+                }
+                catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException)
+                {
+                    lock (_unacceptedActionsGate) _unacceptedActions.Add(path);
+                    Program.Log($"watchdog did not accept {path}; queued in memory (error code {e.HResult & 0xffff})");
+                }
             }
         }
         finally { _sendGate.Release(); }
