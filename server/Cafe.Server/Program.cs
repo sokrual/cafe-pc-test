@@ -80,7 +80,7 @@ app.MapPost("/pc/offline-sales", (HttpContext c, OfflineSaleBody b) =>
     try { return Results.Ok(new { session = cafe.ProcessOfflineSale(pc, new OfflineSaleRequest(b.SaleId, b.Phone, b.Code, b.Step, b.Minutes, b.Method, b.UpiLast4, b.Session)) }); }
     catch (CafeException e)
     {
-        cafe.ReviewOfflineSale(pc, b.SaleId, b.Phone, e.Message);
+        cafe.ReviewOfflineSale(pc, b.SaleId, b.Phone, e.Message, b.Minutes, b.Step);
         throw;
     }
 });
