@@ -6,6 +6,7 @@ using System.Text;
 namespace Cafe;
 
 public record OfflineUnlockAccount(string Phone, string Secret, long LastStep);
+public record OfflineUnlockPerson(string Name, string Phone, bool HasSecret, bool Enabled);
 public record PcInfo(string Name, bool InUse, bool Locked, string? LastSeen);
 
 public sealed partial class CafeCore
@@ -107,6 +108,25 @@ public sealed partial class CafeCore
         Audit(owner, "offline_unlock_on", $"user {user}");
     });
 
+    public List<OfflineUnlockPerson> OfflineUnlockPeople(long owner) => Tx(() =>
+    {
+        RequireOwner(owner);
+        using var r = Query("SELECT name, phone, offline_totp IS NOT NULL, offline_unlock_enabled FROM users WHERE role IN (@p0, @p1) ORDER BY role, name",
+            (int)Role.Owner, (int)Role.Staff);
+        var people = new List<OfflineUnlockPerson>();
+        while (r.Read()) people.Add(new OfflineUnlockPerson(r.GetString(0), r.GetString(1), r.GetInt64(2) == 1, r.GetInt64(3) == 1));
+        return people;
+    });
+
+    public void SetOfflineUnlockEnabled(long owner, string phone, bool enabled) => Tx(() =>
+    {
+        RequireOwner(owner);
+        var id = Scalar<long?>("SELECT id FROM users WHERE phone = @p0 AND role IN (@p1, @p2) AND offline_totp IS NOT NULL",
+            phone, (int)Role.Owner, (int)Role.Staff) ?? throw new CafeException("This person has not set up offline unlock.");
+        Exec("UPDATE users SET offline_unlock_enabled = @p0 WHERE id = @p1", enabled ? 1 : 0, id);
+        Audit(owner, enabled ? "offline_unlock_on" : "offline_unlock_off", $"user {id}");
+    });
+
     /// PCs receive only the dedicated offline-unlock secret, never the counter-login secret.
     public List<OfflineUnlockAccount> OfflineUnlockAccounts() => Tx(() =>
     {
@@ -114,7 +134,7 @@ public sealed partial class CafeCore
             SELECT u.phone, u.offline_totp,
                 coalesce((SELECT max(s.step) FROM offline_sales s WHERE s.staff_id = u.id), -1)
             FROM users u
-            WHERE u.role IN (@p0, @p1) AND u.offline_totp IS NOT NULL
+            WHERE u.role IN (@p0, @p1) AND u.offline_totp IS NOT NULL AND u.offline_unlock_enabled = 1
             ORDER BY u.id
             """, (int)Role.Owner, (int)Role.Staff);
         var accounts = new List<OfflineUnlockAccount>();
@@ -185,17 +205,45 @@ public sealed partial class CafeCore
 /// Counter logins: a random token per login. It remains valid until the user logs out.
 public sealed class StaffTokens
 {
-    readonly ConcurrentDictionary<string, long> _tokens = new();
+    readonly object _gate = new();
+    readonly Dictionary<string, long> _tokens = new(StringComparer.Ordinal);
 
     public string Issue(long user)
     {
         var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-        _tokens[token] = user;
+        lock (_gate) _tokens[token] = user;
         return token;
     }
 
-    public long? Check(string token) => _tokens.TryGetValue(token, out var user) ? user : null;
+    public long? Check(string token)
+    {
+        lock (_gate) return _tokens.TryGetValue(token, out var user) ? user : null;
+    }
 
-    public void End(string token) => _tokens.TryRemove(token, out _);
-    public int Count => _tokens.Count;
+    public void End(string token)
+    {
+        lock (_gate) _tokens.Remove(token);
+    }
+
+    public int EndAllExcept(string keepToken)
+    {
+        lock (_gate)
+        {
+            var ended = _tokens.Keys.Where(token => token != keepToken).ToArray();
+            foreach (var token in ended) _tokens.Remove(token);
+            return ended.Length;
+        }
+    }
+
+    public int EndFor(long user)
+    {
+        lock (_gate)
+        {
+            var ended = _tokens.Where(pair => pair.Value == user).Select(pair => pair.Key).ToArray();
+            foreach (var token in ended) _tokens.Remove(token);
+            return ended.Length;
+        }
+    }
+
+    public int Count { get { lock (_gate) return _tokens.Count; } }
 }

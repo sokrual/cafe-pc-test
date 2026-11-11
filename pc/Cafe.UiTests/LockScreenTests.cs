@@ -237,6 +237,52 @@ public sealed class OfflineLockTests
     }
 
     [Fact]
+    public async Task Offline_unlock_refuses_a_stale_refresh_and_a_PC_clock_before_the_server_time()
+    {
+        using var rig = new Rig();
+        var agent = rig.StartAgent();
+        try
+        {
+            using var app = Application.Attach(agent.Id);
+            var secret = await rig.EnrollStaffTwoStep();
+            var cacheAfterSetup = DateTime.UtcNow;
+            Rig.WaitFor(() => File.Exists(rig.OfflineCacheFile)
+                && File.GetLastWriteTimeUtc(rig.OfflineCacheFile) > cacheAfterSetup, 20,
+                "watchdog did not refresh the offline unlock cache");
+            rig.StopServer();
+
+            Window? Find() => app.GetAllTopLevelWindows(rig.Ui).FirstOrDefault(w => w.Properties.AutomationId.ValueOrDefault == "LockScreen");
+            Window LockWindow()
+            {
+                Window? window = null;
+                Rig.WaitFor(() => (window = Find()) is { IsOffscreen: false }, 20, "lock screen never appeared");
+                return window!;
+            }
+            static AutomationElement Part(AutomationElement root, string id) =>
+                root.FindFirstDescendant(c => c.ByAutomationId(id)) ?? throw new InvalidOperationException($"no {id} on screen");
+            var screen = LockWindow();
+            Rig.WaitFor(() => !Part(LockWindow(), "StaffUnlock").IsOffscreen, 15, "offline staff unlock button did not appear");
+            Part(screen, "StaffUnlock").AsButton().Invoke();
+
+            async Task TryAndExpect(string expected)
+            {
+                Part(screen, "StaffPhone").AsTextBox().Text = "9000000002";
+                Part(screen, "StaffCode").AsTextBox().Text = Rig.AppCode(secret);
+                Part(screen, "Minutes").AsTextBox().Text = "30";
+                Part(screen, "OfflineUnlockSubmit").AsButton().Invoke();
+                Rig.WaitFor(() => Part(screen, "Error").Name.Contains(expected, StringComparison.OrdinalIgnoreCase),
+                    10, "offline unlock did not refuse: " + expected);
+            }
+
+            rig.SetOfflineRefresh(DateTime.UtcNow.AddDays(-8));
+            await TryAndExpect("this PC has not reached the counter for 7 days");
+            rig.SetOfflineRefresh(DateTime.UtcNow.AddMinutes(1));
+            await TryAndExpect("PC clock is earlier than its last counter refresh");
+        }
+        finally { Rig.Kill(agent); }
+    }
+
+    [Fact]
     public async Task Three_wrong_offline_codes_pause_unlock_for_ten_minutes()
     {
         using var rig = new Rig();
@@ -617,6 +663,18 @@ sealed class Rig : IDisposable
     }
 
     public void StopServer() => Kill(_server);
+
+    public void SetOfflineRefresh(DateTime serverTimeUtc)
+    {
+        var start = new ProcessStartInfo(Env("CAFE_WATCHDOG_EXE")) { UseShellExecute = false };
+        foreach (var a in new[] { "--test-set-offline-refresh", "--test-mode", "--cache-file", OfflineCacheFile,
+            "--server-time", serverTimeUtc.ToUniversalTime().ToString("O", System.Globalization.CultureInfo.InvariantCulture) })
+            start.ArgumentList.Add(a);
+        start.Environment["CAFE_TEST_MODE"] = "1";
+        using var process = Process.Start(start)!;
+        process.WaitForExit(15000);
+        Assert.Equal(0, process.ExitCode);
+    }
 
     public void Dispose()
     {
