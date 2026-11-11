@@ -115,7 +115,8 @@ public sealed class AccountTests : IDisposable
             AppCode(offline, step), step, 60, "cash", null, null);
         _cafe.ProcessOfflineSale("PC1", first);
         var duplicate = first with { SaleId = Guid.NewGuid().ToString("N"), Minutes = 30 };
-        Assert.Throws<CafeException>(() => _cafe.ProcessOfflineSale("PC2", duplicate));
+        var duplicateError = Assert.Throws<CafeException>(() => _cafe.ProcessOfflineSale("PC2", duplicate));
+        _cafe.ReviewOfflineSale("PC2", duplicate.SaleId, duplicate.Phone, duplicateError.Message, duplicate.Minutes, duplicate.Step);
 
         var alert = Assert.Single(_cafe.OfflineUnlockAlerts(_owner));
         Assert.Contains("Staff", alert);
