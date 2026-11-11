@@ -43,7 +43,8 @@ static class Program
 public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec, bool SelfLocked = false, bool LockWhenTimeRunsOut = false);
 record ErrorBody(string Error);
 record OfflineUnlockReply(bool Success, string? Error, long? Step);
-record OfflineUnlockInfo(OfflineUnlockRate? Rate, int EnabledAccounts, DateTime? LockedUntil, int PendingSales);
+record OfflineUnlockInfo(OfflineUnlockRate? Rate, int EnabledAccounts, DateTime? LockedUntil, int PendingSales,
+    int MaxOfflineUnlockMinutes, DateTime? LastRefreshServerUtc);
 record OfflineUnlockRate(long Paise30, long Paise60, long Paise90, long ExtraBlockPaise, int MinimumMin, int BlockMin);
 
 static class LockSetting
