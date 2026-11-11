@@ -49,7 +49,8 @@ public static class StaffLoginNetwork
 public record Rate(long Paise30 = 4000, long Paise60 = 6000, long Paise90 = 10000, long ExtraBlockPaise = 4000,
     int GraceMin = 5, int MinimumMin = 30, int BlockMin = 30, int BlockGraceMin = 5, int CarryOverDays = 7, bool CarryOverMembersOnly = true);
 
-public record Bill(long SessionId, TimeSpan Used, long Charged, long Adjusted, long Paid)
+/// Lines: every charge, offer, adjustment and payment of the bill, oldest first.
+public record Bill(long SessionId, TimeSpan Used, long Charged, long Adjusted, long Paid, List<BillLine>? Lines = null)
 {
     public long Due => Charged + Adjusted - Paid;
 }
@@ -121,6 +122,7 @@ public sealed partial class CafeCore : IDisposable
         LoadRateCards();
         LoadMemberships();
         LoadOffers();
+        LoadItems();
     }
 
     public void Dispose() => _db.Dispose();
@@ -229,7 +231,7 @@ public sealed partial class CafeCore : IDisposable
     {
         Minutes(minutes);
         var id = Start(by, pc, user, minutes, null);
-        Ledger(by, "charge", WithSessionRate(id, () => Price(minutes)), session: id, reference: $"prepaid {minutes} min");
+        Ledger(by, "charge", WithSessionRate(id, () => Price(minutes)), session: id, reference: $"prepaid {minutes} min", part: Package(minutes));
         return id;
     });
 
@@ -260,7 +262,7 @@ public sealed partial class CafeCore : IDisposable
         RequireStaff(by); Minutes(minutes); // negative minutes would be a staff discount, which only the owner may give
         if (Exec("UPDATE sessions SET prepaid_min = prepaid_min + @p0 WHERE id = @p1 AND ended IS NULL AND prepaid_min IS NOT NULL", minutes, session) == 0)
             throw new CafeException("Time can be added only for a prepaid customer who is playing.");
-        Ledger(by, "charge", WithSessionRate(session, () => Price(minutes)), session: session, reference: $"added {minutes} min");
+        Ledger(by, "charge", WithSessionRate(session, () => Price(minutes)), session: session, reference: $"added {minutes} min", part: Package(minutes));
         SyncOffer(by, session);
         Audit(by, "add_time", $"session {session} +{minutes} min");
     });
@@ -333,7 +335,7 @@ public sealed partial class CafeCore : IDisposable
             else
             {
                 var billed = BillableMinutes(used);
-                Ledger(by, "charge", Price(billed), session: session, user: user, reference: $"{billed} min");
+                Ledger(by, "charge", Price(billed), session: session, user: user, reference: $"{billed} min", part: PayAtEnd);
                 if (billed > usedMin) CarryOver(by, user, billed - usedMin); // the unused part of the last block
             }
             SyncOffer(by, session);
@@ -347,7 +349,7 @@ public sealed partial class CafeCore : IDisposable
     {
         var minutes = BillableMinutes(over, startGrace: false);
         if (minutes == 0) return;
-        Ledger(by, "charge", minutes / Rate.BlockMin * Rate.ExtraBlockPaise, session: session, user: user, reference: $"{minutes} min {what}");
+        Ledger(by, "charge", minutes / Rate.BlockMin * Rate.ExtraBlockPaise, session: session, user: user, reference: $"{minutes} min {what}", part: ExtraTime);
         var overMin = (int)Math.Ceiling(over.TotalMinutes);
         if (minutes > overMin) CarryOver(by, user, minutes - overMin);
     }
@@ -551,7 +553,7 @@ public sealed partial class CafeCore : IDisposable
                 else
                 {
                     var billed = BillableMinutes(used);
-                    if (billed > 0) Ledger(staff, "charge", Price(billed), session: existing, user: user, reference: $"{billed} min before offline sale");
+                    if (billed > 0) Ledger(staff, "charge", Price(billed), session: existing, user: user, reference: $"{billed} min before offline sale", part: PayAtEnd);
                     if (billed > usedMin) CarryOver(staff, user, billed - usedMin);
                 }
                 Exec("UPDATE sessions SET prepaid_min = @p0, plan_id = NULL WHERE id = @p1", checked(usedMin + sale.Minutes), existing);
@@ -567,7 +569,7 @@ public sealed partial class CafeCore : IDisposable
         }
 
         var amount = Price(sale.Minutes);
-        Ledger(staff, "charge", amount, session: session, user: user, reference: $"offline sale {sale.SaleId} {sale.Minutes} min");
+        Ledger(staff, "charge", amount, session: session, user: user, reference: $"offline sale {sale.SaleId} {sale.Minutes} min", part: Package(sale.Minutes));
         Ledger(staff, "pay", amount, session: session, user: user, method: sale.Method, reference: sale.UpiLast4);
         Exec("UPDATE pcs SET locked = 0, self_locked = 0, message = NULL WHERE name = @p0", pc);
         Exec("INSERT INTO offline_sales(pc, sale_id, session_id, staff_id, step, created) VALUES(@p0, @p1, @p2, @p3, @p4, @p5)", pc, sale.SaleId, session, staff, sale.Step, Iso(_now()));
@@ -610,7 +612,7 @@ public sealed partial class CafeCore : IDisposable
         var used = TimeSpan.Zero;
         foreach (var id in ids.Split(',')) used += SessionUse(long.Parse(id, CultureInfo.InvariantCulture)).used;
         long Sum(string kind) => Scalar<long>($"SELECT coalesce(sum(amount), 0) FROM ledger WHERE kind = @p0 AND session_id IN ({ids})", kind);
-        return new Bill(g ?? session, used, Sum("charge"), Sum("adjust"), Sum("pay"));
+        return new Bill(g ?? session, used, Sum("charge"), Sum("adjust"), Sum("pay"), Lines(ids));
     });
 
     /// Cash, UPI (staff types the last 4 digits of the UPI reference) or wallet; split payments are several calls.
@@ -732,9 +734,10 @@ public sealed partial class CafeCore : IDisposable
     static void Minutes(int m) { if (m is < 1 or > 7 * 24 * 60) throw new CafeException("Minutes must be from 1 to 10080 (one week)."); }
     static void RequireReason(string reason) { if (string.IsNullOrWhiteSpace(reason)) throw new CafeException("Please write a reason."); }
 
-    void Ledger(long by, string kind, long amount, long? session = null, long? user = null, string? method = null, string? reference = null, string? reason = null) =>
-        Insert("INSERT INTO ledger(at, by_user, kind, amount, session_id, user_id, method, ref, reason, shift_id) VALUES(@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8, @p9)",
-            Iso(_now()), by, kind, amount, session, user, method, reference, reason, OpenShiftOf(by));
+    void Ledger(long by, string kind, long amount, long? session = null, long? user = null, string? method = null, string? reference = null, string? reason = null,
+        string? category = null, string? item = null, int? qty = null, string? note = null, string? part = null) =>
+        Insert("INSERT INTO ledger(at, by_user, kind, amount, session_id, user_id, method, ref, reason, shift_id, category, item, qty, note, part) VALUES(@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8, @p9, @p10, @p11, @p12, @p13, @p14)",
+            Iso(_now()), by, kind, amount, session, user, method, reference, reason, OpenShiftOf(by), category, item, qty, note, part);
     long? OpenShiftOf(long staff) => Scalar<long?>("SELECT id FROM shifts WHERE staff_id = @p0 AND closed IS NULL", staff);
 
     void Audit(long by, string action, string? detail) => Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, @p1, @p2, @p3)", Iso(_now()), by, action, detail);

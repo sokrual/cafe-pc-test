@@ -80,6 +80,11 @@ B5  Owner features                                                  IN PROGRESS
     B5.11 Food, drinks, snacks and merchandise on the bill: a list per category with custom text per sale,
           shown in the log, the bill and the reports. Offers choose what they apply to (time, items, both,
           or chosen plans and categories).
+          Built 11 Nov (PR #16, CI green): item lists and prices (owner), add to a visit with a note,
+          counter sale, bill lines, offers on the whole bill / play time / chosen lists, owner item report.
+          Offers cover anything sold, as the owner ticks: all play time, pay-at-the-end time, extra time,
+          a time package (e.g. 90 min), an item list, one item, a membership plan; also on counter sales
+          and membership sales.
     B5.12 Owner controls any gaming PC from the counter PC or his phone (remote control).
           Decided 11 Nov: our own buttons for daily use (lock, unlock, message, log out, restart, shut down,
           wake). v1: MeshCentral (Apache-2.0) as it is, for screen view and control from the phone or the
