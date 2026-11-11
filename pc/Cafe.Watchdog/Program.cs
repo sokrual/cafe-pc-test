@@ -11,6 +11,19 @@ using System.Security.Principal;
 // (that file must sit in a folder only admins can change, or anyone could make SYSTEM start their program).
 if (args.Contains("--test-pipe-probe", StringComparer.OrdinalIgnoreCase))
     Environment.ExitCode = PcProxy.TestPipeProbe();
+else if (args.Contains("--test-set-offline-refresh", StringComparer.OrdinalIgnoreCase))
+{
+    if (!args.Contains("--test-mode", StringComparer.OrdinalIgnoreCase)
+        || Environment.GetEnvironmentVariable("CAFE_TEST_MODE") != "1")
+        throw new InvalidOperationException("offline refresh test mode is not enabled");
+    var cacheIndex = Array.FindIndex(args, x => x.Equals("--cache-file", StringComparison.OrdinalIgnoreCase));
+    var timeIndex = Array.FindIndex(args, x => x.Equals("--server-time", StringComparison.OrdinalIgnoreCase));
+    if (cacheIndex < 0 || cacheIndex + 1 >= args.Length || timeIndex < 0 || timeIndex + 1 >= args.Length)
+        throw new InvalidOperationException("test cache file and server time are required");
+    var serverTime = DateTime.Parse(args[timeIndex + 1], System.Globalization.CultureInfo.InvariantCulture,
+        System.Globalization.DateTimeStyles.RoundtripKind);
+    new OfflineUnlockStore(args[cacheIndex + 1]).SetLastRefreshServerUtcForTest(serverTime);
+}
 else if (args.Contains("--test-proxy", StringComparer.OrdinalIgnoreCase))
 {
     PcProxy.StartTest(args);
