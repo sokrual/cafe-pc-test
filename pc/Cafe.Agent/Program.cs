@@ -258,7 +258,7 @@ sealed class LockScreen : Form
         FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true;
         StartPosition = FormStartPosition.Manual; BackColor = Color.FromArgb(14, 14, 22);
         // Show the generic name until first-run setup can supply each cafe's own name.
-        Control title = new Label { Text = "Gaming Cafe", AutoSize = false, Width = 520, Height = 70, ForeColor = Color.White, Font = new Font("Segoe UI", 28, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter };
+        Control title = new Label { Text = cafeName, AutoSize = false, Width = 520, Height = 70, ForeColor = Color.White, Font = new Font("Segoe UI", 28, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter };
         var box = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
         _method.Items.AddRange(["cash", "upi"]); _method.SelectedIndex = 0;
         foreach (Control c in new Control[] { title, _message, _phone, _pin, _go, _staffUnlock, _offlineRate, _staffPhone, _staffCode, _minutes, _method, _upi, _submitOffline, _error })
