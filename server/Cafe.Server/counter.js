@@ -54,6 +54,7 @@ async function refresh(forcePanel = false) {
 const liveText = r => [r.customer, { prepaid: "Paid in advance", postpaid: "Pays at the end", plan: "Plan time" }[r.mode], timeText(r),
   r.toPay > 0 ? "To pay " + rupees(r.toPay) : "Nothing to pay"].filter(Boolean).join(" · ");
 
+const day = iso => new Date(iso).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
 const span = m => m < 60 ? m + " min" : Math.floor(m / 60) + " h" + (m % 60 ? " " + m % 60 + " min" : "");
 function minutesPick(id) {
   const block = rate?.blockMin ?? 30;
@@ -116,7 +117,7 @@ function showPc(r) {
 }
 async function find() {
   try { const c = await api("GET", "/staff/customers/" + encodeURIComponent($("phone").value.trim()));
-    $("who").textContent = `${c.name} · plan or saved time ${c.planMinutes} min · wallet ${rupees(c.wallet)}`;
+    $("who").textContent = `${c.name} · ${c.membership ? `${c.membership.plan} member until ${day(c.membership.ends)}` : "not a member"} · saved time ${c.planMinutes} min · wallet ${rupees(c.wallet)}`;
   } catch (e) { $("who").textContent = e.message; }
 }
 async function stop(r) {
@@ -178,16 +179,19 @@ async function showRates(pick) {
       const target = typeof next === "function" ? next() : next ?? c.name; // read when clicked, not when drawn
       try { await fn(); await loadRate(); say(msg); showRates(target); } catch (e) { say(e.message, false); }
     };
-    const read = () => Object.fromEntries(RATE_FIELDS.map(([k, , unit]) => {
+    const read = () => ({ ...Object.fromEntries(RATE_FIELDS.map(([k, , unit]) => {
       const n = parseFloat($("r_" + k).value);
       if (!Number.isFinite(n)) throw new Error("Fill in every box with a number.");
       return [k, Math.round(n * unit)];
-    }));
+    })), carryOverMembersOnly: $("r_carry").value === "members" });
     panelKey = "side";
     $("panel").replaceChildren(el("h2", { textContent: "Rate cards" }),
       el("div", { className: "row" }, ...cards.map(x => el("button", { className: x.name === c.name ? "" : "quiet", textContent: x.name + (x.inUse ? " (in use)" : ""), onclick: () => showRates(x.name) }))),
       el("hr"), el("label", { htmlFor: "r_name", textContent: "Name (type a new name to make a new card)" }), el("input", { id: "r_name", value: c.name }),
       ...RATE_FIELDS.flatMap(([k, label, unit]) => [el("label", { htmlFor: "r_" + k, textContent: label }), el("input", { id: "r_" + k, inputMode: "decimal", value: c.rate[k] / unit })]),
+      el("label", { htmlFor: "r_carry", textContent: "Who keeps unused time" }),
+      el("select", { id: "r_carry" }, el("option", { value: "members", textContent: "Members only (until their membership ends)", selected: c.rate.carryOverMembersOnly }),
+        el("option", { value: "everyone", textContent: "Everyone (for the days above)", selected: !c.rate.carryOverMembersOnly })),
       el("div", { className: "row" },
         el("button", { textContent: "Save", onclick: run(() => api("POST", "/staff/rate-cards", { name: $("r_name").value.trim(), rate: read() }), "Rate card saved.", () => $("r_name").value.trim()) }),
         c.inUse ? null : el("button", { className: "quiet", textContent: "Put in use", onclick: run(() => api("POST", "/staff/rate-cards/use", { name: c.name }), `"${c.name}" is now in use.`) }),
@@ -196,4 +200,39 @@ async function showRates(pick) {
   } catch (e) { say(e.message, false); }
 }
 $("ratesBtn").onclick = () => showRates();
+
+// Memberships: the owner sets the plans, staff sell them at the counter. One membership at a time per customer.
+async function showMembers(pick) {
+  try {
+    const plans = await api("GET", "/staff/membership-plans");
+    const p = plans.find(x => x.name === pick) ?? plans[0] ?? { name: "Monthly", days: 30, price: 0 };
+    const run = (fn, msg, next) => async () => {
+      const target = typeof next === "function" ? next() : next ?? p.name;
+      try { const r = await fn(); say(typeof msg === "function" ? msg(r) : msg); showMembers(target); } catch (e) { say(e.message, false); }
+    };
+    const num = id => { const n = parseFloat($(id).value); if (!Number.isFinite(n)) throw new Error("Fill in every box with a number."); return n; };
+    panelKey = "side";
+    $("panel").replaceChildren(el("h2", { textContent: "Sell a membership" }),
+      el("label", { htmlFor: "m_phone", textContent: "Customer phone number" }), el("input", { id: "m_phone", inputMode: "numeric" }),
+      el("label", { htmlFor: "m_plan", textContent: "Membership" }),
+      el("select", { id: "m_plan" }, ...plans.map(x => el("option", { value: x.name, textContent: `${x.name} · ${x.days} days · ${rupees(x.price)}` }))),
+      el("label", { htmlFor: "m_how", textContent: "How" }),
+      el("select", { id: "m_how" }, el("option", { value: "cash", textContent: "Cash" }), el("option", { value: "upi", textContent: "UPI" })),
+      el("label", { htmlFor: "m_last4", textContent: "UPI: last 4 digits of the payment reference" }), el("input", { id: "m_last4", inputMode: "numeric", maxLength: 4 }),
+      el("div", { className: "row" }, el("button", { textContent: "Sell", disabled: !plans.length, onclick: run(() => api("POST", "/staff/memberships",
+        { phone: $("m_phone").value.trim(), plan: $("m_plan").value, method: $("m_how").value, upiLast4: $("m_last4").value || null }), r => `Member until ${day(r.ends)}.`) })),
+      el("hr"), el("h2", { textContent: "Membership plans (owner)" }),
+      el("div", { className: "row" }, ...plans.map(x => el("button", { className: x.name === p.name ? "" : "quiet", textContent: x.name, onclick: () => showMembers(x.name) }))),
+      el("label", { htmlFor: "m_name", textContent: "Name (type a new name to make a new plan)" }), el("input", { id: "m_name", value: p.name }),
+      el("label", { htmlFor: "m_days", textContent: "Days it lasts" }), el("input", { id: "m_days", inputMode: "numeric", value: p.days }),
+      el("label", { htmlFor: "m_price", textContent: "Price, ₹" }), el("input", { id: "m_price", inputMode: "decimal", value: p.price / 100 }),
+      el("div", { className: "row" },
+        el("button", { textContent: "Save plan", onclick: run(() => api("POST", "/staff/membership-plans",
+          { name: $("m_name").value.trim(), days: Math.round(num("m_days")), price: Math.round(num("m_price") * 100) }), "Membership plan saved.", () => $("m_name").value.trim()) }),
+        plans.some(x => x.name === p.name) ? el("button", { className: "danger", textContent: "Delete plan",
+          onclick: run(() => api("DELETE", "/staff/membership-plans/" + encodeURIComponent(p.name)), `"${p.name}" deleted. Members who paid keep their time.`, "") }) : null,
+        el("button", { className: "quiet", textContent: "Close", onclick: () => { panelKey = ""; refresh(true); } })));
+  } catch (e) { say(e.message, false); }
+}
+$("membersBtn").onclick = () => showMembers();
 if (token) start(); else $("login").hidden = false;

@@ -57,7 +57,8 @@ B5  Owner features                                                  IN PROGRESS
          a) owner rate cards                                                                     DONE
          b) memberships: monthly by default, one at a time, renewed at the counter; unused time is
             carried over only for members (non-members lose leftover minutes); the customer sees a
-            reminder before it ends
+            reminder before it ends                                                              DONE
+            (follow-up on the PC side: show the reminder on screen)
          c) members-only offers, happy hours, discounts and promotions
          d) reservations
     B5.10 First-run setup screens for the owner: rate card, carry-over rule, memberships, offers,

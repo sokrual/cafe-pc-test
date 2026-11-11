@@ -6,7 +6,7 @@ namespace Cafe;
 /// Locked: staff locked it. SelfLocked: the customer locked it. ToPay: owed right now, including a running pay-at-end bill.
 public record CounterRow(string Pc, bool Online, bool Locked, bool SelfLocked, string? Message, long? Session, string? Mode,
     long ElapsedSec, long? LeftSec, string? Customer, long ToPay);
-public record CustomerInfo(long Id, string Name, string Phone, long PlanMinutes, long Wallet);
+public record CustomerInfo(long Id, string Name, string Phone, long PlanMinutes, long Wallet, Membership? Membership);
 
 public sealed partial class CafeCore
 {
@@ -28,6 +28,6 @@ public sealed partial class CafeCore
         RequireStaff(by);
         var id = Scalar<long?>("SELECT id FROM users WHERE phone = @p0 AND role = @p1", phone, (int)Role.Customer)
             ?? throw new CafeException("No customer has this phone number.");
-        return new CustomerInfo(id, Scalar<string>("SELECT name FROM users WHERE id = @p0", id), phone, PlanMinutesLeft(id), WalletBalance(id));
+        return new CustomerInfo(id, Scalar<string>("SELECT name FROM users WHERE id = @p0", id), phone, PlanMinutesLeft(id), WalletBalance(id), MembershipOf(id));
     });
 }

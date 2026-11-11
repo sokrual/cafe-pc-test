@@ -24,6 +24,7 @@ public sealed class BillingTests : IDisposable
     public void Dispose() { _cafe.Dispose(); SqliteConnection.ClearAllPools(); try { File.Delete(_file); } catch (IOException) { } }
 
     void Wait(double minutes) => _clock = _clock.AddMinutes(minutes);
+    void Everyone() => _cafe.Rate = _cafe.Rate with { CarryOverMembersOnly = false };
     long PlayFor(double minutes, string pc = "PC1")
     {
         var s = _cafe.StartPostpaid(_staff, pc, _cust);
@@ -163,11 +164,43 @@ public sealed class BillingTests : IDisposable
     }
 
     [Fact]
+    public void Only_members_keep_unused_time_and_it_lasts_as_long_as_the_membership()
+    {
+        var shift = _cafe.OpenShift(_staff);
+        _cafe.AddPc(_owner, "PC1");
+        Assert.Equal(6000, PlayFor(36)); // not a member: 1 hour charged, the 24 unused minutes are gone
+        Assert.Equal(0, _cafe.PlanMinutesLeft(_cust));
+
+        Assert.Throws<CafeException>(() => _cafe.SaveMembershipPlan(_staff, new MembershipPlan("Monthly", 30, 50000))); // owner only
+        _cafe.SaveMembershipPlan(_owner, new MembershipPlan("Monthly", 30, 50000));
+        var ends = _cafe.SellMembership(_staff, _cust, "Monthly", "upi", "4321");
+        Assert.Equal(_clock.AddDays(30), ends);
+        Assert.Equal(new Membership("Monthly", ends), _cafe.MembershipOf(_cust));
+        Assert.Throws<CafeException>(() => _cafe.SellMembership(_staff, _staff, "Monthly", "cash")); // staff are not members
+
+        Assert.Equal(6000, PlayFor(36)); // a member keeps the 24 minutes until the membership ends
+        Assert.Equal(24, _cafe.PlanMinutesLeft(_cust));
+        Wait(60 * 24 * 28);
+        var s = _cafe.StartPostpaid(_staff, "PC1", _cust);
+        Assert.Contains("ends on", _cafe.StateOf("PC1").Notice); // reminder in the last 3 days
+        _cafe.Stop(_staff, s);
+        var renewed = _cafe.SellMembership(_staff, _cust, "Monthly", "cash"); // one at a time: the next period starts when this one ends
+        Assert.Equal(ends.AddDays(30), renewed);
+        Wait(60 * 24 * 5); // past the first end: still a member, kept time moved on with the renewal
+        Assert.Equal(24, _cafe.PlanMinutesLeft(_cust));
+        Assert.Null(_cafe.StateOf("PC1").Notice);
+        Wait(60 * 24 * 30); // renewal over, not renewed again: the kept time ends with it
+        Assert.Null(_cafe.MembershipOf(_cust));
+        Assert.Equal(0, _cafe.PlanMinutesLeft(_cust));
+        Assert.Equal((50000L, 50000L), (_cafe.ShiftTotal(shift, "upi"), _cafe.ShiftTotal(shift, "cash"))); // both sales are in the shift's money
+    }
+
+    [Fact]
     public void Counter_finds_a_customer_by_phone_with_saved_time_and_wallet()
     {
         _cafe.BuyPlan(_staff, _cust, 120, 7, 10000, "cash");
         _cafe.TopUp(_staff, _cust, "cash", 5000);
-        Assert.Equal(new CustomerInfo(_cust, "Ravi", "9000000003", 120, 5000), _cafe.FindCustomer(_staff, "9000000003"));
+        Assert.Equal(new CustomerInfo(_cust, "Ravi", "9000000003", 120, 5000, null), _cafe.FindCustomer(_staff, "9000000003"));
         Assert.Throws<CafeException>(() => _cafe.FindCustomer(_staff, "9000000099"));
         Assert.Throws<CafeException>(() => _cafe.FindCustomer(_staff, "9000000002")); // staff are not customers
         Assert.Throws<CafeException>(() => _cafe.FindCustomer(_cust, "9000000003"));
@@ -176,6 +209,7 @@ public sealed class BillingTests : IDisposable
     [Fact]
     public void Unused_minutes_of_a_charged_block_are_kept_for_7_days_but_not_the_free_start()
     {
+        Everyone(); // tests the owner's other choice: everyone keeps unused time
         Assert.Equal(0, PlayFor(5)); // free start: nothing charged, nothing kept
         Assert.Equal(0, _cafe.PlanMinutesLeft(_cust));
         Assert.Equal(6000, PlayFor(36)); // 1 hour charged, 24 min kept
@@ -200,6 +234,7 @@ public sealed class BillingTests : IDisposable
     [Fact]
     public void T2_3_prepaid_charges_up_front_then_grace_then_blocks()
     {
+        Everyone(); // tests the owner's other choice: everyone keeps unused time
         var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 60);
         Assert.Equal(6000, _cafe.BillFor(s).Due);
         Wait(65); // 5 min past the hour: inside the grace
@@ -217,6 +252,7 @@ public sealed class BillingTests : IDisposable
     [Fact]
     public void T2_3b_unused_prepaid_minutes_stay_for_another_day()
     {
+        Everyone(); // tests the owner's other choice: everyone keeps unused time
         var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 30);
         Wait(2); // only 2 min played: no grace on bought time, 28 min kept
         _cafe.Stop(_staff, s);
@@ -331,6 +367,7 @@ public sealed class BillingTests : IDisposable
     [Fact]
     public void T2_6b_plan_time_uses_the_same_grace_and_blocks()
     {
+        Everyone(); // tests the owner's other choice: everyone keeps unused time
         _cafe.BuyPlan(_staff, _cust, 120, 7, 10000, "cash");
         foreach (var (play, left) in new[] { (2, 118), (33, 85), (40, 45) }) // exact minutes off, no grace while time is left
         {
@@ -425,6 +462,7 @@ public sealed class BillingTests : IDisposable
     [Fact]
     public void Pc_login_uses_plan_time_first_then_pay_at_end_and_logout_bills()
     {
+        Everyone(); // tests the owner's other choice: everyone keeps unused time
         _cafe.AddPc(_owner, "PC1");
         Assert.Throws<CafeException>(() => _cafe.PcLogin("PC1", "9000000003", "0000"));
         var st = _cafe.PcLogin("PC1", "9000000003", "2222");
@@ -465,6 +503,7 @@ public sealed class BillingTests : IDisposable
     [Fact]
     public void Carry_over_lasts_30_days_by_default_and_the_owner_can_change_it()
     {
+        Everyone(); // tests the owner's other choice: everyone keeps unused time
         var s = _cafe.StartPrepaid(_staff, "PC1", _cust, 60);
         Wait(10); _cafe.Stop(_staff, s);
         Assert.Equal(50, _cafe.PlanMinutesLeft(_cust));

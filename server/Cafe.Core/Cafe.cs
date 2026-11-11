@@ -47,7 +47,7 @@ public static class StaffLoginNetwork
 }
 
 public record Rate(long Paise30 = 4000, long Paise60 = 6000, long Paise90 = 10000, long ExtraBlockPaise = 4000,
-    int GraceMin = 5, int MinimumMin = 30, int BlockMin = 30, int BlockGraceMin = 5, int CarryOverDays = 7);
+    int GraceMin = 5, int MinimumMin = 30, int BlockMin = 30, int BlockGraceMin = 5, int CarryOverDays = 7, bool CarryOverMembersOnly = true);
 
 public record Bill(long SessionId, TimeSpan Used, long Charged, long Adjusted, long Paid)
 {
@@ -56,7 +56,8 @@ public record Bill(long SessionId, TimeSpan Used, long Charged, long Adjusted, l
 
 /// What a PC should show right now. Locked = lock screen (no session, or the admin locked it).
 /// SelfLocked: the customer locked it (time keeps running; their PIN or staff unlocks it).
-public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec, bool SelfLocked = false, bool LockWhenTimeRunsOut = false);
+/// Notice: a short message for the customer at this PC (for example, their membership ends soon).
+public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec, bool SelfLocked = false, bool LockWhenTimeRunsOut = false, string? Notice = null);
 public record OfflineSaleRequest(string SaleId, string Phone, string Code, long Step, int Minutes, string Method, string? UpiLast4, long? Session);
 
 public class CafeException(string message) : Exception(message);
@@ -116,6 +117,7 @@ public sealed partial class CafeCore : IDisposable
         Exec($"PRAGMA user_version = {SchemaVersion}");
         _ready = true;
         LoadRateCards();
+        LoadMemberships();
     }
 
     public void Dispose() => _db.Dispose();
@@ -347,7 +349,10 @@ public sealed partial class CafeCore : IDisposable
     // Unused prepaid minutes become a time balance for another day (no money back).
     void CarryOver(long by, long user, int minutes)
     {
-        var id = Insert("INSERT INTO plans(user_id, minutes_left, expires) VALUES(@p0, @p1, @p2)", user, minutes, Iso(_now().AddDays(Rate.CarryOverDays)));
+        var member = MembershipOf(user);
+        if (member is null && Rate.CarryOverMembersOnly) return; // the owner's rule: only members keep unused time
+        var expires = member?.Ends ?? _now().AddDays(Rate.CarryOverDays); // a member keeps it for as long as the membership runs
+        var id = Insert("INSERT INTO plans(user_id, minutes_left, expires) VALUES(@p0, @p1, @p2)", user, minutes, Iso(expires));
         Audit(by, "carry_over", $"user {user} {minutes} min kept as plan {id}");
     }
 
@@ -404,7 +409,7 @@ public sealed partial class CafeCore : IDisposable
         long? left = prepaid is int b ? b * 60 - (long)used.TotalSeconds
                    : plan is not null ? PlanMinutesLeft(user) * 60 - (long)used.TotalSeconds : null;
         if (selfLocked && !adminLocked) message = "Locked by the customer. Their time is still running.";
-        return new PcState(adminLocked || selfLocked, message, s, mode, (long)used.TotalSeconds, left, selfLocked && !adminLocked, lockOnExpiry);
+        return new PcState(adminLocked || selfLocked, message, s, mode, (long)used.TotalSeconds, left, selfLocked && !adminLocked, lockOnExpiry, MembershipNotice(user));
         });
     }
 
