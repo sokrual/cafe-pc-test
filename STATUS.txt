@@ -48,7 +48,7 @@ B4  Customer sign-up and data rules                                 NOT STARTED
 B5  Owner features                                                  IN PROGRESS
     B5.1 Accounts, adding PCs, owner two-step login, staff auto-logout        DONE
          Code: server/Cafe.Core/Accounts.cs. Tests: server/Cafe.Tests/AccountTests.cs.
-    B5.2 Counter screen (web page): all PCs, start/stop/pause/add time, lock, payments       next
+    B5.2 Counter screen (web page): all PCs, start/stop/add time, lock to pause, payments, shifts   DONE
     B5.3 Alerts on the owner's PC (voice and popup) and the "allow or not" prompt for blocked programs
     B5.4 Reports: revenue by day, week, month, PC, cash/UPI, staff, discounts and corrections; PDF and Excel
     B5.5 Daily encrypted backup, with a restore test

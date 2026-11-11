@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Counter - Shinzx Gaming Hub</title>
+<style>
+  :root { --bg: #0e0e16; --card: #1a1a26; --line: #2c2c3c; --text: #f2f2f7; --dim: #a0a0b4; --ok: #3ccf7a; --warn: #f5b84a; --bad: #ef5a5a; --act: #4a8cff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.4 "Segoe UI", system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 20px; margin: 0 auto 0 0; }
+  button { background: var(--act); color: #fff; border: 0; border-radius: 8px; padding: 10px 14px; font: inherit; cursor: pointer; min-height: 44px; }
+  button.quiet { background: var(--line); }
+  button.danger { background: var(--bad); }
+  button:disabled { opacity: .4; cursor: default; }
+  input, select { background: #0b0b12; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: inherit; min-height: 44px; }
+  label { display: block; color: var(--dim); font-size: 14px; margin: 10px 0 4px; }
+  main { display: grid; grid-template-columns: 1fr 380px; gap: 16px; padding: 16px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  #pcs { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; align-content: start; }
+  .pc { background: var(--card); border: 2px solid transparent; border-radius: 12px; padding: 12px; text-align: left; color: var(--text); min-height: 130px; }
+  .pc.sel { border-color: var(--act); }
+  .pc b { font-size: 18px; display: block; }
+  .chip { display: inline-block; font-size: 13px; padding: 2px 8px; border-radius: 99px; margin: 4px 0; background: var(--line); }
+  .chip.free { background: #1f3b2b; color: var(--ok); }
+  .chip.use { background: #1d2b48; color: #8db6ff; }
+  .chip.lock { background: #48331d; color: var(--warn); }
+  .chip.off { background: #48201d; color: var(--bad); }
+  .small { color: var(--dim); font-size: 14px; }
+  #panel { background: var(--card); border-radius: 12px; padding: 16px; align-self: start; }
+  #panel h2 { margin: 0 0 8px; font-size: 18px; }
+  #panel input, #panel select { width: 100%; }
+  #panel .row > input, #panel .row > select { width: auto; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .row > * { flex: 1 1 auto; }
+  #msg { min-height: 24px; padding: 0 16px; }
+  #msg.err { color: var(--bad); } #msg.ok { color: var(--ok); }
+  #login { max-width: 360px; margin: 10vh auto; background: var(--card); padding: 24px; border-radius: 12px; }
+  #login input { width: 100%; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+  ul { padding-left: 18px; margin: 8px 0; }
+</style>
+</head>
+<body>
+<form id="login" hidden>
+  <h1>Counter sign in</h1>
+  <label for="lphone">Phone number</label><input id="lphone" inputmode="numeric" autocomplete="username" required>
+  <label for="lpin">PIN</label><input id="lpin" type="password" inputmode="numeric" autocomplete="current-password" required>
+  <label for="lcode">Code from the app (if you use two-step)</label><input id="lcode" inputmode="numeric" autocomplete="one-time-code">
+  <div class="row"><button type="submit">Sign in</button></div>
+  <p id="lerr" class="small" role="alert"></p>
+</form>
+<div id="app" hidden>
+  <header>
+    <h1>Shinzx Gaming Hub - Counter</h1>
+    <button class="quiet" id="shiftOpen">Open shift</button>
+    <button class="quiet" id="shiftClose">Close shift</button>
+    <button class="quiet" id="reviewBtn">Review</button>
+    <button class="quiet" id="logout">Sign out</button>
+  </header>
+  <p id="msg" role="status" aria-live="polite"></p>
+  <main>
+    <section id="pcs" aria-label="PCs"></section>
+    <aside id="panel" aria-live="polite"><p class="small">Pick a PC to see what you can do.</p></aside>
+  </main>
+</div>
+<script src="/staff/counter.js"></script>
+</body>
+</html>

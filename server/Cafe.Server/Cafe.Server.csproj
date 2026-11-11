@@ -10,5 +10,7 @@
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.14" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.14" />
     <ProjectReference Include="../Cafe.Core/Cafe.Core.csproj" />
+    <EmbeddedResource Include="counter.html" LogicalName="counter.html" />
+    <EmbeddedResource Include="counter.js" LogicalName="counter.js" />
   </ItemGroup>
 </Project>

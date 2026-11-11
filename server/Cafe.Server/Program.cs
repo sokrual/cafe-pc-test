@@ -132,6 +132,45 @@ app.MapGet("/staff/state/{pc}", (HttpContext c, string pc) => { Staff(c); return
 app.MapGet("/staff/bill/{session:long}", (HttpContext c, long session) => { Staff(c); return cafe.BillFor(session); });
 app.MapGet("/staff/review", (HttpContext c) => { Staff(c); return cafe.ForReview(); });
 
+// Counter screen (B5.2): one page plus its script, built into the server. Like every /staff address it opens
+// only on the counter PC or over Tailscale; the page itself holds no data until a staff login.
+var page = new Dictionary<string, (string Type, string Text)>
+{
+    ["/staff/"] = ("text/html; charset=utf-8", Resource("counter.html")), // routing also matches "/staff"
+    ["/staff/counter.js"] = ("text/javascript; charset=utf-8", Resource("counter.js")),
+};
+foreach (var (path, (type, text)) in page)
+    app.MapGet(path, (HttpContext c) =>
+    {
+        c.Response.Headers.ContentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+        c.Response.Headers.XContentTypeOptions = "nosniff";
+        c.Response.Headers["Referrer-Policy"] = "no-referrer";
+        c.Response.Headers.CacheControl = "no-store";
+        return Results.Text(text, type);
+    });
+app.MapGet("/staff/counter", (HttpContext c) => cafe.Counter(Staff(c)));
+app.MapGet("/staff/customers/{phone}", (HttpContext c, string phone) => cafe.FindCustomer(Staff(c), phone));
+app.MapPost("/staff/sessions", (HttpContext c, StartBody b) =>
+{
+    var by = Staff(c);
+    var user = cafe.FindCustomer(by, b.Phone).Id;
+    return new
+    {
+        session = b.Mode switch
+        {
+            "prepaid" => cafe.StartPrepaid(by, b.Pc, user, b.Minutes ?? 0),
+            "postpaid" => cafe.StartPostpaid(by, b.Pc, user),
+            "plan" => cafe.StartOnPlan(by, b.Pc, user),
+            _ => throw new CafeException("Choose pay now, pay at the end, or plan time."),
+        }
+    };
+});
+app.MapPost("/staff/sessions/{id:long}/stop", (HttpContext c, long id) => cafe.Stop(Staff(c), id));
+app.MapPost("/staff/sessions/{id:long}/time", (HttpContext c, long id, MinutesBody b) => { cafe.AddTime(Staff(c), id, b.Minutes); return Results.Ok(); });
+app.MapPost("/staff/sessions/{id:long}/pay", (HttpContext c, long id, PayBody b) => { cafe.Pay(Staff(c), id, b.Method, b.Amount, b.UpiLast4); return cafe.BillFor(id); });
+app.MapPost("/staff/shift/open", (HttpContext c) => new { shift = cafe.OpenShift(Staff(c)) });
+app.MapPost("/staff/shift/close", (HttpContext c, CashBody b) => { var (expected, difference) = cafe.CloseShift(Staff(c), b.Counted); return new { expected, difference }; });
+
 Log($"started v{System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version}, certificate {cert.Thumbprint}");
 app.Lifetime.ApplicationStarted.Register(() => _ = Task.Run(async () =>
 {
@@ -147,6 +186,12 @@ app.Lifetime.ApplicationStarted.Register(() => _ = Task.Run(async () =>
     catch (OperationCanceledException) { }
 }));
 app.Run();
+
+static string Resource(string name)
+{
+    using var s = typeof(Program).Assembly.GetManifestResourceStream(name) ?? throw new InvalidOperationException($"missing {name}");
+    return new StreamReader(s).ReadToEnd();
+}
 
 string? Arg(string name) => Array.IndexOf(args, name) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
 
@@ -219,3 +264,7 @@ record StaffTwoStepBody(string Phone, string Secret, string Code);
 record OfflineSaleBody(string SaleId, string Phone, string Code, long Step, int Minutes, string Method, string? UpiLast4, long? Session);
 record PcBody(string Pc, string? Message);
 record TimeLockBody(bool Enabled);
+record StartBody(string Pc, string Phone, string Mode, int? Minutes);
+record MinutesBody(int Minutes);
+record PayBody(string Method, long Amount, string? UpiLast4);
+record CashBody(long Counted);
