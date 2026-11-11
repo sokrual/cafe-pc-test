@@ -6,12 +6,12 @@ $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Windows.Forms
 function Say($text, $buttons = "OK") {
     if ($Ci) { Write-Host $text; return "No" }
-    [System.Windows.Forms.MessageBox]::Show($text, "Shinzx test", $buttons)
+    [System.Windows.Forms.MessageBox]::Show($text, "Cafe test", $buttons)
 }
 trap { Say "Something went wrong:`n$_`n`nCustomers can keep using this PC - nothing is blocked for them.`n`nPlease take a photo of this window and send it on Discord to the person who gave you this test. Then double-click FINISH-TEST to undo any changes." | Out-Null; break }
 
 $root = $PSScriptRoot
-if ($root -match '\\(Downloads|Desktop|Documents|OneDrive)(\\|$)') { Say "Please move this folder to C:\ShinzxTest and run START-TEST again."; exit 1 }
+if ($root -match '\\(Downloads|Desktop|Documents|OneDrive)(\\|$)') { Say "Please move this folder to C:\CafeTest and run START-TEST again."; exit 1 }
 $logs = Join-Path $root "logs"
 Get-ChildItem $root -File | Unblock-File   # kit files only, before the transcript file is open
 # Folders made in C:\ let every user change their files. Lock the kit: measure.ps1 runs as SYSTEM and
@@ -40,7 +40,7 @@ $start = Get-Date
 $expires = $start.AddDays(3).ToString("s")   # monitoring stops itself after 3 days if FINISH-TEST is forgotten
 @{ start = $start.ToString("s"); expires = $expires } | ConvertTo-Json | Out-File (Join-Path $logs "test-window.json") -Encoding utf8
 
-$exe = Join-Path $root "ShinzxTimerTest.exe"
+$exe = Join-Path $root "CafeTimerTest.exe"
 # --- PC details (also answers "which Windows version?") ---
 $os = Get-CimInstance Win32_OperatingSystem
 $cv = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
@@ -87,7 +87,7 @@ function Write-Policy($file, $denySid, $denyPaths, $mode) {
     $col = foreach ($type in "Exe", "Msi", "Script") {
         $r = "<FilePathRule Id=`"$([guid]::NewGuid())`" Name=`"Allow all`" Description=`"`" UserOrGroupSid=`"S-1-1-0`" Action=`"Allow`"><Conditions><FilePathCondition Path=`"*`" /></Conditions></FilePathRule>"
         foreach ($d in $denyPaths) {
-            $r += "<FilePathRule Id=`"$([guid]::NewGuid())`" Name=`"Shinzx block`" Description=`"`" UserOrGroupSid=`"$denySid`" Action=`"Deny`"><Conditions><FilePathCondition Path=`"$([Security.SecurityElement]::Escape($d))`" /></Conditions></FilePathRule>"
+            $r += "<FilePathRule Id=`"$([guid]::NewGuid())`" Name=`"Cafe block`" Description=`"`" UserOrGroupSid=`"$denySid`" Action=`"Deny`"><Conditions><FilePathCondition Path=`"$([Security.SecurityElement]::Escape($d))`" /></Conditions></FilePathRule>"
         }
         "<RuleCollection Type=`"$type`" EnforcementMode=`"$mode`">$r</RuleCollection>"
     }
@@ -110,7 +110,7 @@ function Apply-Policy($file) {
 }
 
 # --- T0.2 enforced check with a temporary standard user (removed again a minute later) ---
-$user = "ShinzxTest"
+$user = "CafeTest"
 $usersGroup = (Get-LocalGroup -SID "S-1-5-32-545").Name
 function Remove-TestUser { # user and its profile; also clears one left by an earlier run that lost power
     $u = Get-LocalUser $user -ErrorAction SilentlyContinue
@@ -139,7 +139,7 @@ try {
 
     foreach ($d in $testDirs) {
         New-Item -ItemType Directory $d -Force | Out-Null
-        $copy = Join-Path $d "shinzx-blocktest.exe"
+        $copy = Join-Path $d "Cafe-blocktest.exe"
         Copy-Item "$sys32\whoami.exe" $copy -Force
         $why = try { Start-Process $copy -Credential $cred -WorkingDirectory $sys32 -WindowStyle Hidden -Wait; "it ran" } catch { $_.Exception.Message }
         $blocked = $why -match "blocked|policy"
@@ -149,7 +149,7 @@ try {
     if (-not $usb) { Add-Result "T0.2b" "Program blocked on a USB drive" $null "no USB drive was plugged in" }
 
     $ctl = (Start-Process $exe -ArgumentList "--selftest" -Credential $cred -WorkingDirectory $root -Wait -PassThru).ExitCode
-    Add-Result "T0.2c" "Normal programs still run for customers" ($ctl -eq 0) "test program from C:\ShinzxTest exit code $ctl"
+    Add-Result "T0.2c" "Normal programs still run for customers" ($ctl -eq 0) "test program from C:\CafeTest exit code $ctl"
 
     $probe = Join-Path $root "probe.txt"
     Start-Process "$sys32\cmd.exe" -ArgumentList "/c echo x> `"$probe`"" -Credential $cred -WorkingDirectory $sys32 -WindowStyle Hidden -Wait
@@ -183,7 +183,7 @@ try {
     wevtutil.exe sl "Microsoft-Windows-CodeIntegrity/Operational" /ms:67108864
     $policy = Join-Path $logs "levelA-audit.xml"
     Copy-Item "$env:WINDIR\schemas\CodeIntegrity\ExamplePolicies\DefaultWindows_Audit.xml" $policy -Force
-    Set-CIPolicyIdInfo -FilePath $policy -PolicyName "Shinzx test (watch only)" -ResetPolicyID | Out-Null
+    Set-CIPolicyIdInfo -FilePath $policy -PolicyName "Cafe test (watch only)" -ResetPolicyID | Out-Null
     Set-RuleOption -FilePath $policy -Option 3   # 3 = audit mode; set again so this can never block anything
     $policyId = ([xml](Get-Content $policy -Raw)).SiPolicy.PolicyID
     ConvertFrom-CIPolicy -XmlFilePath $policy -BinaryFilePath (Join-Path $logs "levelA.cip") | Out-Null
@@ -206,10 +206,10 @@ try {
 # --- Scheduled tasks: timer for every user at sign-in, hidden measurer as SYSTEM at start-up ---
 $set = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries
 $timerArgs = "--log `"$userLogs`" --games `"$root\games.txt`" --expires $expires"
-Register-ScheduledTask -TaskName "ShinzxTestTimer" -Force -Action (New-ScheduledTaskAction -Execute $exe -Argument $timerArgs) `
+Register-ScheduledTask -TaskName "CafeTestTimer" -Force -Action (New-ScheduledTaskAction -Execute $exe -Argument $timerArgs) `
     -Trigger (New-ScheduledTaskTrigger -AtLogOn) -Principal (New-ScheduledTaskPrincipal -GroupId $usersGroup -RunLevel Limited) -Settings $set | Out-Null
 $mArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$root\measure.ps1`" -Out `"$logs\measure.csv`" -Expires $expires"
-Register-ScheduledTask -TaskName "ShinzxTestMeasure" -Force -Action (New-ScheduledTaskAction -Execute "powershell.exe" -Argument $mArgs) `
+Register-ScheduledTask -TaskName "CafeTestMeasure" -Force -Action (New-ScheduledTaskAction -Execute "powershell.exe" -Argument $mArgs) `
     -Trigger (New-ScheduledTaskTrigger -AtStartup) -Principal (New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest) -Settings $set | Out-Null
 Add-Result "T0.1b" "Day-long timer monitoring installed" $true "starts after the restart"
 

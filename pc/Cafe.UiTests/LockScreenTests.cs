@@ -25,7 +25,7 @@ public sealed class LockScreenTests : IDisposable
     [Fact]
     public async Task Pending_cleanup_keeps_the_lock_screen_blocked_with_counter_message()
     {
-        var note = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ShinzxCafe", "wipe", "request");
+        var note = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "wipe", "request");
         var wipeDirectory = Path.GetDirectoryName(note)!;
         var createdWipeDirectory = !Directory.Exists(wipeDirectory);
         var createdNote = false;
@@ -360,7 +360,7 @@ public sealed class WatchdogTests : IDisposable
             Rig.WaitFor(() => app.GetAllTopLevelWindows(_rig.Ui).Any(w =>
                 w.Properties.AutomationId.ValueOrDefault == "LockScreen" && !w.IsOffscreen),
                 15, "lock screen did not remain visible without the PC token");
-            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ShinzxCafe", "logs");
+            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "logs");
             var log = Directory.GetFiles(logs, "watchdog-*").Select(File.ReadAllText).LastOrDefault() ?? "";
             Assert.Contains("PC pipe proxy start failed", log);
             Assert.Contains("retrying in 30 seconds", log);
@@ -419,7 +419,7 @@ public sealed class WatchdogTests : IDisposable
         catch
         {
             Rig.Screenshot();
-            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ShinzxCafe", "logs");
+            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "logs");
             if (Directory.Exists(logs)) foreach (var f in Directory.GetFiles(logs, "watchdog-*")) Console.WriteLine($"--- {f}\n{File.ReadAllText(f)}");
             throw;
         }

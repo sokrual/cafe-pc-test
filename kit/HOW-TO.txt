@@ -1,6 +1,6 @@
-SHINZX TEST v4 - 3 STEPS
+Cafe test v4 - 3 STEPS
 
-1. Copy this folder to  C:\ShinzxTest
+1. Copy this folder to  C:\CafeTest
    On a PC that is free for 15 minutes, double-click START-TEST.
    - Click "Yes" when Windows asks for admin permission.
    - If a blue "Windows protected your PC" box appears: click "More info", then "Run anyway".
@@ -12,14 +12,14 @@ SHINZX TEST v4 - 3 STEPS
    - Please open every game on this PC at least once, and let it update if it asks.
    - Also open the mouse, keyboard and headset apps once.
    A small timer will show at the bottom-right. It hides by itself during games.
-   Once in a while a short voice says "Shinzx Gaming Hub test message" in the headset. Nothing to do.
+   Once in a while a short voice says "Gaming Cafe test message" in the headset. Nothing to do.
 
 3. When done, double-click FINISH-TEST and answer the one question it asks.
-   It puts the PC back exactly as before and makes a file "Shinzx-Test-Report-....zip"
-   in the C:\ShinzxTest folder. That folder opens by itself with the file selected.
+   It puts the PC back exactly as before and makes a file "Cafe-Test-Report-....zip"
+   in the C:\CafeTest folder. That folder opens by itself with the file selected.
    Send that file on Discord to the person who gave you this test.
 
 (If FINISH-TEST is forgotten, the timer and voice switch off by themselves after 3 days.
  Running FINISH-TEST later still puts everything back.)
 
-Once they confirm they got the file, you can delete the C:\ShinzxTest folder.
+Once they confirm they got the file, you can delete the C:\CafeTest folder.

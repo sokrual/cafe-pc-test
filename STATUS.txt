@@ -64,7 +64,7 @@ B5  Owner features                                                  IN PROGRESS
     B5.10 First-run setup for any cafe, anywhere: country, currency, time zone, date format, payment
           methods, phone number format, then rate card, carry-over rule, memberships, offers, discounts,
           promotions, logo. Nothing a cafe might want differently stays fixed in the code.
-          Shinzx runs it again after testing.
+          The pilot cafe runs it again after testing.
           Decided 11 Nov: the country fills in currency, decimals, time zone, date format, phone format and
           payment methods; the owner can change each one. Phone numbers from any country (stored with the
           country code). Tax follows the country with an owner-set rate; a cafe not registered for tax

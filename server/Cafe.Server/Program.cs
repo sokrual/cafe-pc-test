@@ -106,20 +106,20 @@ app.MapPost("/staff/two-step/start", (HttpContext c) =>
 {
     Owner(c);
     var secret = CafeCore.NewTwoStepSecret();
-    return new { secret, uri = $"otpauth://totp/Shinzx%20Cafe?secret={secret}&issuer=Shinzx%20Cafe" };
+    return new { secret, uri = $"otpauth://totp/Gaming%20Cafe?secret={secret}&issuer=Gaming%20Cafe" };
 });
 app.MapPost("/staff/two-step/on", (HttpContext c, TwoStepBody b) => new { recovery = cafe.TurnOnTwoStep(Owner(c), b.Secret, b.Code) });
 app.MapPost("/staff/two-step/staff/start", (HttpContext c, PhoneBody b) =>
 {
     var secret = cafe.StartTwoStepFor(Owner(c), b.Phone);
-    return new { secret, uri = $"otpauth://totp/Shinzx%20Cafe?secret={secret}&issuer=Shinzx%20Cafe" };
+    return new { secret, uri = $"otpauth://totp/Gaming%20Cafe?secret={secret}&issuer=Gaming%20Cafe" };
 });
 app.MapPost("/staff/two-step/staff/on", (HttpContext c, StaffTwoStepBody b) =>
     new { recovery = cafe.TurnOnTwoStepFor(Owner(c), b.Phone, b.Secret, b.Code) });
 app.MapPost("/staff/two-step/offline/start", (HttpContext c, PhoneBody b) =>
 {
     var secret = cafe.StartOfflineUnlockFor(Owner(c), b.Phone);
-    return new { secret, uri = $"otpauth://totp/Shinzx%20Cafe%20Offline?secret={secret}&issuer=Shinzx%20Cafe%20Offline" };
+    return new { secret, uri = $"otpauth://totp/Gaming%20Cafe%20Offline?secret={secret}&issuer=Gaming%20Cafe%20Offline" };
 });
 app.MapPost("/staff/two-step/offline/on", (HttpContext c, StaffTwoStepBody b) =>
 {

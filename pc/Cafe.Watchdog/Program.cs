@@ -29,7 +29,7 @@ sealed class WatchdogService : ServiceBase
 static class Watchdog
 {
     // admin-only on an installed PC; not ProgramData\Cafe, where the lock screen (as Customer) writes and could plant files
-    static readonly string Logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ShinzxCafe", "logs");
+    static readonly string Logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "logs");
 
     public static void Run(CancellationToken stop)
     {

@@ -9,8 +9,8 @@
 param([string]$Server, [string]$DnsServer, [switch]$Setup, [switch]$Uninstall, [switch]$Ci)
 $ErrorActionPreference = "Stop"
 $src = $PSScriptRoot
-$app = "$env:ProgramFiles\ShinzxCafe"     # program files: only admins can change them
-$data = "$env:ProgramData\ShinzxCafe"     # clean copy and settings: only admins and Windows can open them
+$app = "$env:ProgramFiles\GamingCafe"     # program files: only admins can change them
+$data = "$env:ProgramData\GamingCafe"     # clean copy and settings: only admins and Windows can open them
 $flag = "$app\setup.flag"                 # while this file exists the lock screen stays off
 $user = "Customer"
 $svc = "CafeWatchdog"
@@ -19,13 +19,13 @@ $machinePolicy = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Syste
 function Say($text) {
     if ($Ci) { Write-Host $text; return }
     Add-Type -AssemblyName System.Windows.Forms
-    [System.Windows.Forms.MessageBox]::Show($text, "Shinzx setup") | Out-Null
+    [System.Windows.Forms.MessageBox]::Show($text, "Gaming Cafe setup") | Out-Null
 }
 trap { Say "Setup stopped:`n$_`n`nRun it again. If it stops again, take a photo of this window. Send the photo and the file install-log.txt (in this folder) on Discord to the person who gave you this software."; break }
 if (-not $Uninstall) { Start-Transcript "$src\install-log.txt" -Append | Out-Null }   # what happened, step by step: send this file on Discord if setup stops
 
 # The Windows sign-in password is kept where Windows keeps it for automatic sign-in (an LSA secret), never in a file.
-Add-Type -Namespace Shinzx -Name Lsa -MemberDefinition @'
+Add-Type -Namespace Cafe -Name Lsa -MemberDefinition @'
 [StructLayout(LayoutKind.Sequential)] public struct U { public ushort Len, Max; public IntPtr Buf; }
 [StructLayout(LayoutKind.Sequential)] public struct A { public int Len; public IntPtr Root, Name; public uint Attr; public IntPtr Sd, Qos; }
 [DllImport("advapi32.dll")] static extern uint LsaOpenPolicy(IntPtr sys, ref A attr, uint access, out IntPtr h);
@@ -85,7 +85,7 @@ if ($Uninstall) {
     foreach ($m in "Minimal", "Network") { Remove-Item "HKLM:\SYSTEM\CurrentControlSet\Control\SafeBoot\$m\$svc" -Recurse -ErrorAction SilentlyContinue }
     Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force
     if (Test-Path "$app\levelA.ps1") { & "$app\levelA.ps1" -Mode Off }
-    [Shinzx.Lsa]::Store("DefaultPassword", $null)
+    [Cafe.Lsa]::Store("DefaultPassword", $null)
     if (Test-Path "$data\before.json") { # put back each Windows setting exactly as it was before the first install
         $before = Get-Content "$data\before.json" -Raw | ConvertFrom-Json
         foreach ($p in $before.PSObject.Properties) {
@@ -93,7 +93,7 @@ if ($Uninstall) {
             if ($null -eq $p.Value) { Remove-ItemProperty $key $name -ErrorAction SilentlyContinue } else { Set-ItemProperty $key $name $p.Value }
         }
     }
-    Remove-NetFirewallRule -Group "Shinzx PC" -ErrorAction SilentlyContinue
+    Remove-NetFirewallRule -Group "Cafe PC" -ErrorAction SilentlyContinue
     if (Test-Path "$data\dns-before.json") { Restore-Dns }
     $u = Get-LocalUser $user -ErrorAction SilentlyContinue
     if ($u) {
@@ -108,7 +108,7 @@ if ($Uninstall) {
 
 # --- the counter PC's address and this PC's keys ---
 if (-not $Server -and (Test-Path "$app\watchdog.args")) { $Server = ((Get-Content "$app\watchdog.args" -Raw) -split '--server https://')[1] -replace '(?s):5443.*', '' }
-if (-not $Server -and -not $Ci) { Add-Type -AssemblyName Microsoft.VisualBasic; $Server = [Microsoft.VisualBasic.Interaction]::InputBox("Type the counter PC's address (for example 192.168.1.10):", "Shinzx setup") }
+if (-not $Server -and -not $Ci) { Add-Type -AssemblyName Microsoft.VisualBasic; $Server = [Microsoft.VisualBasic.Interaction]::InputBox("Type the counter PC's address (for example 192.168.1.10):", "Gaming Cafe setup") }
 if ($Server -notmatch '^[A-Za-z0-9.-]{1,63}$') { throw "The counter PC's address '$Server' is not valid. Use its address, for example 192.168.1.10." }
 foreach ($f in "pc.token", "server.pin") {
     if (-not (Test-Path "$src\$f") -and -not (Test-Path "$app\$f") -and -not (Test-Path "$data\keys\$f")) {
@@ -163,7 +163,7 @@ else {
     Add-LocalGroupMember -SID "S-1-5-32-545" -Member $user
 }
 Remove-LocalGroupMember -SID "S-1-5-32-544" -Member $user -ErrorAction SilentlyContinue   # never an admin
-[Shinzx.Lsa]::Store("DefaultPassword", $pwText)
+[Cafe.Lsa]::Store("DefaultPassword", $pwText)
 Remove-ItemProperty $winlogon DefaultPassword -ErrorAction SilentlyContinue   # never in plain text
 Set-ItemProperty $winlogon AutoAdminLogon "1"
 Set-ItemProperty $winlogon ForceAutoLogon "1"      # signs Customer in again after a sign-out too
@@ -186,7 +186,7 @@ if ($dnsOk) {
             [pscustomobject]@{ index = $_.InterfaceIndex; servers = "$static" }
         }) | ConvertTo-Json | Set-Content "$data\dns-before.json" -Encoding utf8
     }
-    Remove-NetFirewallRule -Group "Shinzx PC" -ErrorAction SilentlyContinue
+    Remove-NetFirewallRule -Group "Cafe PC" -ErrorAction SilentlyContinue
     $DnsServer | Set-Content "$data\dns-server.txt" -Encoding ascii
     foreach ($n in $nics) { Set-DnsClientServerAddress -InterfaceIndex $n.InterfaceIndex -ServerAddresses $DnsServer }
     # block DNS (53) and private DNS (853) to every address except the filter; all of IPv6
@@ -195,13 +195,13 @@ if ($dnsOk) {
     $others = @("::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")
     if ($n -gt 0) { $others += "0.0.0.0-$(Ip ($n - 1))" }
     if ($n -lt [uint32]::MaxValue) { $others += "$(Ip ($n + 1))-255.255.255.255" }
-    New-NetFirewallRule -Group "Shinzx PC" -DisplayName "Shinzx: web addresses only through the counter PC (UDP)" -Direction Outbound -Action Block -Profile Any -Protocol UDP -RemotePort 53, 853 -RemoteAddress $others | Out-Null
-    New-NetFirewallRule -Group "Shinzx PC" -DisplayName "Shinzx: web addresses only through the counter PC (TCP)" -Direction Outbound -Action Block -Profile Any -Protocol TCP -RemotePort 53, 853 -RemoteAddress $others | Out-Null
+    New-NetFirewallRule -Group "Cafe PC" -DisplayName "Cafe: web addresses only through the counter PC (UDP)" -Direction Outbound -Action Block -Profile Any -Protocol UDP -RemotePort 53, 853 -RemoteAddress $others | Out-Null
+    New-NetFirewallRule -Group "Cafe PC" -DisplayName "Cafe: web addresses only through the counter PC (TCP)" -Direction Outbound -Action Block -Profile Any -Protocol TCP -RemotePort 53, 853 -RemoteAddress $others | Out-Null
     # browsers must not go around it with their own secure DNS
     foreach ($k in $edge, $chrome) { Key $k; Set-ItemProperty $k DnsOverHttpsMode "off" }
     Key $firefox; Set-ItemProperty $firefox Enabled 0 -Type DWord; Set-ItemProperty $firefox Locked 1 -Type DWord
     Clear-DnsClientCache
-} elseif (-not (Get-NetFirewallRule -Group "Shinzx PC" -ErrorAction SilentlyContinue)) {   # an existing lock stays as it is
+} elseif (-not (Get-NetFirewallRule -Group "Cafe PC" -ErrorAction SilentlyContinue)) {   # an existing lock stays as it is
     Say "Note: the internet filter on the counter PC ($DnsServer) did not answer. Website filtering is NOT on for this PC yet.`nFinish the filter setup on the counter PC, then run INSTALL-PC again. Everything else works."
 }
 
@@ -215,7 +215,7 @@ w32tm.exe /resync /nowait | Out-Null
 
 # --- the watchdog service: runs as Windows itself (SYSTEM), starts with the PC, also in Safe Mode, restarts if it stops ---
 if (-not (Get-Service $svc -ErrorAction SilentlyContinue)) {
-    New-Service -Name $svc -BinaryPathName "`"$app\Cafe.Watchdog.exe`"" -DisplayName "Shinzx Cafe watchdog" -StartupType Automatic | Out-Null
+    New-Service -Name $svc -BinaryPathName "`"$app\Cafe.Watchdog.exe`"" -DisplayName "Gaming Cafe watchdog" -StartupType Automatic | Out-Null
 }
 sc.exe failure $svc reset= 86400 actions= restart/2000/restart/2000/restart/2000 | Out-Null
 foreach ($m in "Minimal", "Network") { New-Item "HKLM:\SYSTEM\CurrentControlSet\Control\SafeBoot\$m\$svc" -Value "Service" -Force | Out-Null }
@@ -243,9 +243,9 @@ if (Test-Path $flag) {
     $hive = "Registry::HKEY_USERS\$sid"
     $loaded = Test-Path $hive
     if (-not $loaded) { # Windows may still be closing the account's settings file just after a sign-out: try for 20 s
-        for ($i = 0; $i -lt 10; $i++) { cmd.exe /c "reg load HKU\ShinzxCustomer `"$profilePath\NTUSER.DAT`" >nul 2>&1"; if (-not $LASTEXITCODE) { break }; Start-Sleep -Seconds 2 }
+        for ($i = 0; $i -lt 10; $i++) { cmd.exe /c "reg load HKU\CafeCustomer `"$profilePath\NTUSER.DAT`" >nul 2>&1"; if (-not $LASTEXITCODE) { break }; Start-Sleep -Seconds 2 }
         if ($LASTEXITCODE) { throw "Could not open the Customer account's settings (error $LASTEXITCODE). Restart the PC and run INSTALL-PC again." }
-        $hive = "Registry::HKEY_USERS\ShinzxCustomer"
+        $hive = "Registry::HKEY_USERS\CafeCustomer"
     }
     try {
         foreach ($p in @(
@@ -273,7 +273,7 @@ if (Test-Path $flag) {
         New-Item $hiveSnapshot -ItemType Directory -Force | Out-Null
         icacls $hiveSnapshot /inheritance:r /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Could not protect the clean registry hive snapshot." }
-        $hiveName = if ($loaded) { $sid } else { "ShinzxCustomer" }
+        $hiveName = if ($loaded) { $sid } else { "CafeCustomer" }
         reg.exe save "HKU\$hiveName" "$hiveSnapshot\NTUSER.DAT" /y | Out-Null
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$hiveSnapshot\NTUSER.DAT")) { throw "Could not save the Customer registry hive." }
         $classSid = "${sid}_Classes"
@@ -286,13 +286,13 @@ if (Test-Path $flag) {
         }
         Remove-Variable item -ErrorAction SilentlyContinue
     } finally {
-        if (-not $loaded) { [gc]::Collect(); Start-Sleep -Milliseconds 500; reg.exe unload "HKU\ShinzxCustomer" | Out-Null }
+        if (-not $loaded) { [gc]::Collect(); Start-Sleep -Milliseconds 500; reg.exe unload "HKU\CafeCustomer" | Out-Null }
     }
     # Level A watch-only: nothing is blocked; Windows notes every program it would block, for the owner to review
     if (-not (Test-Path "$data\levelA-id.txt")) { & "$app\levelA.ps1" -Mode Audit }
     Remove-Item $flag -Force
     Start-Service $svc
-    Restart-Now "All done. The PC restarts now and shows the lock screen.`n`nTo change the Customer account later (new game shortcut, Discord update): double-click SETUP-MODE in C:\Program Files\ShinzxCafe."
+    Restart-Now "All done. The PC restarts now and shows the lock screen.`n`nTo change the Customer account later (new game shortcut, Discord update): double-click SETUP-MODE in C:\Program Files\GamingCafe."
     exit 0
 }
 

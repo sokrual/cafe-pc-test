@@ -1,5 +1,5 @@
 # FINISH-TEST: stops monitoring, puts the PC back exactly as before, asks one question,
-# and writes Shinzx-Test-Report-<date>.zip in this folder to send back.
+# and writes Cafe-Test-Report-<date>.zip in this folder to send back.
 # -ReportOnly rebuilds the report from an existing logs folder without touching Windows (used for testing).
 # -Ci: unattended run on a test machine (no pop-ups; pass -VoiceHeard Yes/No).
 param([switch]$ReportOnly, [string]$LogsDir, [string]$VoiceHeard, [switch]$Ci)
@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 trap {
     if (-not $ReportOnly -and -not $Ci) {
         Add-Type -AssemblyName System.Windows.Forms
-        [System.Windows.Forms.MessageBox]::Show("Something went wrong:`n$_`n`nPlease take a photo of this window and send it on Discord to the person who gave you this test. Then double-click FINISH-TEST once more.", "Shinzx test") | Out-Null
+        [System.Windows.Forms.MessageBox]::Show("Something went wrong:`n$_`n`nPlease take a photo of this window and send it on Discord to the person who gave you this test. Then double-click FINISH-TEST once more.", "Cafe test") | Out-Null
     }
     break
 }
@@ -39,14 +39,14 @@ if (-not $ReportOnly) {
     try {
         # 1. stop monitoring
         New-Item (Join-Path $logs "stop.flag") -ItemType File -Force | Out-Null
-        foreach ($t in "ShinzxTestTimer", "ShinzxTestMeasure") {
+        foreach ($t in "CafeTestTimer", "CafeTestMeasure") {
             Stop-ScheduledTask $t -ErrorAction SilentlyContinue
             Unregister-ScheduledTask $t -Confirm:$false -ErrorAction SilentlyContinue
         }
-        Get-Process ShinzxTimerTest -ErrorAction SilentlyContinue | Stop-Process -Force
+        Get-Process CafeTimerTest -ErrorAction SilentlyContinue | Stop-Process -Force
         # temporary user left behind if the PC lost power during START-TEST
-        $u = Get-LocalUser "ShinzxTest" -ErrorAction SilentlyContinue
-        if ($u) { Get-CimInstance Win32_UserProfile | Where-Object SID -eq $u.SID.Value | Remove-CimInstance; Remove-LocalUser "ShinzxTest" }
+        $u = Get-LocalUser "CafeTest" -ErrorAction SilentlyContinue
+        if ($u) { Get-CimInstance Win32_UserProfile | Where-Object SID -eq $u.SID.Value | Remove-CimInstance; Remove-LocalUser "CafeTest" }
 
         # 2. what WOULD have been blocked during normal use (audit events 8003 = exe/dll, 8006 = msi/script)
         $ev = @(foreach ($log in "Microsoft-Windows-AppLocker/EXE and DLL", "Microsoft-Windows-AppLocker/MSI and Script") {
@@ -62,9 +62,9 @@ if (-not $ReportOnly) {
 
         # Level A: every file Windows would not have trusted (event 3076), with who signed it. Events name the disk
         # as \Device\HarddiskVolumeN, so map those back to drive letters first.
-        Add-Type -Namespace Shinzx -Name Dos -MemberDefinition '[DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern uint QueryDosDevice(string name, System.Text.StringBuilder target, int max);'
+        Add-Type -Namespace Cafe -Name Dos -MemberDefinition '[DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern uint QueryDosDevice(string name, System.Text.StringBuilder target, int max);'
         $dev = @{}
-        foreach ($d in [IO.DriveInfo]::GetDrives()) { $sb = New-Object Text.StringBuilder 300; if ([Shinzx.Dos]::QueryDosDevice($d.Name.TrimEnd('\'), $sb, 300)) { $dev[$sb.ToString()] = $d.Name.TrimEnd('\') } }
+        foreach ($d in [IO.DriveInfo]::GetDrives()) { $sb = New-Object Text.StringBuilder 300; if ([Cafe.Dos]::QueryDosDevice($d.Name.TrimEnd('\'), $sb, 300)) { $dev[$sb.ToString()] = $d.Name.TrimEnd('\') } }
         $files = foreach ($x in @(Get-WinEvent -FilterHashtable @{ LogName = "Microsoft-Windows-CodeIntegrity/Operational"; Id = 3076; StartTime = $started } -ErrorAction SilentlyContinue)) {
             $f = "$((([xml]$x.ToXml()).Event.EventData.Data | Where-Object Name -eq "File Name").'#text')"
             foreach ($k in $dev.Keys) { if ($f.StartsWith("$k\", "OrdinalIgnoreCase")) { $f = $dev[$k] + $f.Substring($k.Length) } }
@@ -141,7 +141,7 @@ if (-not $ReportOnly) {
     # check the restore really worked
     $before = @(([xml](Get-Content (Join-Path $logs "applocker-backup.xml") -Raw)).SelectNodes("//*[@Action]")).Count
     $now = @(([xml](Get-AppLockerPolicy -Local -Xml)).SelectNodes("//*[@Action]")).Count
-    $left = @(Get-ScheduledTask -TaskName "ShinzxTest*" -ErrorAction SilentlyContinue).Count + @(Get-LocalUser "ShinzxTest" -ErrorAction SilentlyContinue).Count
+    $left = @(Get-ScheduledTask -TaskName "CafeTest*" -ErrorAction SilentlyContinue).Count + @(Get-LocalUser "CafeTest" -ErrorAction SilentlyContinue).Count
     Add-Result "T0.9a" "PC app rules restored to how they were" ($now -eq $before) "$now rules now, $before before the test"
     Add-Result "T0.9b" "Test tasks and test user removed" ($left -eq 0) "$left left"
     $ids = @(Get-Content (Join-Path $logs "levelA-policy-id.txt") -ErrorAction SilentlyContinue | Where-Object { $_.Trim() } | ForEach-Object { $_.Trim().Trim('{}') })
@@ -220,7 +220,7 @@ if ($vDone.Count) {
     Add-Result "T0.3a" "Voice message played during games" (-not ($vDone.m -match "error=(?!none)")) "$($vDone.Count) of 3 played"
     Add-Result "T0.3b" "Game kept focus while the voice played" (-not ($vDone.m -match "same_window=False")) "checked $($vDone.Count) times"
     if (-not $ReportOnly -and -not $VoiceHeard) {
-        $VoiceHeard = [System.Windows.Forms.MessageBox]::Show("One question:`n`nDuring the test, while playing a game with a headset, did you (or a customer) hear a short voice say 'Shinzx Gaming Hub test message'?", "Shinzx test", "YesNo")
+        $VoiceHeard = [System.Windows.Forms.MessageBox]::Show("One question:`n`nDuring the test, while playing a game with a headset, did you (or a customer) hear a short voice say 'Gaming Cafe test message'?", "Cafe test", "YesNo")
     }
     Add-Result "T0.3c" "Voice was heard clearly in the headset" ($VoiceHeard -eq "Yes") "owner answered: $VoiceHeard"
 } else { Add-Result "T0.3a" "Voice message played during games" $null "no game was played for 2+ minutes in a row" }
@@ -255,7 +255,7 @@ else {
 $pass = @($results | Where-Object result -eq "PASS").Count
 $fail = @($results | Where-Object result -eq "FAIL").Count
 $nt = @($results | Where-Object result -eq "NOT TESTED").Count
-$out = @("SHINZX PHASE 0 TEST REPORT", ("Test ran from {0:yyyy-MM-dd HH:mm} to {1:yyyy-MM-dd HH:mm}" -f $started, (Get-Date)), "")
+$out = @("Cafe PHASE 0 TEST REPORT", ("Test ran from {0:yyyy-MM-dd HH:mm} to {1:yyyy-MM-dd HH:mm}" -f $started, (Get-Date)), "")
 $out += Get-Content (Join-Path $logs "pc-info.txt") -ErrorAction SilentlyContinue
 $out += "", "SUMMARY: $pass passed, $fail failed, $nt not tested", ""
 $out += $results | ForEach-Object { "[{0}] {1} {2} - {3}" -f $_.result, $_.id, $_.test, $_.detail }
@@ -274,13 +274,13 @@ $out | Write-Host
 if (-not $ReportOnly) {
     # zip next to START-TEST (an elevated admin's Desktop may not be the owner's Desktop), then move logs aside
     # so a later run starts clean
-    $zip = Join-Path $root ("Shinzx-Test-Report-{0:yyyyMMdd-HHmm}.zip" -f (Get-Date))
+    $zip = Join-Path $root ("Cafe-Test-Report-{0:yyyyMMdd-HHmm}.zip" -f (Get-Date))
     Stop-Transcript | Out-Null # release the transcript file before zipping it
     Compress-Archive -Path (Join-Path $logs "*") -DestinationPath $zip -Force
     Rename-Item $logs ("logs-done-{0:yyyyMMdd-HHmm}" -f (Get-Date))
     Write-Host "ZIP=$zip"
     if (-not $Ci) {
-        [System.Windows.Forms.MessageBox]::Show("Done. The PC is back to normal.`n`nSend this file on Discord to the person who gave you this test:`n$zip`n`n($pass passed, $fail failed, $nt not tested)", "Shinzx test") | Out-Null
+        [System.Windows.Forms.MessageBox]::Show("Done. The PC is back to normal.`n`nSend this file on Discord to the person who gave you this test:`n$zip`n`n($pass passed, $fail failed, $nt not tested)", "Cafe test") | Out-Null
         Start-Process explorer.exe "/select,`"$zip`""
     }
 }
