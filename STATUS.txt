@@ -37,6 +37,13 @@ B3  Lockdown and installers                                         BUILT - fina
           codes and add time for a new payment, which reaches the money records on reconnect   DONE (merged;
           each person has a separate offline secret, PCs never get counter sign-in secrets)
       #9 final end-to-end security pass against CHECKS.txt                          in progress
+         Report: SECURITY-PASS.txt on PR #10 (findings F1-F17). Fixes, one PR each, in order:
+         PR A watchdog durability: offline logout/self-lock in a crash-safe queue, PC token
+              encrypted (DPAPI), sale file writes made durable (F7, F10, F12)      DONE (PR #11, 12 Nov)
+         PR B offline unlock hardening, 7-day offline data, "end all logins", lost-phone
+              guide (F3, F5, F6, F9, F13, F17)                                     NEXT
+         PR C BitLocker warning, firmware/USB/Secure Boot guide, firewall between gaming PCs (F2, F11)
+         PR D block programs from customer-writable folders, owner-approved pen drives (F1)
     After #9: a final review by two separate reviewers. Then B4.
     Level A switches to blocking after the cafe trial, with an "allow or not" prompt for the owner (part of B5.3).
 
@@ -85,6 +92,7 @@ B5  Owner features                                                  IN PROGRESS
           Offers cover anything sold, as the owner ticks: all play time, pay-at-the-end time, extra time,
           a time package (e.g. 90 min), an item list, one item, a membership plan; also on counter sales
           and membership sales.
+          Fix (PR #19, 12 Nov): the item report counts Indian days on any computer time zone.
     B5.12 Owner controls any gaming PC from the counter PC or his phone (remote control).
           Decided 11 Nov: our own buttons for daily use (lock, unlock, message, log out, restart, shut down,
           wake). v1: MeshCentral (Apache-2.0) as it is, for screen view and control from the phone or the
