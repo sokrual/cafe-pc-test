@@ -145,11 +145,17 @@ function showPc(r) {
       onclick: act(() => api("POST", "/staff/lock", { pc: r.pc, message: $("lockMsg").value || null }), r.session ? "Locked. The time has stopped." : "Locked.") })));
   $("panel").replaceChildren(...p);
   if ($("sItem")) fillItems("sItem").catch(() => { });
-  if ($("offerPick")) api("GET", "/staff/offers").then(d => {
+  if ($("offerPick")) fillOffers("offerPick", o => !forMembership(o), "Pick an offer");
+}
+// offers running today, as a picker; the server checks again and says why if one does not fit
+const forMembership = o => o.scope?.length > 0 && o.scope.every(x => x.startsWith("Membership: "));
+const scopeText = o => o.scope?.length ? o.scope.join(", ") : "whole bill";
+function fillOffers(id, keep, first) {
+  api("GET", "/staff/offers").then(d => {
     const today = new Date().toLocaleDateString("en-CA"); // yyyy-mm-dd, the PC's own date
-    const live = d.offers.filter(o => (!o.from || o.from <= today) && (!o.to || o.to >= today));
-    $("offerPick")?.replaceChildren(el("option", { value: "", textContent: live.length ? "Pick an offer" : "No offers today" }),
-      ...live.map(o => el("option", { value: o.name, textContent: `${o.name} · ${o.percent}% off ${o.scope?.length ? o.scope.join(", ") : "whole bill"}${o.membersOnly ? " · members" : ""}` })));
+    const live = d.offers.filter(o => (!o.from || o.from <= today) && (!o.to || o.to >= today) && keep(o));
+    $(id)?.replaceChildren(el("option", { value: "", textContent: live.length ? first : "No offers today" }),
+      ...live.map(o => el("option", { value: o.name, textContent: `${o.name} · ${o.percent}% off ${scopeText(o)}${o.membersOnly ? " · members" : ""}` })));
   }).catch(() => { });
 }
 async function find() {
@@ -253,11 +259,12 @@ async function showMembers(pick) {
       el("label", { htmlFor: "m_phone", textContent: "Customer phone number" }), el("input", { id: "m_phone", inputMode: "numeric" }),
       el("label", { htmlFor: "m_plan", textContent: "Membership" }),
       el("select", { id: "m_plan" }, ...plans.map(x => el("option", { value: x.name, textContent: `${x.name} · ${x.days} days · ${rupees(x.price)}` }))),
+      el("label", { htmlFor: "m_offer", textContent: "Offer" }), el("select", { id: "m_offer" }),
       el("label", { htmlFor: "m_how", textContent: "How" }),
       el("select", { id: "m_how" }, el("option", { value: "cash", textContent: "Cash" }), el("option", { value: "upi", textContent: "UPI" })),
       el("label", { htmlFor: "m_last4", textContent: "UPI: last 4 digits of the payment reference" }), el("input", { id: "m_last4", inputMode: "numeric", maxLength: 4 }),
       el("div", { className: "row" }, el("button", { textContent: "Sell", disabled: !plans.length, onclick: run(() => api("POST", "/staff/memberships",
-        { phone: $("m_phone").value.trim(), plan: $("m_plan").value, method: $("m_how").value, upiLast4: $("m_last4").value || null }), r => `Member until ${day(r.ends)}.`) })),
+        { phone: $("m_phone").value.trim(), plan: $("m_plan").value, method: $("m_how").value, upiLast4: $("m_last4").value || null, offer: $("m_offer").value || null }), r => `Member until ${day(r.ends)}.`) })),
       el("hr"), el("h2", { textContent: "Membership plans (owner)" }),
       el("div", { className: "row" }, ...plans.map(x => el("button", { className: x.name === p.name ? "" : "quiet", textContent: x.name, onclick: () => showMembers(x.name) }))),
       el("label", { htmlFor: "m_name", textContent: "Name (type a new name to make a new plan)" }), el("input", { id: "m_name", value: p.name }),
@@ -269,6 +276,7 @@ async function showMembers(pick) {
         plans.some(x => x.name === p.name) ? el("button", { className: "danger", textContent: "Delete plan",
           onclick: run(() => api("DELETE", "/staff/membership-plans/" + encodeURIComponent(p.name)), `"${p.name}" deleted. Members who paid keep their time.`, "") }) : null,
         el("button", { className: "quiet", textContent: "Close", onclick: () => { panelKey = ""; refresh(true); } })));
+    fillOffers("m_offer", o => o.scope?.some(x => x.startsWith("Membership: ")), "No offer");
   } catch (e) { say(e.message, false); }
 }
 $("membersBtn").onclick = () => showMembers();
@@ -279,8 +287,13 @@ const hhmm = m => String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m %
 const mins = id => { const [h, m] = ($(id).value || "").split(":").map(Number); if (!Number.isFinite(h) || !Number.isFinite(m)) throw new Error("Fill in both times."); return h * 60 + m; };
 async function showOffers() {
   try {
-    const [d, cards, items] = await Promise.all([api("GET", "/staff/offers"), api("GET", "/staff/rate-cards"), api("GET", "/staff/items")]);
-    const scopes = ["Play time", ...items.categories];
+    const [d, cards, items, plans] = await Promise.all([api("GET", "/staff/offers"), api("GET", "/staff/rate-cards"), api("GET", "/staff/items"), api("GET", "/staff/membership-plans")]);
+    const block = rate?.blockMin ?? 30;
+    const groups = [["Play time", ["Play time", "Pay at the end", "Extra time", ...[1, 2, 3, 4, 5, 6].map(n => `Package: ${n * block} min`)]],
+      ["Item lists", items.categories.map(c => "List: " + c)], ["Single items", items.items.map(i => `Item: ${i.category} / ${i.name}`)],
+      ["Memberships", plans.map(p => "Membership: " + p.name)]].filter(g => g[1].length);
+    const scopes = groups.flatMap(g => g[1]);
+    const short = x => x === "Play time" ? "All play time" : x.replace(/^Package: (.*)$/, "$1 package").replace(/^(List|Item|Membership): /, "");
     const run = (fn, msg) => async () => { try { await fn(); say(msg); showOffers(); } catch (e) { say(e.message, false); } };
     const check = (id, label, checked = false) => el("label", { className: "check" }, el("input", { type: "checkbox", id, checked }), label);
     panelKey = "side";
@@ -297,13 +310,14 @@ async function showOffers() {
         card: $("h_card").value, days: DAYS.map((_, i) => i + 1).filter(n => $("h_d" + n).checked), fromMin: mins("h_from"), toMin: mins("h_to"), membersOnly: $("h_members").checked }), "Happy hour added.") })),
       el("hr"), el("h2", { textContent: "Offers" }),
       el("p", { className: "small", textContent: "Staff put one offer on a bill. It takes the % off the parts of the bill you tick, or the whole bill." }),
-      d.offers.length ? el("ul", {}, ...d.offers.map(o => el("li", {}, `${o.name} · ${o.percent}% off ${o.scope?.length ? o.scope.join(", ") : "the whole bill"}${o.membersOnly ? " · members" : ""}${o.from || o.to ? ` · ${o.from ?? "..."} to ${o.to ?? "..."}` : ""} `,
+      d.offers.length ? el("ul", {}, ...d.offers.map(o => el("li", {}, `${o.name} · ${o.percent}% off ${scopeText(o)}${o.membersOnly ? " · members" : ""}${o.from || o.to ? ` · ${o.from ?? "..."} to ${o.to ?? "..."}` : ""} `,
         el("button", { className: "quiet", textContent: "Delete", onclick: run(() => api("DELETE", "/staff/offers/" + encodeURIComponent(o.name)), "Offer deleted.") })))) : el("p", { textContent: "No offers yet." }),
       el("label", { htmlFor: "o_name", textContent: "Name (an existing name changes that offer)" }), el("input", { id: "o_name" }),
       el("label", { htmlFor: "o_pct", textContent: "Discount, %" }), el("input", { id: "o_pct", inputMode: "numeric" }),
       check("o_members", "Members only"),
-      el("label", { textContent: "Takes % off (tick nothing for the whole bill)" }),
-      el("div", { className: "row" }, ...scopes.map((c, i) => check("o_s" + i, c))),
+      el("label", { textContent: "Takes % off (tick nothing for the whole bill of a visit or counter sale)" }),
+      ...groups.map(([title, list]) => el("div", {}, el("div", { className: "small", textContent: title }),
+        el("div", { className: "row" }, ...list.map(x => check("o_s" + scopes.indexOf(x), short(x)))))),
       el("div", { className: "row" }, el("div", {}, el("label", { htmlFor: "o_from", textContent: "From (optional)" }), el("input", { id: "o_from", type: "date" })),
         el("div", {}, el("label", { htmlFor: "o_to", textContent: "To (optional)" }), el("input", { id: "o_to", type: "date" }))),
       el("div", { className: "row" }, el("button", { textContent: "Save offer", onclick: run(() => {
@@ -326,11 +340,12 @@ async function showItems() {
     const today = new Date().toLocaleDateString("en-CA");
     panelKey = "side";
     $("panel").replaceChildren(el("h2", { textContent: "Counter sale (not on a PC)" }), ...itemFields("c"),
+      el("label", { htmlFor: "c_offer", textContent: "Offer" }), el("select", { id: "c_offer" }),
       el("label", { htmlFor: "c_how", textContent: "How" }),
       el("select", { id: "c_how" }, el("option", { value: "cash", textContent: "Cash" }), el("option", { value: "upi", textContent: "UPI" })),
       el("label", { htmlFor: "c_last4", textContent: "UPI: last 4 digits of the payment reference" }), el("input", { id: "c_last4", inputMode: "numeric", maxLength: 4 }),
       el("div", { className: "row" }, el("button", { textContent: "Sell", onclick: run(() => api("POST", "/staff/counter-sales",
-        { ...readItem("c"), method: $("c_how").value, upiLast4: $("c_last4").value || null }), r => `Sold. ${rupees(r.amount)} taken.`) })),
+        { ...readItem("c"), method: $("c_how").value, upiLast4: $("c_last4").value || null, offer: $("c_offer").value || null }), r => `Sold. ${rupees(r.amount)} taken.`) })),
       el("div", { id: "report" }),
       el("hr"), el("h2", { textContent: "Lists and prices (owner)" }),
       ...d.categories.map(c => el("div", {}, el("h3", { textContent: c }),
@@ -350,6 +365,7 @@ async function showItems() {
       el("div", { className: "row" }, el("button", { className: "quiet", textContent: "Add list", onclick: run(() => api("POST", "/staff/item-categories", { name: $("i_new").value.trim() }), "List added.") }),
         el("button", { className: "quiet", textContent: "Close", onclick: () => { panelKey = ""; refresh(true); } })));
     fillItems("cItem").catch(() => { });
+    fillOffers("c_offer", o => !forMembership(o), "No offer");
     // only the owner may see the report; staff simply do not get this part
     api("GET", `/staff/reports/items?from=${today}&to=${today}`).then(rows => $("report")?.replaceChildren(el("hr"), el("h2", { textContent: "Sold today (before offers)" }),
       rows.length ? el("ul", {}, ...rows.map(x => el("li", { textContent: `${x.category} · ${x.item} · ${x.qty} sold · ${rupees(x.amount)}` }))) : el("p", { textContent: "Nothing sold yet today." }))).catch(() => { });

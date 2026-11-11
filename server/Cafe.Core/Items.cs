@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 
 namespace Cafe;
@@ -12,8 +13,13 @@ public record BillLine(string Kind, string Text, long Amount, string? Category =
 
 public sealed partial class CafeCore
 {
-    /// The name an offer uses for play time. No item category may take it.
-    public const string PlayTime = "Play time";
+    // What an offer can cover (see Tags): all play time or one kind of it, an item list, one item, or a membership plan.
+    public const string PlayTime = "Play time", PayAtEnd = "Pay at the end", ExtraTime = "Extra time";
+    public static string Package(int minutes) => $"Package: {minutes} min"; // time bought in advance, per purchase
+    static string[] Tags(string? category, string? item, string? part) =>
+        item is null ? [PlayTime, part ?? PlayTime] : [$"List: {category}", $"Item: {category} / {item}"];
+    /// No scope covers every charge of a visit or a counter sale ("whole bill"), but never a membership.
+    static bool Covers(string[]? scope, string[] tags, bool wholeBill = true) => scope is null ? wholeBill : tags.Any(scope.Contains);
 
     void LoadItems() => Tx(() =>
     {
@@ -25,7 +31,7 @@ public sealed partial class CafeCore
         if (Scalar<long>("SELECT count(*) FROM pragma_table_info('ledger') WHERE name = 'item'") == 0) // what was sold, and the offer's scope
             Exec("""
                 ALTER TABLE ledger ADD COLUMN category TEXT; ALTER TABLE ledger ADD COLUMN item TEXT;
-                ALTER TABLE ledger ADD COLUMN qty INTEGER; ALTER TABLE ledger ADD COLUMN note TEXT;
+                ALTER TABLE ledger ADD COLUMN qty INTEGER; ALTER TABLE ledger ADD COLUMN note TEXT; ALTER TABLE ledger ADD COLUMN part TEXT;
                 ALTER TABLE offers ADD COLUMN scope TEXT; ALTER TABLE sessions ADD COLUMN offer_scope TEXT;
                 """);
         // a new install starts with four lists; the owner renames, adds or deletes them (they never come back)
@@ -46,7 +52,6 @@ public sealed partial class CafeCore
     {
         RequireOwner(by);
         name = CleanName(name, 30, "The list name");
-        if (name.Equals(PlayTime, StringComparison.OrdinalIgnoreCase)) throw new CafeException($"\"{PlayTime}\" is kept for offers. Pick another name.");
         if (Exec("INSERT OR IGNORE INTO item_categories(name) VALUES(@p0)", name) == 0) throw new CafeException("A list with this name already exists.");
         Audit(by, "item_category_added", name);
     });
@@ -89,17 +94,21 @@ public sealed partial class CafeCore
         Audit(by, "item_sold", $"session {session}: {n} x {it.Category} / {it.Name}{(text is null ? "" : $" ({text})")}");
     });
 
-    /// Someone buys at the counter without playing: charged and paid at once, in the open shift.
-    public long CounterSale(long by, long item, int qty, string? note, string method, string? upiLast4 = null) => Tx(() =>
+    /// Someone buys at the counter without playing: charged and paid at once, in the open shift. Returns what was paid.
+    public long CounterSale(long by, long item, int qty, string? note, string method, string? upiLast4 = null, string? offer = null) => Tx(() =>
     {
         RequireStaff(by);
         var (it, n, text) = Sale(item, qty, note);
         CashOrUpi(method, upiLast4);
         var amount = it.Price * n;
+        var o = offer is null ? null : LiveOffer(offer, null);
+        if (o is not null && !Covers(o.Scope, Tags(it.Category, it.Name, null))) throw new CafeException($"The offer {o.Name} does not cover {it.Name}.");
+        var discount = o is null ? 0 : amount * o.Percent / 100; // rounds down, in the cafe's favour
         Ledger(by, "charge", amount, category: it.Category, item: it.Name, qty: n, note: text);
-        Ledger(by, "pay", amount, method: method, reference: upiLast4);
-        Audit(by, "counter_sale", $"{n} x {it.Category} / {it.Name} {method} {amount}{(text is null ? "" : $" ({text})")}");
-        return amount;
+        if (discount > 0) Ledger(by, "adjust", -discount, reason: $"offer {o!.Name}");
+        Ledger(by, "pay", amount - discount, method: method, reference: upiLast4);
+        Audit(by, "counter_sale", $"{n} x {it.Category} / {it.Name} {method} {amount - discount}{(o is null ? "" : $" offer {o.Name}")}{(text is null ? "" : $" ({text})")}");
+        return amount - discount;
     });
 
     /// Owner only: what sold between two days (Indian time, both days included), before offers.
@@ -134,13 +143,21 @@ public sealed partial class CafeCore
         return name;
     }
 
-    /// Checks an offer's scope: empty means the whole bill; otherwise "Play time" and/or item lists.
+    /// Checks an offer's scope: empty means the whole bill; otherwise only things the cafe sells (see Tags).
     string? ScopeJson(string[]? scope)
     {
         if (scope is null || scope.Length == 0) return null;
-        var lists = Column<string>("SELECT name FROM item_categories");
         foreach (var s in scope)
-            if (s != PlayTime && !lists.Contains(s)) throw new CafeException($"There is no list called \"{s}\".");
+        {
+            var ok = s is PlayTime or PayAtEnd or ExtraTime
+                || (s.Length > 13 && s.StartsWith("Package: ", StringComparison.Ordinal) && s.EndsWith(" min", StringComparison.Ordinal)
+                    && int.TryParse(s[9..^4], NumberStyles.None, CultureInfo.InvariantCulture, out var m) && m is >= 1 and <= 7 * 24 * 60 && s == Package(m))
+                || (s.StartsWith("List: ", StringComparison.Ordinal) && Scalar<long>("SELECT count(*) FROM item_categories WHERE name = @p0", s[6..]) > 0)
+                || (s.StartsWith("Item: ", StringComparison.Ordinal) && s[6..].Split(" / ") is [var c, var n]
+                    && Scalar<long>("SELECT count(*) FROM items WHERE category = @p0 AND name = @p1", c, n) > 0)
+                || (s.StartsWith("Membership: ", StringComparison.Ordinal) && Scalar<long>("SELECT count(*) FROM membership_plans WHERE name = @p0", s[12..]) > 0);
+            if (!ok) throw new CafeException($"\"{s}\" is not something the cafe sells.");
+        }
         return JsonSerializer.Serialize(scope.Distinct().Order(StringComparer.Ordinal).ToArray());
     }
 

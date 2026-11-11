@@ -231,7 +231,7 @@ public sealed partial class CafeCore : IDisposable
     {
         Minutes(minutes);
         var id = Start(by, pc, user, minutes, null);
-        Ledger(by, "charge", WithSessionRate(id, () => Price(minutes)), session: id, reference: $"prepaid {minutes} min");
+        Ledger(by, "charge", WithSessionRate(id, () => Price(minutes)), session: id, reference: $"prepaid {minutes} min", part: Package(minutes));
         return id;
     });
 
@@ -262,7 +262,7 @@ public sealed partial class CafeCore : IDisposable
         RequireStaff(by); Minutes(minutes); // negative minutes would be a staff discount, which only the owner may give
         if (Exec("UPDATE sessions SET prepaid_min = prepaid_min + @p0 WHERE id = @p1 AND ended IS NULL AND prepaid_min IS NOT NULL", minutes, session) == 0)
             throw new CafeException("Time can be added only for a prepaid customer who is playing.");
-        Ledger(by, "charge", WithSessionRate(session, () => Price(minutes)), session: session, reference: $"added {minutes} min");
+        Ledger(by, "charge", WithSessionRate(session, () => Price(minutes)), session: session, reference: $"added {minutes} min", part: Package(minutes));
         SyncOffer(by, session);
         Audit(by, "add_time", $"session {session} +{minutes} min");
     });
@@ -335,7 +335,7 @@ public sealed partial class CafeCore : IDisposable
             else
             {
                 var billed = BillableMinutes(used);
-                Ledger(by, "charge", Price(billed), session: session, user: user, reference: $"{billed} min");
+                Ledger(by, "charge", Price(billed), session: session, user: user, reference: $"{billed} min", part: PayAtEnd);
                 if (billed > usedMin) CarryOver(by, user, billed - usedMin); // the unused part of the last block
             }
             SyncOffer(by, session);
@@ -349,7 +349,7 @@ public sealed partial class CafeCore : IDisposable
     {
         var minutes = BillableMinutes(over, startGrace: false);
         if (minutes == 0) return;
-        Ledger(by, "charge", minutes / Rate.BlockMin * Rate.ExtraBlockPaise, session: session, user: user, reference: $"{minutes} min {what}");
+        Ledger(by, "charge", minutes / Rate.BlockMin * Rate.ExtraBlockPaise, session: session, user: user, reference: $"{minutes} min {what}", part: ExtraTime);
         var overMin = (int)Math.Ceiling(over.TotalMinutes);
         if (minutes > overMin) CarryOver(by, user, minutes - overMin);
     }
@@ -553,7 +553,7 @@ public sealed partial class CafeCore : IDisposable
                 else
                 {
                     var billed = BillableMinutes(used);
-                    if (billed > 0) Ledger(staff, "charge", Price(billed), session: existing, user: user, reference: $"{billed} min before offline sale");
+                    if (billed > 0) Ledger(staff, "charge", Price(billed), session: existing, user: user, reference: $"{billed} min before offline sale", part: PayAtEnd);
                     if (billed > usedMin) CarryOver(staff, user, billed - usedMin);
                 }
                 Exec("UPDATE sessions SET prepaid_min = @p0, plan_id = NULL WHERE id = @p1", checked(usedMin + sale.Minutes), existing);
@@ -569,7 +569,7 @@ public sealed partial class CafeCore : IDisposable
         }
 
         var amount = Price(sale.Minutes);
-        Ledger(staff, "charge", amount, session: session, user: user, reference: $"offline sale {sale.SaleId} {sale.Minutes} min");
+        Ledger(staff, "charge", amount, session: session, user: user, reference: $"offline sale {sale.SaleId} {sale.Minutes} min", part: Package(sale.Minutes));
         Ledger(staff, "pay", amount, session: session, user: user, method: sale.Method, reference: sale.UpiLast4);
         Exec("UPDATE pcs SET locked = 0, self_locked = 0, message = NULL WHERE name = @p0", pc);
         Exec("INSERT INTO offline_sales(pc, sale_id, session_id, staff_id, step, created) VALUES(@p0, @p1, @p2, @p3, @p4, @p5)", pc, sale.SaleId, session, staff, sale.Step, Iso(_now()));
@@ -735,9 +735,9 @@ public sealed partial class CafeCore : IDisposable
     static void RequireReason(string reason) { if (string.IsNullOrWhiteSpace(reason)) throw new CafeException("Please write a reason."); }
 
     void Ledger(long by, string kind, long amount, long? session = null, long? user = null, string? method = null, string? reference = null, string? reason = null,
-        string? category = null, string? item = null, int? qty = null, string? note = null) =>
-        Insert("INSERT INTO ledger(at, by_user, kind, amount, session_id, user_id, method, ref, reason, shift_id, category, item, qty, note) VALUES(@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8, @p9, @p10, @p11, @p12, @p13)",
-            Iso(_now()), by, kind, amount, session, user, method, reference, reason, OpenShiftOf(by), category, item, qty, note);
+        string? category = null, string? item = null, int? qty = null, string? note = null, string? part = null) =>
+        Insert("INSERT INTO ledger(at, by_user, kind, amount, session_id, user_id, method, ref, reason, shift_id, category, item, qty, note, part) VALUES(@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8, @p9, @p10, @p11, @p12, @p13, @p14)",
+            Iso(_now()), by, kind, amount, session, user, method, reference, reason, OpenShiftOf(by), category, item, qty, note, part);
     long? OpenShiftOf(long staff) => Scalar<long?>("SELECT id FROM shifts WHERE staff_id = @p0 AND closed IS NULL", staff);
 
     void Audit(long by, string action, string? detail) => Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, @p1, @p2, @p3)", Iso(_now()), by, action, detail);

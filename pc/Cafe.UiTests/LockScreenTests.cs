@@ -495,7 +495,7 @@ public sealed class ServerApiTests : IDisposable
         }
         using var list = _rig.Raw(HttpMethod.Get, "/staff/items", staff);
         var coke = System.Text.Json.JsonDocument.Parse(await list.Content.ReadAsStringAsync(ct)).RootElement.GetProperty("items")[0].GetProperty("id").GetInt64();
-        await _rig.Post("/staff/offers", new { name = "Half drinks", percent = 50, membersOnly = false, scope = new[] { "Beverages" } }, owner);
+        await _rig.Post("/staff/offers", new { name = "Half drinks", percent = 50, membersOnly = false, scope = new[] { "List: Beverages" } }, owner);
         await _rig.Post("/staff/sessions", new { pc = "PC1", phone = "9000000003", mode = "prepaid", minutes = 30 }, staff);
         var session = long.Parse(_rig.State(staff)["session"]!.ToString()!);
         await _rig.Post($"/staff/sessions/{session}/offer", new { name = "Half drinks" }, staff);

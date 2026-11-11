@@ -7,7 +7,8 @@ namespace Cafe;
 /// Days: 1 = Monday ... 7 = Sunday. FromMin/ToMin: minutes after midnight, Indian time, same day.
 public record HappyHour(long Id, string Card, int[] Days, int FromMin, int ToMin, bool MembersOnly);
 /// A named offer staff can put on one bill: Percent off the charges in Scope. From/To: optional dates (Indian time).
-/// Scope: empty or null = the whole bill; otherwise "Play time" and/or item lists (for example "Beverages").
+/// Scope: empty or null = the whole bill of a visit or counter sale; otherwise any of "Play time", "Pay at the end",
+/// "Extra time", "Package: 90 min", "List: Beverages", "Item: Beverages / Coke", "Membership: Monthly".
 public record Offer(string Name, int Percent, bool MembersOnly, DateOnly? From = null, DateOnly? To = null, string[]? Scope = null);
 
 public sealed partial class CafeCore
@@ -113,22 +114,31 @@ public sealed partial class CafeCore
         Audit(by, "offer_deleted", name);
     });
 
+    /// An offer that runs today and that this customer may use (null customer: a counter sale, no member check possible).
+    Offer LiveOffer(string name, long? user)
+    {
+        var offer = Offers().SingleOrDefault(o => o.Name == name) ?? throw new CafeException("There is no offer with this name.");
+        var today = DateOnly.FromDateTime(India(_now()));
+        if (offer.From > today || offer.To < today) throw new CafeException("This offer is not running today.");
+        if (offer.MembersOnly && (user is not long u || MembershipOf(u) is null)) throw new CafeException("This offer is for members only.");
+        return offer;
+    }
+
     /// Staff or owner put one offer on a session's bill. Never on a happy-hour session, never two offers.
     public void ApplyOffer(long by, long session, string name) => Tx(() =>
     {
         RequireStaff(by);
-        var offer = Offers().SingleOrDefault(o => o.Name == name) ?? throw new CafeException("There is no offer with this name.");
-        var today = DateOnly.FromDateTime(India(_now()));
-        if (offer.From > today || offer.To < today) throw new CafeException("This offer is not running today.");
+        long user;
         using (var r = Query("SELECT user_id, happy, offer FROM sessions WHERE id = @p0", session))
         {
             if (!r.Read()) throw new CafeException("This visit was not found.");
-            var user = r.GetInt64(0);
+            user = r.GetInt64(0);
             if (!r.IsDBNull(1)) throw new CafeException("Happy hour prices already apply to this visit. No offer on top.");
             if (!r.IsDBNull(2)) throw new CafeException($"This bill already has the offer {r.GetString(2)}. Only one offer at a time.");
-            r.Close();
-            if (offer.MembersOnly && MembershipOf(user) is null) throw new CafeException("This offer is for members only.");
         }
+        var offer = LiveOffer(name, user);
+        if (offer.Scope is { Length: > 0 } s && s.All(x => x.StartsWith("Membership: ", StringComparison.Ordinal)))
+            throw new CafeException("This offer is for membership sales, not for a visit.");
         // a discount after payment would leave money owed back and the cash drawer short of the books
         if (Scalar<long>("SELECT count(*) FROM ledger WHERE kind = 'pay' AND session_id = @p0", session) > 0)
             throw new CafeException("Put the offer on the bill before taking payment.");
@@ -147,8 +157,10 @@ public sealed partial class CafeCore
         var scope = r.IsDBNull(3) ? null : JsonSerializer.Deserialize<string[]>(r.GetString(3));
         r.Close();
         long charges = 0;
-        using (var c = Query("SELECT coalesce(category, @p1), sum(amount) FROM ledger WHERE kind = 'charge' AND session_id = @p0 GROUP BY 1", session, PlayTime))
-            while (c.Read()) if (scope is null || scope.Contains(c.GetString(0))) charges += c.GetInt64(1);
+        using (var c = Query("SELECT category, item, part, amount FROM ledger WHERE kind = 'charge' AND session_id = @p0", session))
+            while (c.Read())
+                if (Covers(scope, Tags(c.IsDBNull(0) ? null : c.GetString(0), c.IsDBNull(1) ? null : c.GetString(1), c.IsDBNull(2) ? null : c.GetString(2))))
+                    charges += c.GetInt64(3);
         var given = Scalar<long>("SELECT coalesce(sum(amount), 0) FROM ledger WHERE kind = 'adjust' AND session_id = @p0 AND reason = @p1", session, $"offer {name}");
         var change = -(charges * pct / 100) - given; // the discount rounds down to the paisa, in the cafe's favour
         if (change != 0) Ledger(by, "adjust", change, session: session, user: user, reason: $"offer {name}");

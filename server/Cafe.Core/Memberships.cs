@@ -47,20 +47,24 @@ public sealed partial class CafeCore
 
     /// One membership at a time: one bought while another runs starts when that one ends (same plan or a new one),
     /// so periods never overlap. The member's kept time moves on to the new end with it.
-    public DateTime SellMembership(long by, long user, string planName, string method, string? upiLast4 = null) => Tx(() =>
+    /// An offer works only if the owner ticked this membership in its scope ("Membership: Monthly").
+    public DateTime SellMembership(long by, long user, string planName, string method, string? upiLast4 = null, string? offer = null) => Tx(() =>
     {
         RequireStaff(by);
         if (RoleOf(user) != Role.Customer) throw new CafeException("Only a customer can become a member.");
         var plan = MembershipPlans(by).SingleOrDefault(p => p.Name == planName) ?? throw new CafeException("There is no membership with this name.");
         CashOrUpi(method, upiLast4);
+        var o = offer is null ? null : LiveOffer(offer, user);
+        if (o is not null && !Covers(o.Scope, [$"Membership: {plan.Name}"], wholeBill: false)) throw new CafeException($"The offer {o.Name} does not cover the {plan.Name} membership.");
+        var price = plan.Price - (o is null ? 0 : plan.Price * o.Percent / 100);
         var current = MembershipOf(user);
         var starts = current?.Ends ?? _now();
         var ends = starts.AddDays(plan.Days);
         Insert("INSERT INTO memberships(user_id, plan, starts, ends) VALUES(@p0, @p1, @p2, @p3)", user, plan.Name, Iso(starts), Iso(ends));
         if (current is not null)
             Exec("UPDATE plans SET expires = @p0 WHERE user_id = @p1 AND expires = @p2", Iso(ends), user, Iso(current.Ends));
-        Ledger(by, "pay", plan.Price, user: user, method: method, reference: upiLast4 ?? $"membership {plan.Name}");
-        Audit(by, "membership_sold", $"user {user} {plan.Name} until {Iso(ends)} {plan.Price} paise");
+        Ledger(by, "pay", price, user: user, method: method, reference: upiLast4 ?? $"membership {plan.Name}", reason: o is null ? null : $"offer {o.Name}");
+        Audit(by, "membership_sold", $"user {user} {plan.Name} until {Iso(ends)} {price} paise{(o is null ? "" : $" offer {o.Name}")}");
         return ends;
     });
 

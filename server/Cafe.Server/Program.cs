@@ -178,7 +178,7 @@ app.MapDelete("/staff/membership-plans/{name}", (HttpContext c, string name) => 
 app.MapPost("/staff/memberships", (HttpContext c, MembershipSaleBody b) =>
 {
     var by = Staff(c);
-    return new { ends = cafe.SellMembership(by, cafe.FindCustomer(by, b.Phone).Id, b.Plan, b.Method, b.UpiLast4) };
+    return new { ends = cafe.SellMembership(by, cafe.FindCustomer(by, b.Phone).Id, b.Plan, b.Method, b.UpiLast4, b.Offer) };
 });
 app.MapGet("/staff/offers", (HttpContext c) => { Staff(c); return new { offers = cafe.Offers(), happyHours = cafe.HappyHours() }; });
 app.MapPost("/staff/offers", (HttpContext c, Offer b) => { cafe.SaveOffer(Staff(c), b); return Results.Ok(); });
@@ -193,7 +193,7 @@ app.MapDelete("/staff/item-categories/{name}", (HttpContext c, string name) => {
 app.MapPost("/staff/items", (HttpContext c, ItemBody b) => { cafe.SaveItem(Staff(c), b.Category, b.Name, b.Price); return Results.Ok(); });
 app.MapDelete("/staff/items/{id:long}", (HttpContext c, long id) => { cafe.DeleteItem(Staff(c), id); return Results.Ok(); });
 app.MapPost("/staff/sessions/{id:long}/items", (HttpContext c, long id, SaleBody b) => { cafe.SellItem(Staff(c), id, b.Item, b.Qty, b.Note); return cafe.BillFor(id); });
-app.MapPost("/staff/counter-sales", (HttpContext c, SaleBody b) => new { amount = cafe.CounterSale(Staff(c), b.Item, b.Qty, b.Note, b.Method ?? "", b.UpiLast4) });
+app.MapPost("/staff/counter-sales", (HttpContext c, SaleBody b) => new { amount = cafe.CounterSale(Staff(c), b.Item, b.Qty, b.Note, b.Method ?? "", b.UpiLast4, b.Offer) });
 app.MapGet("/staff/reports/items", (HttpContext c, DateOnly from, DateOnly to) => cafe.ItemReport(Staff(c), from, to));
 app.MapPost("/staff/shift/open", (HttpContext c) => new { shift = cafe.OpenShift(Staff(c)) });
 app.MapPost("/staff/shift/close", (HttpContext c, CashBody b) => { var (expected, difference) = cafe.CloseShift(Staff(c), b.Counted); return new { expected, difference }; });
@@ -298,5 +298,5 @@ record CashBody(long Counted);
 record RateCardBody(string Name, Rate Rate);
 record NameBody(string Name);
 record ItemBody(string Category, string Name, long Price);
-record SaleBody(long Item, int Qty, string? Note, string? Method = null, string? UpiLast4 = null);
-record MembershipSaleBody(string Phone, string Plan, string Method, string? UpiLast4);
+record SaleBody(long Item, int Qty, string? Note, string? Method = null, string? UpiLast4 = null, string? Offer = null);
+record MembershipSaleBody(string Phone, string Plan, string Method, string? UpiLast4, string? Offer = null);
