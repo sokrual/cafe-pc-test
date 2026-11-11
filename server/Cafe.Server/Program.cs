@@ -136,8 +136,7 @@ app.MapGet("/staff/review", (HttpContext c) => { Staff(c); return cafe.ForReview
 // only on the counter PC or over Tailscale; the page itself holds no data until a staff login.
 var page = new Dictionary<string, (string Type, string Text)>
 {
-    ["/staff"] = ("text/html; charset=utf-8", Resource("counter.html")),
-    ["/staff/"] = ("text/html; charset=utf-8", Resource("counter.html")),
+    ["/staff/"] = ("text/html; charset=utf-8", Resource("counter.html")), // routing also matches "/staff"
     ["/staff/counter.js"] = ("text/javascript; charset=utf-8", Resource("counter.js")),
 };
 foreach (var (path, (type, text)) in page)
