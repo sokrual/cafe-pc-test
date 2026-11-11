@@ -558,9 +558,7 @@ public sealed partial class CafeCore : IDisposable
                 var previousMinutes = duplicate.GetInt32(1);
                 var person = duplicate.GetString(2);
                 duplicate.Close();
-                Audit(staff, "review_offline_sale_duplicate",
-                    $"Duplicate offline unlock: {person} used the same code on {previousPc} and {pc}; {previousMinutes} minutes on {previousPc}, {sale.Minutes} minutes on {pc}.");
-                throw new CafeException("That offline authenticator step was already used. The owner has been alerted.");
+                throw new CafeException($"That offline authenticator step was already used for a sale.");
             }
         }
 
@@ -627,8 +625,28 @@ public sealed partial class CafeCore : IDisposable
     });
 
     /// Refused offline sales are retained in the owner's review list; never include the authenticator code.
-    public void ReviewOfflineSale(string pc, string saleId, string phone, string reason) => Tx(() =>
-        Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'review_offline_sale', @p1)", Iso(_now()), $"PC {pc}, sale {saleId}, account {phone}: {reason}"));
+    public void ReviewOfflineSale(string pc, string saleId, string phone, string reason, int? minutes = null, long? step = null) => Tx(() =>
+    {
+        if (reason.Contains("authenticator step was already used", StringComparison.OrdinalIgnoreCase) && step is long usedStep)
+        {
+            using var duplicate = Query("""
+                SELECT s.pc, s.minutes, u.name FROM offline_sales s JOIN users u ON u.id = s.staff_id
+                WHERE u.phone = @p0 AND s.step = @p1
+                """, phone, usedStep);
+            if (duplicate.Read())
+            {
+                var previousPc = duplicate.GetString(0);
+                var previousMinutes = duplicate.GetInt32(1);
+                var person = duplicate.GetString(2);
+                duplicate.Close();
+                Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'review_offline_sale_duplicate', @p1)",
+                    Iso(_now()), $"Duplicate offline unlock: {person} used the same code on {previousPc} and {pc}; {previousMinutes} minutes on {previousPc}, {minutes ?? 0} minutes on {pc}.");
+                return;
+            }
+        }
+        Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'review_offline_sale', @p1)",
+            Iso(_now()), $"PC {pc}, sale {saleId}, account {phone}: {reason}");
+    });
 
     /// Called on every status check, so a queued logout knows when the PC was last online.
     public void PcSeen(string pc) => Tx(() => { Exec("UPDATE pcs SET last_seen = @p0 WHERE name = @p1", Iso(_now()), pc); });
