@@ -547,20 +547,8 @@ public sealed partial class CafeCore : IDisposable
             || string.IsNullOrEmpty(sale.Code) || sale.Code.Length != 6 || !sale.Code.All(char.IsAsciiDigit)
             || !CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(Totp(key, sale.Step)), Encoding.ASCII.GetBytes(sale.Code)))
             throw new CafeException("That offline authenticator code does not match or is outside the 7-day window.");
-        using (var duplicate = Query("""
-            SELECT s.pc, s.minutes, u.name FROM offline_sales s JOIN users u ON u.id = s.staff_id
-            WHERE s.staff_id = @p0 AND s.step = @p1
-            """, staff, sale.Step))
-        {
-            if (duplicate.Read())
-            {
-                var previousPc = duplicate.GetString(0);
-                var previousMinutes = duplicate.GetInt32(1);
-                var person = duplicate.GetString(2);
-                duplicate.Close();
-                throw new CafeException($"That offline authenticator step was already used for a sale.");
-            }
-        }
+        using (var duplicate = Query("SELECT 1 FROM offline_sales WHERE staff_id = @p0 AND step = @p1", staff, sale.Step))
+            if (duplicate.Read()) throw new CafeException("That offline authenticator step was already used for a sale.");
 
         long session;
         long user;
