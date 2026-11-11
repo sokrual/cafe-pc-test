@@ -465,6 +465,20 @@ public sealed class ServerApiTests : IDisposable
     }
 
     [Fact]
+    public async Task Owner_sets_a_membership_plan_and_staff_sell_it_at_the_counter()
+    {
+        var owner = await _rig.OwnerToken();
+        var staff = await _rig.StaffToken();
+        await _rig.Post("/staff/membership-plans", new { name = "Monthly", days = 30, price = 50000 }, owner);
+        using var byStaff = new HttpRequestMessage(HttpMethod.Post, "/staff/membership-plans") { Content = JsonContent.Create(new { name = "Cheap", days = 30, price = 100 }) };
+        byStaff.Headers.Authorization = new("Bearer", staff);
+        Assert.Equal(400, (int)(await _rig.Http.SendAsync(byStaff, TestContext.Current.CancellationToken)).StatusCode); // only the owner sets plans
+        await _rig.Post("/staff/memberships", new { phone = "9000000003", plan = "Monthly", method = "cash" }, staff);
+        using var who = _rig.Raw(HttpMethod.Get, "/staff/customers/9000000003", staff);
+        Assert.Contains("\"plan\":\"Monthly\"", await who.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Counter_screen_page_is_locked_down_and_its_actions_work_for_staff_only()
     {
         using var page = _rig.Raw(HttpMethod.Get, "/staff/", null);
