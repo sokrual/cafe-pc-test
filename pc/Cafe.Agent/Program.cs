@@ -359,7 +359,7 @@ sealed class LockScreen : Form
         {
             var info = await new WatchdogPipeClient().GetFromJsonAsync<OfflineUnlockInfo>("/local/offline-unlock-info");
             _offlineRate.Text = info?.Rate is { } r
-                ? $"Rate card: 30 min ₹{r.Paise30 / 100m:0.##}, 60 min ₹{r.Paise60 / 100m:0.##}, 90 min ₹{r.Paise90 / 100m:0.##}; then ₹{r.ExtraBlockPaise / 100m:0.##} per {r.BlockMin} min"
+                ? $"Rate card: 30 min ₹{r.Paise30 / 100m:0.##}, 60 min ₹{r.Paise60 / 100m:0.##}, 90 min ₹{r.Paise90 / 100m:0.##}; then ₹{r.ExtraBlockPaise / 100m:0.##} per {r.BlockMin} min. Maximum per offline unlock: {info.MaxOfflineUnlockMinutes} min."
                 : "Offline unlock is not set up on this PC yet.";
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
