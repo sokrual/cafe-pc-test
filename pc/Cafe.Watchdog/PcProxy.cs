@@ -151,13 +151,17 @@ static class PcProxy
                 var nextOfflineRefresh = DateTime.MinValue;
                 while (!stop.IsCancellationRequested)
                 {
-                    if (DateTime.UtcNow >= nextOfflineRefresh)
+                    try
                     {
-                        RefreshOfflineUnlockData();
-                        SyncOfflineSales();
-                        nextOfflineRefresh = DateTime.UtcNow.AddSeconds(30);
+                        if (DateTime.UtcNow >= nextOfflineRefresh)
+                        {
+                            RefreshOfflineUnlockData();
+                            SyncOfflineSales();
+                            nextOfflineRefresh = DateTime.UtcNow.AddSeconds(30);
+                        }
+                        if (_offline?.PendingSales().Count == 0) SyncQueuedActions();
                     }
-                    if (_offline?.PendingSales().Count == 0) SyncQueuedActions();
+                    catch (Exception e) { _log("background sync error: " + e.Message); }
                     try { await Task.Delay(TimeSpan.FromSeconds(5), stop); }
                     catch (OperationCanceledException) { break; }
                 }
@@ -396,8 +400,12 @@ static class PcProxy
                     EnqueueAction(action.Path);
                     _ = Task.Run(() =>
                     {
-                        SyncOfflineSales();
-                        if (_offline?.PendingSales().Count == 0) SyncQueuedActions();
+                        try
+                        {
+                            SyncOfflineSales();
+                            if (_offline?.PendingSales().Count == 0) SyncQueuedActions();
+                        }
+                        catch (Exception e) { _log("background sync error: " + e.Message); }
                     });
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(200, "{}"))).WaitAsync(TimeSpan.FromSeconds(2));
                     return;
