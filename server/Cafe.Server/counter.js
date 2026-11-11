@@ -261,6 +261,30 @@ async function showOwnerSecurity() {
       catch (e) { say(e.message, false); }
     };
     const personOptions = people.map(p => el("option", { value: p.phone, textContent: p.name + " · " + p.phone }));
+    const beginFactorReplacement = async kind => {
+      const phone = $("factorPerson").value;
+      const offline = kind === "offline";
+      try {
+        const started = await api("POST", offline ? "/staff/two-step/offline/start" : "/staff/two-step/staff/start", { phone });
+        const setup = $("factorSetup");
+        const code = el("input", { id: "factorCode", inputMode: "numeric", maxLength: 6, placeholder: "6-digit code from the new app" });
+        setup.replaceChildren(
+          el("p", { textContent: "Add this new secret to the person's authenticator app. The old secret stays in use until you confirm." }),
+          el("pre", { textContent: "Secret: " + started.secret + "\nSetup link: " + started.uri }),
+          el("label", { htmlFor: "factorCode", textContent: "Type the current 6-digit code to confirm" }),
+          code,
+          el("button", { textContent: offline ? "Confirm new offline authenticator" : "Confirm new counter two-step", onclick: async () => {
+            try {
+              const result = await api("POST", offline ? "/staff/two-step/offline/on" : "/staff/two-step/staff/on",
+                { phone, secret: started.secret, code: code.value.trim() });
+              setup.replaceChildren(el("p", { textContent: offline ? "Offline authenticator replaced." : "Counter two-step replaced. Print and keep this new one-use recovery code." }));
+              if (result?.recovery) setup.append(el("pre", { textContent: "Recovery code: " + result.recovery }));
+              say(offline ? "Offline authenticator replaced." : "Counter two-step replaced.");
+            } catch (e) { say(e.message, false); }
+          } })
+        );
+      } catch (e) { say(e.message, false); }
+    };
     $("panel").replaceChildren(
       el("h2", { textContent: "Owner security" }),
       el("p", { className: "small", textContent: "Offline unlock stops working on a PC after seven days without a counter refresh." }),
@@ -278,6 +302,14 @@ async function showOwnerSecurity() {
         p.hasSecret ? el("button", { className: "quiet", textContent: p.enabled ? "Turn off" : "Turn on",
           onclick: () => run(() => api("POST", "/staff/offline-unlock-person", { phone: p.phone, enabled: !p.enabled }),
             p.enabled ? "Offline unlock switched off." : "Offline unlock switched on.") }) : null))) : el("p", { textContent: "No owner or staff accounts yet." }),
+      el("hr"),
+      el("h3", { textContent: "Replace a person's phone authenticators" }),
+      el("label", { htmlFor: "factorPerson", textContent: "Person" }),
+      el("select", { id: "factorPerson" }, ...people.map(p => el("option", { value: p.phone, textContent: p.name + " · " + p.phone }))),
+      el("div", { className: "row" },
+        el("button", { textContent: "Replace counter two-step", onclick: () => beginFactorReplacement("counter") }),
+        el("button", { className: "quiet", textContent: "Replace offline authenticator", onclick: () => beginFactorReplacement("offline") })),
+      el("div", { id: "factorSetup" }),
       el("hr"),
       el("h3", { textContent: "End counter logins" }),
       el("p", { className: "small", textContent: "End every counter login except the one you are using now." }),
