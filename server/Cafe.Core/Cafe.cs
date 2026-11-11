@@ -89,8 +89,7 @@ public sealed partial class CafeCore : IDisposable
         Exec("""
             PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, role INTEGER NOT NULL, name TEXT NOT NULL,
-                phone TEXT NOT NULL UNIQUE, pin BLOB NOT NULL, fails INTEGER NOT NULL DEFAULT 0, locked_until TEXT,
-                offline_unlock_enabled INTEGER NOT NULL DEFAULT 1);
+                phone TEXT NOT NULL UNIQUE, pin BLOB NOT NULL, fails INTEGER NOT NULL DEFAULT 0, locked_until TEXT);
             CREATE TABLE IF NOT EXISTS sessions(id INTEGER PRIMARY KEY, pc TEXT NOT NULL, user_id INTEGER NOT NULL REFERENCES users,
                 prepaid_min INTEGER, plan_id INTEGER REFERENCES plans, group_id INTEGER, started TEXT NOT NULL, ended TEXT,
                 paused_sec INTEGER NOT NULL DEFAULT 0, pause_from TEXT);
@@ -104,7 +103,7 @@ public sealed partial class CafeCore : IDisposable
             CREATE TABLE IF NOT EXISTS pcs(name TEXT PRIMARY KEY, token BLOB NOT NULL UNIQUE, locked INTEGER NOT NULL DEFAULT 0, message TEXT,
                 self_locked INTEGER NOT NULL DEFAULT 0, last_seen TEXT);
             CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, at TEXT NOT NULL, by_user INTEGER, action TEXT NOT NULL, detail TEXT);
-            CREATE TABLE IF NOT EXISTS offline_sales(pc TEXT NOT NULL, sale_id TEXT NOT NULL, session_id INTEGER NOT NULL, staff_id INTEGER NOT NULL, step INTEGER NOT NULL, created TEXT NOT NULL, minutes INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(pc, sale_id));
+            CREATE TABLE IF NOT EXISTS offline_sales(pc TEXT NOT NULL, sale_id TEXT NOT NULL, session_id INTEGER NOT NULL, staff_id INTEGER NOT NULL, step INTEGER NOT NULL, created TEXT NOT NULL, PRIMARY KEY(pc, sale_id));
             CREATE TABLE IF NOT EXISTS settings(name TEXT PRIMARY KEY, value TEXT NOT NULL);
             INSERT OR IGNORE INTO settings(name, value) VALUES('lock_when_time_runs_out', '0');
             INSERT OR IGNORE INTO settings(name, value) VALUES('max_offline_unlock_minutes', '180');
