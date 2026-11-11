@@ -106,24 +106,28 @@ public sealed class AccountTests : IDisposable
         Assert.Throws<CafeException>(() => _cafe.SetMaxOfflineUnlockMinutes(_staff, 60));
         _cafe.SetMaxOfflineUnlockMinutes(_owner, 60);
         Assert.Equal(60, _cafe.MaxOfflineUnlockMinutes);
-        Assert.Throws<CafeException>(() => _cafe.ProcessOfflineSale("PC1",
-            new OfflineSaleRequest(Guid.NewGuid().ToString("N"), "9000000002", AppCode(offline), CurrentStep,
-                90, "cash", null, null)));
+        var overLimitStep = CurrentStep;
+        var overLimit = new OfflineSaleRequest(Guid.NewGuid().ToString("N"), "9000000002",
+            AppCode(offline, overLimitStep), overLimitStep, 90, "cash", null, null);
+        var overLimitSession = _cafe.ProcessOfflineSale("PC1", overLimit);
+        Assert.Equal(10000, _cafe.BillFor(overLimitSession).Paid);
+        Assert.Contains(_cafe.OfflineUnlockAlerts(_owner), alert =>
+            alert.Contains("Staff sold 90 min on PC1, above the current limit of 60", StringComparison.Ordinal));
 
+        _clock = _clock.AddSeconds(30);
         var step = CurrentStep;
         var first = new OfflineSaleRequest(Guid.NewGuid().ToString("N"), "9000000002",
-            AppCode(offline, step), step, 60, "cash", null, null);
+            AppCode(offline, step), step, 60, "cash", null, overLimitSession);
         _cafe.ProcessOfflineSale("PC1", first);
-        var duplicate = first with { SaleId = Guid.NewGuid().ToString("N"), Minutes = 30 };
+        var duplicate = first with { SaleId = Guid.NewGuid().ToString("N"), Minutes = 30, Session = null };
         var duplicateError = Assert.Throws<CafeException>(() => _cafe.ProcessOfflineSale("PC2", duplicate));
         _cafe.ReviewOfflineSale("PC2", duplicate.SaleId, duplicate.Phone, duplicateError.Message, duplicate.Minutes, duplicate.Step);
 
-        var alert = Assert.Single(_cafe.OfflineUnlockAlerts(_owner));
-        Assert.Contains("Staff", alert);
-        Assert.Contains("PC1", alert);
-        Assert.Contains("PC2", alert);
-        Assert.Contains("60 minutes", alert);
-        Assert.Contains("30 minutes", alert);
+        var alerts = _cafe.OfflineUnlockAlerts(_owner);
+        Assert.Equal(2, alerts.Count);
+        Assert.Contains(alerts, alert => alert.Contains("Staff", StringComparison.Ordinal)
+            && alert.Contains("PC1", StringComparison.Ordinal) && alert.Contains("PC2", StringComparison.Ordinal)
+            && alert.Contains("60 minutes", StringComparison.Ordinal) && alert.Contains("30 minutes", StringComparison.Ordinal));
 
         using var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = _file, Password = "test-key-123", Pooling = false }.ToString());
         db.Open();
@@ -159,6 +163,37 @@ public sealed class AccountTests : IDisposable
         using var rows = cmd.ExecuteReader();
         Assert.True(rows.Read());
         Assert.Equal(_owner, rows.GetInt64(0));
+        Assert.False(rows.Read());
+    }
+
+    [Fact]
+    public void Offline_sale_from_a_switched_off_person_is_reviewed_and_alerted()
+    {
+        var counter = _cafe.StartTwoStepFor(_owner, "9000000002");
+        _cafe.TurnOnTwoStepFor(_owner, "9000000002", counter, AppCode(counter));
+        var offline = _cafe.StartOfflineUnlockFor(_owner, "9000000002");
+        _cafe.TurnOnOfflineUnlockFor(_owner, "9000000002", offline, AppCode(offline));
+        _cafe.SetOfflineUnlockEnabled(_owner, "9000000002", false);
+
+        var sale = new OfflineSaleRequest(Guid.NewGuid().ToString("N"), "9000000002",
+            AppCode(offline), CurrentStep, 30, "cash", null, null);
+        var error = Assert.Throws<CafeException>(() => _cafe.ProcessOfflineSale("PC1", sale));
+        Assert.Equal("This person's offline unlock is switched off.", error.Message);
+        _cafe.ReviewOfflineSale("PC1", sale.SaleId, sale.Phone, error.Message, sale.Minutes, sale.Step);
+
+        Assert.Contains(_cafe.ForReview(), item => item.Contains(sale.SaleId, StringComparison.Ordinal));
+        var alert = Assert.Single(_cafe.OfflineUnlockAlerts(_owner));
+        Assert.Contains("Staff", alert);
+        Assert.Contains("PC1", alert);
+        Assert.Contains("switched off", alert);
+
+        using var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = _file, Password = "test-key-123", Pooling = false }.ToString());
+        db.Open();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "SELECT action FROM audit WHERE action IN ('offline_unlock_switch_off', 'offline_unlock_off', 'offline_unlock_alert') ORDER BY id";
+        using var rows = cmd.ExecuteReader();
+        Assert.True(rows.Read()); Assert.Equal("offline_unlock_switch_off", rows.GetString(0));
+        Assert.True(rows.Read()); Assert.Equal("offline_unlock_alert", rows.GetString(0));
         Assert.False(rows.Read());
     }
 
