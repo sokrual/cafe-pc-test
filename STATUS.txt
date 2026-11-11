@@ -98,7 +98,8 @@ B5  Owner features                                                  IN PROGRESS
 
 A0  Stable lockdown CI: DONE (PR #17, 11 Nov). Lockdown registry check reads the restored hive file; job result
     = failed checks only; PC installer waits for old programs to close and retries in-use copies by error code.
-A1  Generic names (decided 11 Nov): no cafe's name anywhere in the files; folders GamingCafe, display
+A1  Generic names: DONE (PR #18, 11 Nov). No cafe name in files; GamingCafe folders; lock screen shows --name.
+    Generic names (decided 11 Nov): no cafe's name anywhere in the files; folders GamingCafe, display
     name "Gaming Cafe" until the product name is decided; the pilot cafe's logo removed (setup adds a
     cafe's own name and logo in B5.10). After A0 (#17), before PR A (#11). Git history is left as it is:
     the public version will be a new repo with generic names.
