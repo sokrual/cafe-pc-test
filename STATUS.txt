@@ -53,8 +53,15 @@ B5  Owner features                                                  IN PROGRESS
     B5.4 Reports: revenue by day, week, month, PC, cash/UPI, staff, discounts and corrections; PDF and Excel
     B5.5 Daily encrypted backup, with a restore test
     B5.6 Messages to PCs read aloud, "Call staff" button
-    B5.7 Plans, memberships (weekly, monthly, yearly; owner sets price, perks, offers, discounts and
-         promotions), offers, happy hours, reservations. Rate cards are set by the owner after install, not in the code:
+    B5.7 Plans, memberships, offers, happy hours, reservations. One part at a time:
+         a) owner rate cards                                                                     DONE
+         b) memberships: monthly by default, one at a time, renewed at the counter; unused time is
+            carried over only for members (non-members lose leftover minutes); the customer sees a
+            reminder before it ends
+         c) members-only offers, happy hours, discounts and promotions
+         d) reservations
+    B5.10 First-run setup screens for the owner: rate card, carry-over rule, memberships, offers,
+          discounts, promotions, logo. Shinzx runs it again after testing. Rate cards are set by the owner after install, not in the code:
          the first set-up asks for the rate card; the owner can add more rate cards, discounts and promotions,
          edit them and delete them (other cafes will have their own). Today's rate card becomes the default.
     B5.8 Owner access from his phone (Tailscale) and a view-only screen view
