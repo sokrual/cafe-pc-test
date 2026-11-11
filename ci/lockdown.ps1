@@ -528,7 +528,7 @@ try {
         }
         $script:f12LastHttpStatus = if ($httpStatus) { $httpStatus } else { "none" }
         if ($curlExit -ne 0) {
-            $script:f12LastCurlError = "curl exit $curlExit: $curlText"
+            $script:f12LastCurlError = "curl exit ${curlExit}: $curlText"
             return $null
         }
         if ($httpStatus -notmatch '^2\d\d$') {
