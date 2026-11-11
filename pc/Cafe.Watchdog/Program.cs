@@ -24,6 +24,19 @@ else if (args.Contains("--test-set-offline-refresh", StringComparer.OrdinalIgnor
         System.Globalization.DateTimeStyles.RoundtripKind);
     new OfflineUnlockStore(args[cacheIndex + 1]).SetLastRefreshServerUtcForTest(serverTime);
 }
+else if (args.Contains("--test-check-offline-refresh", StringComparer.OrdinalIgnoreCase))
+{
+    if (!args.Contains("--test-mode", StringComparer.OrdinalIgnoreCase)
+        || Environment.GetEnvironmentVariable("CAFE_TEST_MODE") != "1")
+        throw new InvalidOperationException("offline refresh test mode is not enabled");
+    var cacheIndex = Array.FindIndex(args, x => x.Equals("--cache-file", StringComparison.OrdinalIgnoreCase));
+    if (cacheIndex < 0 || cacheIndex + 1 >= args.Length)
+        throw new InvalidOperationException("test cache file is required");
+    var result = new OfflineUnlockStore(args[cacheIndex + 1]).TryUnlock(
+        new OfflineUnlockRequest(Guid.NewGuid().ToString("N"), "", "", 30, "cash", null, null));
+    Console.WriteLine(result.Error ?? "offline unlock was not refused");
+    Environment.ExitCode = result.Error is null ? 1 : 0;
+}
 else if (args.Contains("--test-proxy", StringComparer.OrdinalIgnoreCase))
 {
     PcProxy.StartTest(args);
