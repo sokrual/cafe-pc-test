@@ -54,6 +54,22 @@ public static string Read(string key) {
 '@
 
 function Close-Customer-Apps { Get-Process -IncludeUserName | Where-Object UserName -eq "$env:COMPUTERNAME\$user" | Stop-Process -Force -ErrorAction SilentlyContinue }
+function Copy-WithRetry([string]$Source, [string]$Destination) {
+    for ($attempt = 1; $attempt -le 10; $attempt++) {
+        try {
+            Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+            return
+        } catch {
+            $exception = $_.Exception
+            while ($exception -and $exception -isnot [System.IO.IOException]) { $exception = $exception.InnerException }
+            if (-not $exception -or $exception.Message -notmatch '(?i)(being used by another process|used by another process|in use)') { throw }
+            if ($attempt -eq 10) {
+                throw "Could not copy '$Source' to '$Destination' after 10 attempts because the file is in use. Close the program using it and run INSTALL-PC again. $($exception.Message)"
+            }
+            Start-Sleep -Seconds 1
+        }
+    }
+}
 function Restore-Dns {
     foreach ($a in Get-Content "$data\dns-before.json" -Raw | ConvertFrom-Json) {
         if ($a.servers) { Set-DnsClientServerAddress -InterfaceIndex $a.index -ServerAddresses ($a.servers -split ',') -ErrorAction SilentlyContinue }
@@ -102,11 +118,10 @@ foreach ($f in "pc.token", "server.pin") {
 
 # --- program files ---
 if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force }
-Get-Process Cafe.Watchdog, Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force   # a stopped service can take a moment to let go of its file
-Start-Sleep -Seconds 1
+Get-Process Cafe.Watchdog, Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force -PassThru | Wait-Process -Timeout 30
 New-Item $app -ItemType Directory -Force | Out-Null   # inside Program Files: customers can read and run, not change
 foreach ($f in "Cafe.Agent.exe", "Cafe.Watchdog.exe", "keep-running.txt", "install-pc.ps1", "levelA.ps1", "SETUP-MODE.bat") {
-    if ($src -ne $app -and (Test-Path "$src\$f")) { Copy-Item "$src\$f" $app -Force }   # SETUP-MODE runs from $app itself
+    if ($src -ne $app -and (Test-Path "$src\$f")) { Copy-WithRetry "$src\$f" $app }   # SETUP-MODE runs from $app itself
 }
 "`"$app\Cafe.Agent.exe`" --server https://${Server}:5443" | Set-Content "$app\watchdog.args" -Encoding ascii
 
@@ -117,7 +132,7 @@ New-Item $keys -ItemType Directory -Force | Out-Null
 icacls $keys /inheritance:r /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" | Out-Null
 foreach ($f in "pc.token", "server.pin") {
     $source = if (Test-Path "$src\$f") { "$src\$f" } elseif (Test-Path "$app\$f") { "$app\$f" } else { $null }
-    if ($source) { Copy-Item $source "$keys\$f" -Force }
+    if ($source) { Copy-WithRetry $source "$keys\$f" }
     if (-not (Test-Path "$keys\$f")) { throw "The protected key file $f is missing." }
     if ($src -ne $app -and (Test-Path "$src\$f")) { Remove-Item "$src\$f" -Force }
     Remove-Item "$app\$f" -Force -ErrorAction SilentlyContinue
@@ -267,7 +282,7 @@ if (Test-Path $flag) {
             reg.exe save "HKU\$classSid" "$hiveSnapshot\UsrClass.dat" /y | Out-Null
             if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$hiveSnapshot\UsrClass.dat")) { throw "Could not save the Customer class registry hive." }
         } elseif (Test-Path $usrClass) {
-            Copy-Item $usrClass "$hiveSnapshot\UsrClass.dat" -Force
+            Copy-WithRetry $usrClass "$hiveSnapshot\UsrClass.dat"
         }
         Remove-Variable item -ErrorAction SilentlyContinue
     } finally {
