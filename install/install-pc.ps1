@@ -62,7 +62,7 @@ function Copy-WithRetry([string]$Source, [string]$Destination) {
         } catch {
             $exception = $_.Exception
             while ($exception -and $exception -isnot [System.IO.IOException]) { $exception = $exception.InnerException }
-            if (-not $exception -or $exception.Message -notmatch '(?i)(being used by another process|used by another process|in use)') { throw }
+            if (-not $exception -or (($exception.HResult -band 0xFFFF) -notin @(32, 33))) { throw }
             if ($attempt -eq 10) {
                 throw "Could not copy '$Source' to '$Destination' after 10 attempts because the file is in use. Close the program using it and run INSTALL-PC again. $($exception.Message)"
             }
