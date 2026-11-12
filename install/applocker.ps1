@@ -409,6 +409,9 @@ function Install-CustomerPolicy {
         if ($LASTEXITCODE -ne 0) { throw "Could not enable AppLocker event channel $channel." }
     }
     Set-AppLockerPolicy -XmlPolicy $policyPath
+    & "$env:WINDIR\System32\gpupdate.exe" /target:computer /force /wait:60 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Computer Group Policy refresh failed after applying AppLocker (gpupdate exit $LASTEXITCODE)." }
+    Write-Host "Computer Group Policy refreshed after applying the AppLocker policy."
     $applied = [xml](Get-AppLockerPolicy -Local -Xml)
     foreach ($type in @("Exe", "Msi", "Script", "Dll", "Appx")) {
         $collectionNode = @($applied.AppLockerPolicy.RuleCollection | Where-Object { $_.Type -eq $type })
