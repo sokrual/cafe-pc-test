@@ -312,7 +312,7 @@ function Install-CustomerPolicy {
     else { foreach ($drive in $removableDrives) { $report.Add("REMOVABLE DRIVE PRESENT: $drive (covered by %REMOVABLE%\*)") } }
     $report.Add("Removable paths covered: %REMOVABLE%\* (CD/DVD) and %HOT%\* (USB/removable storage).")
     foreach ($folder in @($script:scanDeniedFolders | Sort-Object -Unique)) {
-        $report.Add("SCAN INACCESSIBLE (automatically Customer-denied): $folder")
+        $report.Add("SCAN INACCESSIBLE (not changed): $folder")
     }
     # Owner choice: checked means Allow (default); unchecked means Block.
     $candidateFolders = @(@($programFilesWritableFolders) + @($unlistedWritableFolders) | Sort-Object -Unique)
@@ -361,7 +361,6 @@ function Install-CustomerPolicy {
     $denyPaths.Add("$env:WINDIR\Temp\*")
     foreach ($folder in $programDataWritable) { $denyPaths.Add("$folder\*") }
     foreach ($folder in $blockedFolders) { $denyPaths.Add("$folder\*") }
-    foreach ($folder in @($script:scanDeniedFolders | Sort-Object -Unique)) { $denyPaths.Add("$($folder.TrimEnd('\'))\*") }
     $denyPaths.Add("%REMOVABLE%\*")
     $denyPaths.Add("%HOT%\*")
     $denyPaths = @($denyPaths | Select-Object -Unique)
