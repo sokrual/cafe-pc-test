@@ -215,7 +215,7 @@ try {
     Copy-Item "$repo\install\*", "$out\agent\Cafe.Agent.exe", "$out\watchdog\Cafe.Watchdog.exe" $stage
     Copy-Item "$tdata\pc1.token" "$stage\pc.token"; Copy-Item "$tdata\server.pin" $stage
     $secureBootExpected = try { if (Confirm-SecureBootUEFI -ErrorAction Stop) { "On" } else { "Off" } } catch { "Unknown" }
-    & "$stage\install-pc.ps1" -Server 127.0.0.1 -DnsServer $runnerDns -Ci
+    & "$stage\install-pc.ps1" -Server 127.0.0.1 -DnsServer $runnerDns -Ci -AllowFolders ""
     $pcInstallLog = Get-Content "$stage\install-log.txt" -Raw
     $offSecureBootWarning = "Secure Boot is off on this gaming PC. Turn it on: see SECURITY-GUIDE.txt, part 2."
     $unknownSecureBootWarning = "Secure Boot could not be checked on this gaming PC. Check it: see SECURITY-GUIDE.txt, part 2."
@@ -318,7 +318,7 @@ try {
     Start-Sleep -Seconds 5
 
     # ===== E. step 2 =====
-    & "$stage\install-pc.ps1" -Ci
+    & "$stage\install-pc.ps1" -Ci -AllowFolders ""
     # CI runs without a Customer interactive session; this admin-only marker exercises the profile reset after
     # the test Customer processes exit. Installed cafe PCs never contain this file and log off the real Customer session.
     New-Item "$app\test-wipe-mode.flag" -ItemType File -Force | Out-Null
@@ -458,6 +458,37 @@ try {
         } catch { $psRan = $false }
         $psLogged = WaitFor 20 { Get-D1BlockEvent "Microsoft-Windows-AppLocker/MSI and Script" 8007 $downloadPs1 $u.SID.Value }
         Check "D1.C6" "Customer cannot run a .ps1 from Downloads; AppLocker logs event 8007" ((-not $psRan) -and $psLogged) "ran $psRan; event 8007 $psLogged"
+
+        # Owner option B: an explicit allow list leaves the selected writable folder un-denied,
+        # while another discovered writable folder remains denied.
+        $ownerAllowedDir = "C:\CafeD1OwnerAllowed"
+        $ownerBlockedDir = "C:\CafeD1OwnerBlocked"
+        foreach ($folder in @($ownerAllowedDir, $ownerBlockedDir)) {
+            New-Item -ItemType Directory -Path $folder -Force | Out-Null
+            & icacls.exe $folder /grant "*$($u.SID.Value):(OI)(CI)M" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Could not grant Customer write access to $folder." }
+        }
+        Copy-Item -LiteralPath $pingSource -Destination "$ownerAllowedDir\allowed.exe" -Force
+        Copy-Item -LiteralPath $pingSource -Destination "$ownerBlockedDir\blocked.exe" -Force
+        & "$app\applocker.ps1" -Mode Install -CustomerSid $u.SID.Value -DataPath $data -AllowFolders $ownerAllowedDir
+        $ownerPolicy = [xml](Get-AppLockerPolicy -Local -Xml)
+        $ownerExeRules = @($ownerPolicy.AppLockerPolicy.RuleCollection | Where-Object Type -eq "Exe" | ForEach-Object { $_.FilePathRule })
+        $allowedDeny = @($ownerExeRules | Where-Object { $_.Action -eq "Deny" -and $_.UserOrGroupSid -eq $u.SID.Value -and $_.Conditions.FilePathCondition.Path -eq "$ownerAllowedDir\*" }).Count -gt 0
+        $blockedDeny = @($ownerExeRules | Where-Object { $_.Action -eq "Deny" -and $_.UserOrGroupSid -eq $u.SID.Value -and $_.Conditions.FilePathCondition.Path -eq "$ownerBlockedDir\*" }).Count -gt 0
+        $allowedRun = $false
+        try {
+            $ownerAllowedProcess = AsCustomer "$ownerAllowedDir\allowed.exe" "-n 1 127.0.0.1"
+            $allowedRun = $ownerAllowedProcess.WaitForExit(10000) -and $ownerAllowedProcess.ExitCode -eq 0
+        } catch { $allowedRun = $false }
+        $blockedRun = $false
+        try {
+            $ownerBlockedProcess = AsCustomer "$ownerBlockedDir\blocked.exe" "-n 1 127.0.0.1"
+            if ($ownerBlockedProcess.WaitForExit(10000)) { $blockedRun = ($ownerBlockedProcess.ExitCode -eq 0) }
+            else { Stop-Process -Id $ownerBlockedProcess.Id -Force -ErrorAction SilentlyContinue; $blockedRun = $true }
+        } catch { $blockedRun = $false }
+        $ownerBlockedLogged = WaitFor 20 { Get-D1BlockEvent "Microsoft-Windows-AppLocker/EXE and DLL" 8004 "$ownerBlockedDir\blocked.exe" $u.SID.Value }
+        Check "D1.C6a" "Owner-allowed writable folder has no Customer deny rule and its executable runs" ((-not $allowedDeny) -and $allowedRun) "deny rule $allowedDeny; executable ran $allowedRun"
+        Check "D1.C6b" "Discovered writable folder omitted from -AllowFolders is denied for Customer" ($blockedDeny -and (-not $blockedRun) -and $ownerBlockedLogged) "deny rule $blockedDeny; executable ran $blockedRun; event 8004 $ownerBlockedLogged"
 
         $fakeGameDir = "$env:ProgramFiles\CafeD1FakeGame"
         New-Item -ItemType Directory -Path $fakeGameDir -Force | Out-Null
