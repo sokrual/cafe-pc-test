@@ -382,6 +382,8 @@ try {
     $aclRootsRecorded = $aclReportText.Contains("ACL ROOT: $env:ProgramFiles") -and $aclReportText.Contains("ACL ROOT: $($env:ProgramFiles) (x86)") -and $aclReportText.Contains("ACL ROOT: $env:ProgramData")
     $aclDetailsRecorded = $aclReportText.Contains("CUSTOMER-WRITABLE+EXECUTABLE:") -and $aclReportText.Contains("STEAM/LIBRARY FOLDERS") -and ($aclReportText.Contains("PROGRAMDATA WRITABLE:") -or $aclReportText.Contains("PROGRAMDATA CUSTOMER-WRITABLE FOLDERS: none"))
     Check "D1.C3" "Fresh-install ACL inventory records Program Files, Program Files (x86), ProgramData and every writable/executable folder before policy creation" ($aclReportPresent -and $aclRootsRecorded -and $aclDetailsRecorded) "report $aclReport; roots recorded $aclRootsRecorded; details recorded $aclDetailsRecorded"
+    $wipeReported = $aclReportText.Contains("PROGRAMDATA WRITABLE: $data\wipe")
+    Check "D1.C3a" "ACL inventory explicitly reports the Customer-writable ProgramData wipe folder" $wipeReported "Expected $data\wipe in customer-writable-folders.txt"
 
     function Get-D1BlockEvent([string]$LogName, [int]$EventId, [string]$FilePath, [string]$CustomerSid) {
         $events = Get-WinEvent -FilterHashtable @{ LogName = $LogName; Id = $EventId; StartTime = $d1Started.AddSeconds(-2) } -ErrorAction SilentlyContinue

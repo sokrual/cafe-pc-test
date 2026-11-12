@@ -12,13 +12,17 @@ $logBackup = Join-Path $DataPath "applocker-logs-before.json"
 $reportPath = Join-Path $DataPath "customer-writable-folders.txt"
 $channels = @("Microsoft-Windows-AppLocker/EXE and DLL", "Microsoft-Windows-AppLocker/MSI and Script")
 
-function Get-StartupType([string]$mode) {
-    switch ($mode) {
-        "Auto" { "Automatic" }
-        "Manual" { "Manual" }
-        "Disabled" { "Disabled" }
-        default { throw "Unknown AppIDSvc startup mode: $mode" }
+function Set-AppIdStartupMode([string]$Mode) {
+    $scMode = switch ($Mode) {
+        "Auto" { "auto" }
+        "Manual" { "demand" }
+        "Disabled" { "disabled" }
+        "Boot" { "boot" }
+        "System" { "system" }
+        default { throw "Unsupported AppIDSvc startup mode '$Mode'." }
     }
+    & "$env:WINDIR\System32\sc.exe" config AppIDSvc start= $scMode | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not set AppIDSvc startup mode to '$Mode' (sc.exe exit $LASTEXITCODE)." }
 }
 
 function Restore-OriginalState {
@@ -35,13 +39,11 @@ function Restore-OriginalState {
     }
     if (Test-Path -LiteralPath $serviceBackup) {
         $original = Get-Content -LiteralPath $serviceBackup -Raw | ConvertFrom-Json
-        $startup = Get-StartupType $original.StartMode
+        Set-AppIdStartupMode $original.StartMode
         if ($original.WasRunning) {
             Start-Service -Name AppIDSvc -ErrorAction Stop
-            Set-Service -Name AppIDSvc -StartupType $startup
         } else {
             Stop-Service -Name AppIDSvc -Force -ErrorAction SilentlyContinue
-            Set-Service -Name AppIDSvc -StartupType $startup
         }
     }
     Write-Host "AppLocker policy and Application Identity service restored."
@@ -86,11 +88,11 @@ function Get-CustomerDirectoryAccess([string]$Path, [string[]]$PrincipalSids) {
             }
         }
         $effectiveMask = $allowMask -band (-bnot $denyMask)
-        $writeMask = [int64]([int][IO.FileSystemRights]::WriteData -bor
-            [int][IO.FileSystemRights]::AppendData -bor
-            [int][IO.FileSystemRights]::WriteExtendedAttributes -bor
-            [int][IO.FileSystemRights]::WriteAttributes)
-        $executeMask = [int64][int][IO.FileSystemRights]::ExecuteFile
+        $writeMask = [int64]([int][Security.AccessControl.FileSystemRights]::WriteData -bor
+            [int][Security.AccessControl.FileSystemRights]::AppendData -bor
+            [int][Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+            [int][Security.AccessControl.FileSystemRights]::WriteAttributes)
+        $executeMask = [int64][int][Security.AccessControl.FileSystemRights]::ExecuteFile
         $ownerSid = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
         if ($PrincipalSids -contains $ownerSid) {
             $effectiveMask = $effectiveMask -bor $writeMask -bor $executeMask
@@ -103,7 +105,7 @@ function Get-CustomerDirectoryAccess([string]$Path, [string[]]$PrincipalSids) {
             Sddl = $acl.Sddl
         }
     } catch {
-        return $null
+        throw "Could not inspect Customer access on ACL path '$Path': $($_.Exception.Message)"
     }
 }
 
@@ -207,6 +209,16 @@ function Install-CustomerPolicy {
         if ($programFilesWritableFolders.Count -eq 0) { $report.Add("PROGRAM FILES CUSTOMER-WRITABLE FOLDERS: none under $root") }
     }
 
+    $wipePath = Join-Path $DataPath "wipe"
+    if (Test-Path -LiteralPath $wipePath -PathType Container) {
+        $wipeAccess = Get-CustomerDirectoryAccess $wipePath $principals
+        if (-not $wipeAccess.Writable) { throw "The installer-created Customer-writable folder '$wipePath' is not writable according to its ACL." }
+        if (-not $programDataWritable.Contains($wipePath)) {
+            $programDataWritable.Add($wipePath)
+            $report.Add("PROGRAMDATA WRITABLE: $wipePath (execute=$($wipeAccess.Executable))")
+            $report.Add("SDDL: $($wipeAccess.Sddl)")
+        }
+    }
     if ($programDataWritable.Count -eq 0) {
         $report.Add("PROGRAMDATA CUSTOMER-WRITABLE FOLDERS: none")
     }
@@ -317,7 +329,7 @@ function Install-CustomerPolicy {
     $policyPath = Join-Path $DataPath "applocker-policy.xml"
     [IO.File]::WriteAllLines($policyPath, $xml.ToArray(), (New-Object Text.UTF8Encoding($false)))
 
-    Set-Service -Name AppIDSvc -StartupType Automatic
+    Set-AppIdStartupMode "Auto"
     Start-Service -Name AppIDSvc
     $running = Wait-ForService
     if (-not $running) { throw "Application Identity service did not start." }
