@@ -335,7 +335,7 @@ try {
         [IO.File]::WriteAllText($effectivePolicyPath, [string]$effectivePolicyXml, (New-Object Text.UTF8Encoding($false)))
         Write-Host "Effective policy saved to $effectivePolicyPath"
         $policyDecision = Test-AppLockerPolicy -XmlPolicy $effectivePolicyPath -Path $d1DiagnosticExe -User Customer
-        Write-Host "Test-AppLockerPolicy effective-policy result for Customer / $d1DiagnosticExe:"
+        Write-Host "Test-AppLockerPolicy effective-policy result for Customer / ${d1DiagnosticExe}:"
         $policyDecision | Format-List * | Out-String | Write-Host
     } catch { Write-Warning "Effective-policy test failed: $($_.Exception.Message)" }
     foreach ($serviceName in @("appid", "applockerfltr", "appidsvc")) {
