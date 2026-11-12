@@ -410,6 +410,35 @@ try {
     Check "D1.C1b" "Required Appx collection allows signed packaged apps without any deny rules" $appxAllow "Appx collection count $($appxCollection.Count)"
     $appIdNow = Get-CimInstance Win32_Service -Filter "Name='AppIDSvc'"
     Check "D1.C2" "Application Identity is automatic and running" ($appIdNow.StartMode -eq "Auto" -and $appIdNow.State -eq "Running") "start $($appIdNow.StartMode); state $($appIdNow.State)"
+    # Diagnostic-only: distinguish a bad rule decision from a missing enforcement layer.
+    $d1PolicyPath = Join-Path $data "applocker-policy.xml"
+    $d1DiagExe = Join-Path $env:TEMP ("d1-policy-probe-" + [guid]::NewGuid().ToString("N") + ".exe")
+    Copy-Item -LiteralPath "$env:WINDIR\System32\PING.EXE" -Destination $d1DiagExe -Force
+    Write-Host "=== D1 enforcement diagnosis (no policy changes) ==="
+    Write-Host "Effective policy XML: $d1PolicyPath; probe executable: $d1DiagExe"
+    try {
+        $decision = Test-AppLockerPolicy -XmlPolicy $d1PolicyPath -Path $d1DiagExe -User "Customer"
+        $decision | Format-List * | Out-String | Write-Host
+    } catch { Write-Host "Test-AppLockerPolicy ERROR: $($_.Exception.ToString())" }
+    foreach ($serviceName in @("appid", "applockerfltr", "appidsvc")) {
+        Write-Host "--- sc.exe query $serviceName ---"
+        & sc.exe query $serviceName 2>&1 | ForEach-Object { Write-Host $_ }
+        Write-Host "sc.exe exit: $LASTEXITCODE"
+    }
+    $policyInstalledAt = (Get-Item -LiteralPath $d1PolicyPath).LastWriteTime
+    foreach ($channel in @("Microsoft-Windows-AppLocker/EXE and DLL", "Microsoft-Windows-AppLocker/MSI and Script")) {
+        Write-Host "--- AppLocker events in $channel since $policyInstalledAt ---"
+        $policyEvents = @(Get-WinEvent -FilterHashtable @{ LogName = $channel; StartTime = $policyInstalledAt.AddSeconds(-2) } -ErrorAction SilentlyContinue)
+        if ($policyEvents.Count -eq 0) { Write-Host "(no events)" }
+        foreach ($event in $policyEvents) {
+            Write-Host ("EventId={0}; Time={1:o}; RecordId={2}; Message={3}" -f $event.Id, $event.TimeCreated, $event.RecordId, ($event.Message -replace '\r?\n', ' '))
+        }
+    }
+    Write-Host "AsCustomer launch: PowerShell Start-Process -Credential; Windows CreateProcessWithLogonW with LOGON_WITH_PROFILE, interactive logon (LOGON32_LOGON_INTERACTIVE / logon type 2)."
+    Write-Host "Actual Customer token identity from a child process:"
+    $tokenProbe = CustomerPs "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value | Write-Output"
+    Write-Host "Customer child identity probe exit: $tokenProbe"
+    Write-Host "=== End D1 enforcement diagnosis ==="
     $appLockerFilter = Get-CimInstance Win32_SystemDriver -Filter "Name='applockerfltr'" -ErrorAction SilentlyContinue
     $appLockerFilterRunning = $appLockerFilter -and $appLockerFilter.State -eq "Running"
     Check "D1.C2b" "AppLocker filter driver is running" $appLockerFilterRunning "AppLockerFltr state $($appLockerFilter.State)"
