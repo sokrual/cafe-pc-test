@@ -132,7 +132,7 @@ app.MapPost("/pc/logout", (HttpContext c, long? ago) => { var pc = Pc(c); var bi
 app.MapPost("/staff/login", (HttpContext c, LoginBody b) =>
 {
     var user = cafe.StaffLogin(b.Phone, b.Pin, b.Code);
-    return Results.Ok(new { token = staffTokens.Issue(user), owner = cafe.IsOwner(user) }); // shortcut: in memory, so a server restart logs staff out
+    return Results.Ok(new { token = staffTokens.Issue(user) }); // shortcut: in memory, so a server restart logs staff out
 }).RequireRateLimiting("login");
 app.MapPost("/staff/logout", (HttpContext c) => { staffTokens.End(TokenOf(c)); return Results.Ok(); });
 app.MapPost("/staff/users", (HttpContext c, UserBody b) => new { id = cafe.AddUser(Staff(c), b.Role, b.Name, b.Phone, b.Pin) });
@@ -171,8 +171,7 @@ app.MapGet("/staff/alerts", (HttpContext c) => cafe.OfflineUnlockAlerts(Owner(c)
 app.MapGet("/staff/security/bitlocker", (HttpContext c) =>
 {
     var user = Staff(c);
-    if (!cafe.IsOwner(user)) return Results.StatusCode(403);
-    return Results.Ok(new { warning = diskProtection.WarningFor(true) });
+    return Results.Ok(new { warning = diskProtection.WarningFor(cafe.IsOwner(user)) });
 });
 // the reply is what the new gaming PC needs: its key (shown once) and the server's certificate fingerprint
 app.MapPost("/staff/pcs", (HttpContext c, PcBody b) => new { token = cafe.AddPc(Staff(c), b.Pc), pin = File.ReadAllText(Path.Combine(data, "server.pin")) });
