@@ -410,6 +410,9 @@ try {
     Check "D1.C1b" "Required Appx collection allows signed packaged apps without any deny rules" $appxAllow "Appx collection count $($appxCollection.Count)"
     $appIdNow = Get-CimInstance Win32_Service -Filter "Name='AppIDSvc'"
     Check "D1.C2" "Application Identity is automatic and running" ($appIdNow.StartMode -eq "Auto" -and $appIdNow.State -eq "Running") "start $($appIdNow.StartMode); state $($appIdNow.State)"
+    $appLockerFilter = Get-CimInstance Win32_SystemDriver -Filter "Name='applockerfltr'" -ErrorAction SilentlyContinue
+    $appLockerFilterRunning = $appLockerFilter -and $appLockerFilter.State -eq "Running"
+    Check "D1.C2b" "AppLocker filter driver is running" $appLockerFilterRunning "AppLockerFltr state $($appLockerFilter.State)"
     $aclReport = "$data\customer-writable-folders.txt"
     $aclReportPresent = Test-Path -LiteralPath $aclReport
     if ($aclReportPresent) { New-Item -ItemType Directory -Path $wd -Force | Out-Null; Copy-Item -LiteralPath $aclReport -Destination $wd -Force }
@@ -544,27 +547,47 @@ try {
         Check "D1.C8" "A .bat in Program Files still runs as Customer" $allowedBatOk "exit $($allowedBat.ExitCode); marker $((Test-Path $programFilesBatMarker))"
     } finally {
         if ($hadDisableCmd) {
-            $restoreHivePath = $customerHivePath
             $restoreHiveName = "CafeD1Restore_$PID"
             $restoreHiveMounted = $false
-            if (-not (Test-Path -LiteralPath $restoreHivePath)) {
-                & reg.exe load "HKU\$restoreHiveName" "$prof\NTUSER.DAT" | Out-Null
-                if ($LASTEXITCODE -ne 0) { throw "Customer's hive was unloaded during AsCustomer tests and could not be reloaded to restore DisableCMD." }
-                $restoreHiveMounted = $true
-                $restoreHivePath = "Registry::HKEY_USERS\$restoreHiveName"
-            }
-            try {
-                $restorePolicyKey = "$restoreHivePath\Software\Policies\Microsoft\Windows\System"
-                if (-not (Test-Path -LiteralPath $restorePolicyKey)) {
-                    New-Item -Path $restorePolicyKey -Force | Out-Null
+            $restoredInLiveHive = $false
+            if (Test-Path -LiteralPath $customerHivePath) {
+                try {
+                    $restorePolicyKey = "$customerHivePath\Software\Policies\Microsoft\Windows\System"
+                    if (-not (Test-Path -LiteralPath $restorePolicyKey)) {
+                        New-Item -Path $restorePolicyKey -Force | Out-Null
+                    }
+                    Set-ItemProperty -LiteralPath $restorePolicyKey -Name DisableCMD -Value $disableCmdBefore -Type DWord
+                    $restoredInLiveHive = $true
+                } catch {
+                    if (Test-Path -LiteralPath $customerHivePath) { throw }
+                    Write-Host "Customer hive unloaded during DisableCMD restore; retrying against NTUSER.DAT."
                 }
-                Set-ItemProperty -LiteralPath $restorePolicyKey -Name DisableCMD -Value $disableCmdBefore -Type DWord
-            } finally {
-                if ($restoreHiveMounted) {
-                    [gc]::Collect()
-                    [gc]::WaitForPendingFinalizers()
-                    & reg.exe unload "HKU\$restoreHiveName" | Out-Null
-                    if ($LASTEXITCODE -ne 0) { throw "Could not unload the temporary Customer hive after restoring DisableCMD." }
+            }
+            if (-not $restoredInLiveHive) {
+                $restoreProfilePath = (Get-CimInstance Win32_UserProfile | Where-Object SID -eq $u.SID.Value).LocalPath
+                if (-not $restoreProfilePath) { $restoreProfilePath = $prof }
+                $restoreLoaded = $false
+                for ($restoreAttempt = 0; $restoreAttempt -lt 10; $restoreAttempt++) {
+                    & reg.exe load "HKU\$restoreHiveName" "$restoreProfilePath\NTUSER.DAT" | Out-Null
+                    if ($LASTEXITCODE -eq 0) { $restoreLoaded = $true; break }
+                    Start-Sleep -Seconds 1
+                }
+                if (-not $restoreLoaded) { throw "Customer's hive was unloaded during AsCustomer tests and could not be reloaded to restore DisableCMD." }
+                $restoreHiveMounted = $true
+                try {
+                    $restorePolicyKey = "Registry::HKEY_USERS\$restoreHiveName\Software\Policies\Microsoft\Windows\System"
+                    if (-not (Test-Path -LiteralPath $restorePolicyKey)) {
+                        New-Item -Path $restorePolicyKey -Force | Out-Null
+                    }
+                    Set-ItemProperty -LiteralPath $restorePolicyKey -Name DisableCMD -Value $disableCmdBefore -Type DWord
+                    Write-Host "Restored DisableCMD=$disableCmdBefore in the reloaded Customer NTUSER.DAT."
+                } finally {
+                    if ($restoreHiveMounted) {
+                        [gc]::Collect()
+                        [gc]::WaitForPendingFinalizers()
+                        & reg.exe unload "HKU\$restoreHiveName" | Out-Null
+                        if ($LASTEXITCODE -ne 0) { throw "Could not unload the temporary Customer hive after restoring DisableCMD." }
+                    }
                 }
             }
         }
