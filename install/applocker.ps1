@@ -77,7 +77,14 @@ function Get-CustomerWritableDirectoryTree([string]$Root, [string[]]$PrincipalSi
                 $found.Add([pscustomobject]@{ Path = $current; Access = $access })
                 continue
             }
-            foreach ($child in [IO.Directory]::GetDirectories($current)) {
+            $children = @()
+            try { $children = [IO.Directory]::GetDirectories($current) }
+            catch {
+                $script:scanDeniedFolders.Add($current)
+                Write-Warning "Could not enumerate '$current'; adding a Customer-only deny rule for this subtree: $($_.Exception.Message)"
+                continue
+            }
+            foreach ($child in $children) {
                 try {
                     $attributes = [IO.File]::GetAttributes($child)
                     if (($attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
@@ -85,7 +92,10 @@ function Get-CustomerWritableDirectoryTree([string]$Root, [string[]]$PrincipalSi
                     }
                 } catch { }
             }
-        } catch { throw "Could not inspect Customer access while scanning '$current': $($_.Exception.Message)" }
+        } catch {
+            $script:scanDeniedFolders.Add($current)
+            Write-Warning "Could not inspect '$current'; adding a Customer-only deny rule for this subtree: $($_.Exception.Message)"
+        }
     }
     return $found.ToArray()
 }
@@ -174,6 +184,7 @@ function Install-CustomerPolicy {
         $report.Add("SDDL: $($rootAcl.Sddl)")
     }
 
+    $script:scanDeniedFolders = New-Object System.Collections.Generic.List[string]
     $allWritableExecute = New-Object System.Collections.Generic.List[string]
     $customerProfile = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $CustomerSid } | Select-Object -First 1).LocalPath
     $profileRoots = @($customerProfile, "$env:SystemDrive\Users\Public", "$env:WINDIR\Temp") | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) }
@@ -250,17 +261,22 @@ function Install-CustomerPolicy {
         $driveRoot = "$($drive.DeviceID)\"
         $scanRoots = @()
         if ($driveRoot -eq $systemDriveRoot) {
-            $rootAccess = Get-CustomerDirectoryAccess $driveRoot $principals
-            if ($rootAccess.Writable) {
-                $unlistedWritableFolders.Add($driveRoot)
-                $report.Add("UNLISTED CUSTOMER-WRITABLE FIXED-DRIVE FOLDER: $driveRoot (execute=$($rootAccess.Executable))")
-                $report.Add("SDDL: $($rootAccess.Sddl)")
-                if ($rootAccess.Executable) { $unlistedWritableExecute.Add($driveRoot); $allWritableExecute.Add($driveRoot) }
-            } else {
-                foreach ($child in [IO.Directory]::GetDirectories($driveRoot)) {
-                    $isCovered = @($coveredRoots | Where-Object { $_ -and $child.TrimEnd('\') -ieq $_.TrimEnd('\') }).Count -gt 0
-                    if (-not $isCovered) { $scanRoots += $child }
+            try {
+                $rootAccess = Get-CustomerDirectoryAccess $driveRoot $principals
+                if ($rootAccess.Writable) {
+                    $unlistedWritableFolders.Add($driveRoot)
+                    $report.Add("UNLISTED CUSTOMER-WRITABLE FIXED-DRIVE FOLDER: $driveRoot (execute=$($rootAccess.Executable))")
+                    $report.Add("SDDL: $($rootAccess.Sddl)")
+                    if ($rootAccess.Executable) { $unlistedWritableExecute.Add($driveRoot); $allWritableExecute.Add($driveRoot) }
+                } else {
+                    foreach ($child in [IO.Directory]::GetDirectories($driveRoot)) {
+                        $isCovered = @($coveredRoots | Where-Object { $_ -and $child.TrimEnd('\') -ieq $_.TrimEnd('\') }).Count -gt 0
+                        if (-not $isCovered) { $scanRoots += $child }
+                    }
                 }
+            } catch {
+                $script:scanDeniedFolders.Add($driveRoot)
+                Write-Warning "Could not inspect fixed-drive root '$driveRoot'; adding a Customer-only deny rule: $($_.Exception.Message)"
             }
         } else { $scanRoots = @($driveRoot) }
         foreach ($scanRoot in $scanRoots) {
@@ -295,6 +311,9 @@ function Install-CustomerPolicy {
     if ($removableDrives.Count -eq 0) { $report.Add("REMOVABLE DRIVES PRESENT DURING INVENTORY: none; %REMOVABLE%\* and %HOT%\* deny cover later insertions") }
     else { foreach ($drive in $removableDrives) { $report.Add("REMOVABLE DRIVE PRESENT: $drive (covered by %REMOVABLE%\*)") } }
     $report.Add("Removable paths covered: %REMOVABLE%\* (CD/DVD) and %HOT%\* (USB/removable storage).")
+    foreach ($folder in @($script:scanDeniedFolders | Sort-Object -Unique)) {
+        $report.Add("SCAN INACCESSIBLE (automatically Customer-denied): $folder")
+    }
     # Owner choice: checked means Allow (default); unchecked means Block.
     $candidateFolders = @(@($programFilesWritableFolders) + @($unlistedWritableFolders) | Sort-Object -Unique)
     $allowedFolders = @()
@@ -342,6 +361,7 @@ function Install-CustomerPolicy {
     $denyPaths.Add("$env:WINDIR\Temp\*")
     foreach ($folder in $programDataWritable) { $denyPaths.Add("$folder\*") }
     foreach ($folder in $blockedFolders) { $denyPaths.Add("$folder\*") }
+    foreach ($folder in @($script:scanDeniedFolders | Sort-Object -Unique)) { $denyPaths.Add("$($folder.TrimEnd('\'))\*") }
     $denyPaths.Add("%REMOVABLE%\*")
     $denyPaths.Add("%HOT%\*")
     $denyPaths = @($denyPaths | Select-Object -Unique)
