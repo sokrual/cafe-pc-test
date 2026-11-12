@@ -318,7 +318,7 @@ try {
     Start-Sleep -Seconds 5
 
     # ===== E. step 2 =====
-    & "$stage\install-pc.ps1" -Ci -AllowFolders ""
+    & "$stage\install-pc.ps1" -Ci -AllowFolders "" -AllowFolders ""
     # CI runs without a Customer interactive session; this admin-only marker exercises the profile reset after
     # the test Customer processes exit. Installed cafe PCs never contain this file and log off the real Customer session.
     New-Item "$app\test-wipe-mode.flag" -ItemType File -Force | Out-Null
