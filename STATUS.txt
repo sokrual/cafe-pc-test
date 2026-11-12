@@ -44,8 +44,13 @@ B3  Lockdown and installers                                         BUILT - fina
               guide (F3, F5, F6, F9, F13, F17)                                     DONE (PR #20, 12 Nov)
               Limit default 180 min; a sale above a lowered limit is kept with an owner alert;
               switched-off person's sales go to review with an alert. Guide: LOST-PHONE.txt.
-         PR C BitLocker warning, firmware/USB/Secure Boot guide, firewall between gaming PCs (F2, F11)   NEXT
-         PR D block programs from customer-writable folders, owner-approved pen drives (F1)
+         PR C BitLocker warning, firmware/USB/Secure Boot guide, firewall between gaming PCs (F2, F11)   DONE (PR #21, 12 Nov)
+              Guide: SECURITY-GUIDE.txt. Inbound blocks only (SMB, NetBIOS, RDP, WinRM); general outbound
+              limits not done (remaining F11 risk is written in the guide).
+         PR D block programs from customer-writable folders, owner-approved pen drives (F1)            NEXT
+         PC follow-ups: show PcState.Notice; offline "30/60/90 min" text when the block changes; reset erases
+              the remembered lock setting (F4); pipe identity check is path-based (F14); check the lock screen
+              takes focus back when another program's window appears (seen once in CI: Win+D left wsl.exe in front)
     After #9: a final review by two separate reviewers. Then B4.
     Level A switches to blocking after the cafe trial, with an "allow or not" prompt for the owner (part of B5.3).
 
