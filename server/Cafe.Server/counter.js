@@ -37,6 +37,14 @@ const timeText = r => r.session ? (r.leftSec != null ? clock(r.leftSec) + " left
 async function refresh(forcePanel = false) {
   try { rows = await api("GET", "/staff/counter"); } catch (e) { say(e.message, false); return; }
   try {
+    const disk = await api("GET", "/staff/security/bitlocker");
+    $("securityWarning").textContent = disk.warning || "";
+    $("securityWarning").hidden = !disk.warning;
+  } catch {
+    $("securityWarning").textContent = "";
+    $("securityWarning").hidden = true;
+  }
+  try {
     const alerts = await api("GET", "/staff/alerts");
     $("alerts").replaceChildren(...alerts.map(a => el("p", { textContent: "Alert: " + a })));
   } catch { $("alerts").replaceChildren(); }

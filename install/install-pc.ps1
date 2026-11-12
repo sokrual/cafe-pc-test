@@ -22,7 +22,27 @@ function Say($text) {
     [System.Windows.Forms.MessageBox]::Show($text, "Gaming Cafe setup") | Out-Null
 }
 trap { Say "Setup stopped:`n$_`n`nRun it again. If it stops again, take a photo of this window. Send the photo and the file install-log.txt (in this folder) on Discord to the person who gave you this software."; break }
-if (-not $Uninstall) { Start-Transcript "$src\install-log.txt" -Append | Out-Null }   # what happened, step by step: send this file on Discord if setup stops
+if (-not $Uninstall) {
+    Start-Transcript "$src\install-log.txt" -Append | Out-Null   # what happened, step by step: send this file on Discord if setup stops
+    # Firmware protection is the owner's job; warn only and keep the installer running.
+    $secureBootWarning = "Secure Boot is off on this gaming PC. Turn it on: see SECURITY-GUIDE.txt, part 2."
+    $secureBootUnknown = "Secure Boot could not be checked on this gaming PC. Check it: see SECURITY-GUIDE.txt, part 2."
+    try {
+        if (-not (Get-Command Confirm-SecureBootUEFI -ErrorAction SilentlyContinue)) {
+            $secureBootState = "Unknown"
+        } else {
+            $secureBootState = if (Confirm-SecureBootUEFI -ErrorAction Stop) { "On" } else { "Off" }
+        }
+    } catch { $secureBootState = "Unknown" }
+    Write-Host "Secure Boot status: $secureBootState"
+    if ($secureBootState -eq "Off") {
+        Write-Host $secureBootWarning
+        Say $secureBootWarning
+    } elseif ($secureBootState -eq "Unknown") {
+        Write-Host $secureBootUnknown
+        Say $secureBootUnknown
+    }
+}
 
 # The Windows sign-in password is kept where Windows keeps it for automatic sign-in (an LSA secret), never in a file.
 Add-Type -Namespace Cafe -Name Lsa -MemberDefinition @'
@@ -239,6 +259,20 @@ if ($dnsOk) {
     Clear-DnsClientCache
 } elseif (-not (Get-NetFirewallRule -Group "Cafe PC" -ErrorAction SilentlyContinue)) {   # an existing lock stays as it is
     Say "Note: the internet filter on the counter PC ($DnsServer) did not answer. Website filtering is NOT on for this PC yet.`nFinish the filter setup on the counter PC, then run INSTALL-PC again. Everything else works."
+}
+
+# --- block inbound Windows sharing and remote administration on every gaming PC ---
+$inboundBlocks = @(
+    @{ DisplayName = "Cafe: block SMB (TCP 445)"; Protocol = "TCP"; Ports = @("445") },
+    @{ DisplayName = "Cafe: block NetBIOS name service (UDP 137-138)"; Protocol = "UDP"; Ports = @("137-138") },
+    @{ DisplayName = "Cafe: block NetBIOS session service (TCP 139)"; Protocol = "TCP"; Ports = @("139") },
+    @{ DisplayName = "Cafe: block Remote Desktop (TCP 3389)"; Protocol = "TCP"; Ports = @("3389") },
+    @{ DisplayName = "Cafe: block Remote Desktop (UDP 3389)"; Protocol = "UDP"; Ports = @("3389") },
+    @{ DisplayName = "Cafe: block Windows Remote Management (TCP 5985-5986)"; Protocol = "TCP"; Ports = @("5985-5986") }
+)
+foreach ($rule in $inboundBlocks) {
+    Get-NetFirewallRule -DisplayName $rule.DisplayName -ErrorAction SilentlyContinue | Where-Object Group -eq "Cafe PC" | Remove-NetFirewallRule
+    New-NetFirewallRule -Group "Cafe PC" -DisplayName $rule.DisplayName -Direction Inbound -Action Block -Enabled True -Profile Any -Protocol $rule.Protocol -LocalPort $rule.Ports -RemoteAddress Any | Out-Null
 }
 
 # --- clock: synced every hour with India's official time servers (NIC and NPL), as CERT-In asks; logs need the right time ---

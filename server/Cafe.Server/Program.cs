@@ -1,4 +1,5 @@
 using System.Net;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
@@ -14,6 +15,46 @@ AdminsOnly(data);
 void Log(string line) { lock (data) File.AppendAllText(Path.Combine(data, "logs", $"server-{DateTime.Now:yyyyMMdd}.log"), $"{DateTime.Now:HH:mm:ss} {line}{Environment.NewLine}"); }
 
 using var cafe = new CafeCore(Path.Combine(data, "cafe.db"), DbKey(data), log: Log);
+var diskProtection = new CounterDiskProtection();
+async Task RefreshCounterBitLocker()
+{
+    var state = "Unknown";
+    try
+    {
+        var start = new ProcessStartInfo
+        {
+            FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe"),
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        start.ArgumentList.Add("-NoProfile");
+        start.ArgumentList.Add("-NonInteractive");
+        start.ArgumentList.Add("-Command");
+        start.ArgumentList.Add("$ErrorActionPreference = 'Stop'; if (-not (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue)) { 'Unavailable' } else { $v = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop; if ($v.ProtectionStatus -eq 'On') { 'On' } else { 'Off' } }");
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start PowerShell.");
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        try { await process.WaitForExitAsync(timeout.Token); }
+        catch (OperationCanceledException)
+        {
+            process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync();
+            throw;
+        }
+        var result = (await output).Trim();
+        _ = await error;
+        state = process.ExitCode == 0 && result is "On" or "Off" or "Unavailable" ? result : "Unknown";
+    }
+    catch
+    {
+        state = "Unknown";
+    }
+    diskProtection.SetState(state);
+    Log($"Counter PC BitLocker status: {state}");
+}
 if (args.Contains("--seed-test")) Seed(cafe, data, args.Contains("--seed-offline-lock"), args.Contains("--seed-offline-secret-test"));
 var cert = Cert(data);
 
@@ -127,6 +168,11 @@ app.MapPost("/staff/logins/end-person", (HttpContext c, EndPersonLoginsBody b) =
     return new { ended };
 });
 app.MapGet("/staff/alerts", (HttpContext c) => cafe.OfflineUnlockAlerts(Owner(c)));
+app.MapGet("/staff/security/bitlocker", (HttpContext c) =>
+{
+    var user = Staff(c);
+    return Results.Ok(new { warning = diskProtection.WarningFor(cafe.IsOwner(user)) });
+});
 // the reply is what the new gaming PC needs: its key (shown once) and the server's certificate fingerprint
 app.MapPost("/staff/pcs", (HttpContext c, PcBody b) => new { token = cafe.AddPc(Staff(c), b.Pc), pin = File.ReadAllText(Path.Combine(data, "server.pin")) });
 app.MapDelete("/staff/pcs/{pc}", (HttpContext c, string pc) => { cafe.RemovePc(Staff(c), pc); return Results.Ok(); });
@@ -237,6 +283,17 @@ app.Lifetime.ApplicationStarted.Register(() => _ = Task.Run(async () =>
             try { cafe.EnforceTimeLimits(); }
             catch (Exception e) { Log($"time expiry check failed: {e.Message}"); }
         }
+    }
+    catch (OperationCanceledException) { }
+}));
+app.Lifetime.ApplicationStarted.Register(() => _ = Task.Run(async () =>
+{
+    try
+    {
+        await RefreshCounterBitLocker();
+        using var timer = new PeriodicTimer(TimeSpan.FromHours(3));
+        while (await timer.WaitForNextTickAsync(app.Lifetime.ApplicationStopping))
+            await RefreshCounterBitLocker();
     }
     catch (OperationCanceledException) { }
 }));

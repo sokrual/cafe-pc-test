@@ -1,0 +1,71 @@
+SECURITY GUIDE FOR THE CAFE OWNER
+===================================
+
+Keep this guide near the counter PC. Do these steps with the PC turned off or before customers use it.
+The names of menus can differ a little between Windows versions.
+
+PART 1 - TURN ON BITLOCKER ON THE COUNTER PC
+--------------------------------------------
+
+1. Sign in to the counter PC with the Windows administrator account.
+2. Open Start and type "Manage BitLocker". Open the result called Manage BitLocker.
+3. Find the drive marked C: (the Windows drive). Choose "Turn on BitLocker".
+   If Windows says BitLocker is not available, check the Windows edition. Windows Home may not include
+   the BitLocker management command. Use a supported Windows Pro edition or ask a computer technician
+   about Windows device encryption. Do not assume the disk is protected until Windows says it is.
+4. When Windows asks where to save the recovery key, save it to the owner's Microsoft account.
+   Also print the recovery key and keep the paper somewhere locked and away from the counter PC.
+   Never keep the printed key beside the PC, inside its case, or on a USB drive left at the cafe.
+   The cafe server does not read or save the recovery key.
+5. Choose the option to encrypt the whole drive if this is an existing PC. Follow Windows' prompts
+   and restart if asked. Keep the counter PC connected to power until encryption finishes.
+6. To check it later, open Manage BitLocker again. The C: drive must say "BitLocker on" and show
+   protection as On. You can also open an administrator PowerShell window and run:
+   Get-BitLockerVolume -MountPoint C:
+   Check that ProtectionStatus says On. "Encryption in progress" is not the same as protection On.
+7. If the counter screen warns that BitLocker is off, do not ignore it. Finish these steps and check again.
+   The warning clears after the server next checks the drive and sees protection On.
+
+PART 2 - LOCK THE FIRMWARE ON EVERY PC
+--------------------------------------
+
+Do these steps on the counter PC and every gaming PC. The menu names and exact locations differ by
+motherboard maker and model. Dell, HP, Lenovo, ASUS, MSI and Gigabyte use different setup screens.
+Use the PC or motherboard maker's manual for the exact key and menu names. Common keys while the PC
+starts are F2, Delete, F10 or Esc.
+
+1. Set a BIOS/UEFI administrator or setup password. This stops a customer from changing boot settings.
+   Keep the password in the owner's password manager or another safe place, not on the PC.
+   Save, restart, enter firmware setup again and check that it asks for this password before it lets
+   you change settings. Exit without changing anything.
+2. Set the first and only allowed boot device to Windows Boot Manager or the internal SSD.
+3. Turn off USB or removable-device boot. If the firmware has a separate "External Device Boot" setting,
+   turn that off too. Save the changes and restart.
+4. Turn Secure Boot on. Use the standard Windows/UEFI keys. Do not enable a legacy/CSM boot mode.
+   If Secure Boot cannot be enabled, check that Windows is installed in UEFI mode and ask the PC maker
+   or a technician before changing disk or boot settings.
+5. Check Secure Boot from Windows: open PowerShell as administrator and run:
+   Confirm-SecureBootUEFI
+   It must return True. You can also open System Information (msinfo32) and check "Secure Boot State":
+   it must say "On". If the command says it is not supported, the PC may be using legacy BIOS mode.
+6. Check the boot order by entering firmware setup again. Confirm Windows Boot Manager/internal SSD is
+   first and USB/removable boot is disabled. Restart once more and confirm Windows starts normally.
+
+PART 3 - WHAT THE GAMING PC FIREWALL RULES DO
+--------------------------------------------
+
+1. Each gaming PC has inbound block rules for SMB file sharing (TCP 445), NetBIOS (UDP 137-138 and
+   TCP 139), Remote Desktop (TCP and UDP 3389), and Windows Remote Management (TCP 5985-5986).
+   These rules block incoming connections to those Windows services from any address.
+2. The rules do not block the lock screen, the watchdog, or the counter server. Those programs make
+   outgoing connections when they need to contact the counter PC. This change does not add general
+   outbound blocking.
+3. There is still a network risk: a customer program can connect out to the internet using HTTPS
+   (usually TCP 443), or connect directly to an internet IP address. It can also use its own encrypted
+   DNS over HTTPS. The existing DNS rules do not stop all of these connections.
+4. The proper fix is separate networks (VLANs) on the router: put gaming PCs on their own network and
+   the counter PC on a protected network. Configure the router to allow only the required gaming-PC
+   connections to the counter PC and to the internet filter. Firewall rules on one PC are not a
+   replacement for network separation.
+5. These rules are a useful extra barrier, not a complete network security boundary. Keep Windows and
+   games updated, and do not give customers administrator access.
