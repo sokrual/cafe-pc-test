@@ -329,6 +329,12 @@ try {
     Write-Host "===== D1 enforcement diagnostics (install started $($d1InstallStarted.ToString('o'))) ====="
     Write-Host "AsCustomer launch path: Start-Process -Credential (CreateProcessWithLogonW); LOGON32_LOGON_INTERACTIVE=2; LoadUserProfile=true."
     Write-Host "AsCustomer token evaluation: Test-AppLockerPolicy below evaluates the Customer SAM account; runtime block events are correlated against Customer SID $($u.SID.Value)."
+    $d1TokenIdentityPath = Join-Path "$prof\Downloads" "d1-customer-token-identity.txt"
+    $d1TokenIdentityExit = CustomerPs "[IO.File]::WriteAllText('$d1TokenIdentityPath', [Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
+    $d1TokenIdentity = if (Test-Path -LiteralPath $d1TokenIdentityPath) { (Get-Content -LiteralPath $d1TokenIdentityPath -Raw).Trim() } else { "" }
+    Remove-Item -LiteralPath $d1TokenIdentityPath -Force -ErrorAction SilentlyContinue
+    Write-Host "AsCustomer actual process token SID: $d1TokenIdentity; expected Customer SID: $($u.SID.Value)"
+    Check "D1.C2c" "AsCustomer process token is the Customer SID evaluated by Test-AppLockerPolicy" ($d1TokenIdentityExit -eq 0 -and $d1TokenIdentity -eq $u.SID.Value) "token SID $d1TokenIdentity; Customer SID $($u.SID.Value); exit $d1TokenIdentityExit"
     $effectivePolicyPath = Join-Path $data "applocker-effective.xml"
     try {
         $effectivePolicyXml = Get-AppLockerPolicy -Effective -Xml
