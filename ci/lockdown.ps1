@@ -318,7 +318,7 @@ try {
     Start-Sleep -Seconds 5
 
     # ===== E. step 2 =====
-    & "$stage\install-pc.ps1" -Ci -AllowFolders "" -AllowFolders ""
+    & "$stage\install-pc.ps1" -Ci -AllowFolders ""
     # CI runs without a Customer interactive session; this admin-only marker exercises the profile reset after
     # the test Customer processes exit. Installed cafe PCs never contain this file and log off the real Customer session.
     New-Item "$app\test-wipe-mode.flag" -ItemType File -Force | Out-Null
@@ -327,7 +327,7 @@ try {
     # letting the first customer logout fail forever because the reset snapshot is missing.
     $heldHive = "$data\clean-profile-hive.migration-test"
     Move-Item "$data\clean-profile-hive" $heldHive
-    & "$stage\install-pc.ps1" -Ci
+    & "$stage\install-pc.ps1" -Ci -AllowFolders ""
     $migrationSetup = (Test-Path "$app\setup.flag") -and -not (Get-Process Cafe.Agent -ErrorAction SilentlyContinue)
     Move-Item $heldHive "$data\clean-profile-hive"
     Remove-Item "$app\setup.flag" -Force -ErrorAction SilentlyContinue
