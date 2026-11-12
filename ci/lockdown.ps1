@@ -289,7 +289,7 @@ try {
         @{ Id = "B3.C10f"; Name = "Cafe: block Windows Remote Management (TCP 5985-5986)"; Protocol = "TCP"; Ports = "5985-5986" }
     )
     foreach ($expected in $expectedInboundBlocks) {
-        $rules = @(Get-NetFirewallRule -Group "Cafe PC" -DisplayName $expected.Name -ErrorAction SilentlyContinue)
+        $rules = @(Get-NetFirewallRule -DisplayName $expected.Name -ErrorAction SilentlyContinue | Where-Object Group -eq "Cafe PC")
         $valid = $rules.Count -eq 1
         $detail = "found $($rules.Count)"
         if ($valid) {
