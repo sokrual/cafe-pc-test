@@ -873,7 +873,9 @@ try {
     $postUninstallUser = $null
     try {
         if ([string]::IsNullOrWhiteSpace($postUninstallPassword)) { throw "The pre-uninstall Customer password was unavailable." }
-        $postUninstallSecurePassword = ConvertTo-SecureString $postUninstallPassword -AsPlainText -Force
+        $postUninstallSecurePassword = New-Object Security.SecureString
+        foreach ($passwordCharacter in $postUninstallPassword.ToCharArray()) { $postUninstallSecurePassword.AppendChar($passwordCharacter) }
+        $postUninstallSecurePassword.MakeReadOnly()
         $postUninstallUser = New-LocalUser -Name "Customer" -Password $postUninstallSecurePassword -PasswordNeverExpires -AccountNeverExpires -UserMayNotChangePassword -FullName "Customer"
         Add-LocalGroupMember -SID "S-1-5-32-545" -Member $postUninstallUser
         [Cafe.Lsa]::Store("DefaultPassword", $postUninstallPassword)
