@@ -313,13 +313,13 @@ function Install-CustomerPolicy {
     $xml.Add('<AppLockerPolicy Version="1">')
     foreach ($collection in @("Exe", "Msi", "Script", "Dll")) {
         $xml.Add('  <RuleCollection Type="' + $collection + '" EnforcementMode="Enabled">')
-        $allowId = [guid]::NewGuid().ToString("B")
+        $allowId = [guid]::NewGuid().ToString("D")
         $xml.Add('    <FilePathRule Id="' + $allowId + '" Name="Cafe D1 allow Everyone - ' + $collection + '" Description="Allow paths except Customer writable locations" UserOrGroupSid="S-1-1-0" Action="Allow">')
         $xml.Add('      <Conditions><FilePathCondition Path="*" /></Conditions>')
         $xml.Add('    </FilePathRule>')
         foreach ($path in $denyPaths) {
             $safePath = [Security.SecurityElement]::Escape($path)
-            $denyId = [guid]::NewGuid().ToString("B")
+            $denyId = [guid]::NewGuid().ToString("D")
             $xml.Add('    <FilePathRule Id="' + $denyId + '" Name="Cafe D1 deny Customer - ' + $collection + '" Description="Block Customer execution from writable folders" UserOrGroupSid="' + $CustomerSid + '" Action="Deny">')
             $xml.Add('      <Conditions><FilePathCondition Path="' + $safePath + '" /></Conditions>')
             $xml.Add('    </FilePathRule>')
@@ -328,7 +328,7 @@ function Install-CustomerPolicy {
     }
     # AppLocker requires an Appx rule collection whenever the Exe collection is enforced.
     # Keep signed packaged apps available; D1 adds no packaged-app deny rules.
-    $appxId = [guid]::NewGuid().ToString("B")
+    $appxId = [guid]::NewGuid().ToString("D")
     $xml.Add('  <RuleCollection Type="Appx" EnforcementMode="Enabled">')
     $xml.Add('    <FilePublisherRule Id="' + $appxId + '" Name="Cafe D1 allow Everyone - Appx" Description="Allow all signed packaged apps" UserOrGroupSid="S-1-1-0" Action="Allow">')
     $xml.Add('      <Conditions><FilePublisherCondition PublisherName="*" ProductName="*" BinaryName="*"><BinaryVersionRange LowSection="0.0.0.0" HighSection="*" /></FilePublisherCondition></Conditions>')
