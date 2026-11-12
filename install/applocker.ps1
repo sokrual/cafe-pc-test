@@ -63,10 +63,12 @@ function Get-CustomerWritableDirectoryTree([string]$Root, [string[]]$PrincipalSi
         try {
             $acl = Get-Acl -LiteralPath $current -ErrorAction Stop
             $explicitRules = @($acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]))
-            if ($null -ne $item.ParentAccess -and $explicitRules.Count -eq 0) {
+            $currentOwnerSid = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+            if ($null -ne $item.ParentAccess -and $explicitRules.Count -eq 0 -and
+                $currentOwnerSid -eq $item.ParentAccess.OwnerSid) {
                 $access = [pscustomobject]@{
                     Path = $current; Writable = $item.ParentAccess.Writable
-                    Executable = $item.ParentAccess.Executable; OwnerSid = $item.ParentAccess.OwnerSid; Sddl = $null
+                    Executable = $item.ParentAccess.Executable; OwnerSid = $currentOwnerSid; Sddl = $null
                 }
             } else {
                 $access = Get-CustomerDirectoryAccess $current $PrincipalSids $acl
