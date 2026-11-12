@@ -159,7 +159,7 @@ public sealed class AccountTests : IDisposable
         using var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = _file, Password = "test-key-123", Pooling = false }.ToString());
         db.Open();
         using var cmd = db.CreateCommand();
-        cmd.CommandText = "SELECT by_user, action FROM audit WHERE action = 'offline_unlock_off'";
+        cmd.CommandText = "SELECT by_user, action FROM audit WHERE action = 'offline_unlock_switch_off'";
         using var rows = cmd.ExecuteReader();
         Assert.True(rows.Read());
         Assert.Equal(_owner, rows.GetInt64(0));
