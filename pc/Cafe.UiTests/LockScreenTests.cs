@@ -511,6 +511,28 @@ public sealed class ServerApiTests : IDisposable
     }
 
     [Fact]
+    public async Task Staff_and_owner_get_expected_BitLocker_warning()
+    {
+        var staff = await _rig.StaffToken();
+        var owner = await _rig.OwnerToken();
+        var ct = TestContext.Current.CancellationToken;
+
+        using (var response = _rig.Raw(HttpMethod.Get, "/staff/security/bitlocker", staff))
+        {
+            Assert.Equal(200, (int)response.StatusCode);
+            using var json = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            Assert.Equal(System.Text.Json.JsonValueKind.Null, json.RootElement.GetProperty("warning").ValueKind);
+        }
+
+        using (var response = _rig.Raw(HttpMethod.Get, "/staff/security/bitlocker", owner))
+        {
+            Assert.Equal(200, (int)response.StatusCode);
+            using var json = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            Assert.NotEqual(System.Text.Json.JsonValueKind.Null, json.RootElement.GetProperty("warning").ValueKind);
+        }
+    }
+
+    [Fact]
     public async Task Owner_sets_offers_and_happy_hours_and_staff_put_an_offer_on_a_bill()
     {
         var owner = await _rig.OwnerToken();
