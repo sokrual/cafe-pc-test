@@ -4,9 +4,10 @@ param(
     [ValidateSet("Install", "Uninstall")][string]$Mode,
     [string]$CustomerSid,
     [string]$DataPath = "$env:ProgramData\GamingCafe",
-    [switch]$Ci
+    [AllowEmptyString()][string]$AllowFolders
 )
 $ErrorActionPreference = "Stop"
+$allowFoldersWasSpecified = $PSBoundParameters.ContainsKey("AllowFolders")
 $policyBackup = Join-Path $DataPath "applocker-before.xml"
 $serviceBackup = Join-Path $DataPath "appidsvc-before.json"
 $logBackup = Join-Path $DataPath "applocker-logs-before.json"
@@ -50,31 +51,47 @@ function Restore-OriginalState {
     Write-Host "AppLocker policy and Application Identity service restored."
 }
 
-function Get-DirectoryTree([string]$Root) {
-    $all = New-Object System.Collections.Generic.List[string]
+function Get-CustomerWritableDirectoryTree([string]$Root, [string[]]$PrincipalSids) {
+    # Stop at the first writable folder on each branch; descendants inherit the same access.
+    $found = New-Object System.Collections.Generic.List[object]
     if (-not (Test-Path -LiteralPath $Root -PathType Container)) { return @() }
-    $pending = New-Object System.Collections.Generic.Stack[string]
-    $pending.Push($Root)
+    $pending = New-Object System.Collections.Generic.Stack[object]
+    $pending.Push([pscustomobject]@{ Path = $Root; ParentAccess = $null })
     while ($pending.Count -gt 0) {
-        $current = $pending.Pop()
-        $all.Add($current)
+        $item = $pending.Pop()
+        $current = $item.Path
         try {
+            $acl = Get-Acl -LiteralPath $current -ErrorAction Stop
+            $explicitRules = @($acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]))
+            if ($null -ne $item.ParentAccess -and $explicitRules.Count -eq 0) {
+                $access = [pscustomobject]@{
+                    Path = $current; Writable = $item.ParentAccess.Writable
+                    Executable = $item.ParentAccess.Executable; OwnerSid = $item.ParentAccess.OwnerSid; Sddl = $null
+                }
+            } else {
+                $access = Get-CustomerDirectoryAccess $current $PrincipalSids $acl
+            }
+            if ($access.Writable) {
+                $found.Add([pscustomobject]@{ Path = $current; Access = $access })
+                continue
+            }
             foreach ($child in [IO.Directory]::GetDirectories($current)) {
                 try {
                     $attributes = [IO.File]::GetAttributes($child)
                     if (($attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
-                        $pending.Push($child)
+                        $pending.Push([pscustomobject]@{ Path = $child; ParentAccess = $access })
                     }
                 } catch { }
             }
-        } catch { }
+        } catch { throw "Could not inspect Customer access while scanning '$current': $($_.Exception.Message)" }
     }
-    return $all.ToArray()
+    return $found.ToArray()
 }
 
-function Get-CustomerDirectoryAccess([string]$Path, [string[]]$PrincipalSids) {
+function Get-CustomerDirectoryAccess([string]$Path, [string[]]$PrincipalSids, $Acl = $null) {
     try {
-        $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+        if ($null -eq $Acl) { $Acl = Get-Acl -LiteralPath $Path -ErrorAction Stop }
+        $acl = $Acl
         $allowMask = [int64]0
         $denyMask = [int64]0
         foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
@@ -159,28 +176,26 @@ function Install-CustomerPolicy {
     $customerProfile = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $CustomerSid } | Select-Object -First 1).LocalPath
     $profileRoots = @($customerProfile, "$env:SystemDrive\Users\Public", "$env:WINDIR\Temp") | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) }
     foreach ($profileRoot in $profileRoots) {
-        foreach ($folder in (Get-DirectoryTree $profileRoot)) {
-            $access = Get-CustomerDirectoryAccess $folder $principals
-            if ($access -and $access.Writable -and $access.Executable) {
+        foreach ($entry in (Get-CustomerWritableDirectoryTree $profileRoot $principals)) {
+            $folder = $entry.Path; $access = $entry.Access
+            if ($access.Executable) {
                 $allWritableExecute.Add($folder)
                 $report.Add("CUSTOMER-WRITABLE+EXECUTABLE: $folder")
+                if ($access.Sddl) { $report.Add("SDDL: $($access.Sddl)") }
             }
         }
     }
 
     $programDataWritable = New-Object System.Collections.Generic.List[string]
     $programDataWriteExecute = New-Object System.Collections.Generic.List[string]
-    foreach ($folder in (Get-DirectoryTree $programData)) {
-        $access = Get-CustomerDirectoryAccess $folder $principals
-        if ($access -and $access.Writable) {
-            $programDataWritable.Add($folder)
-            $report.Add("PROGRAMDATA WRITABLE: $folder (execute=$($access.Executable))")
-            $report.Add("SDDL: $($access.Sddl)")
-            if ($access.Executable) {
-                $programDataWriteExecute.Add($folder)
-                $allWritableExecute.Add($folder)
-                $report.Add("CUSTOMER-WRITABLE+EXECUTABLE: $folder")
-            }
+    foreach ($entry in (Get-CustomerWritableDirectoryTree $programData $principals)) {
+        $folder = $entry.Path; $access = $entry.Access
+        $programDataWritable.Add($folder)
+        $report.Add("PROGRAMDATA WRITABLE: $folder (execute=$($access.Executable))")
+        if ($access.Sddl) { $report.Add("SDDL: $($access.Sddl)") }
+        if ($access.Executable) {
+            $programDataWriteExecute.Add($folder); $allWritableExecute.Add($folder)
+            $report.Add("CUSTOMER-WRITABLE+EXECUTABLE: $folder")
         }
     }
 
@@ -189,17 +204,14 @@ function Install-CustomerPolicy {
     foreach ($root in @($programFiles, $programFilesX86)) {
         if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
         $writeExecute = New-Object System.Collections.Generic.List[string]
-        foreach ($folder in (Get-DirectoryTree $root)) {
-            $access = Get-CustomerDirectoryAccess $folder $principals
-            if ($access -and $access.Writable) {
-                $programFilesWritableFolders.Add($folder)
-                $report.Add("PROGRAM FILES CUSTOMER-WRITABLE: $folder (execute=$($access.Executable))")
-                if ($access.Executable) {
-                    $writeExecute.Add($folder)
-                    $programFilesWritableExecute.Add($folder)
-                    $allWritableExecute.Add($folder)
-                    $report.Add("CUSTOMER-WRITABLE+EXECUTABLE: $folder")
-                }
+        foreach ($entry in (Get-CustomerWritableDirectoryTree $root $principals)) {
+            $folder = $entry.Path; $access = $entry.Access
+            $programFilesWritableFolders.Add($folder)
+            $report.Add("PROGRAM FILES CUSTOMER-WRITABLE: $folder (execute=$($access.Executable))")
+            if ($access.Sddl) { $report.Add("SDDL: $($access.Sddl)") }
+            if ($access.Executable) {
+                $writeExecute.Add($folder); $programFilesWritableExecute.Add($folder); $allWritableExecute.Add($folder)
+                $report.Add("CUSTOMER-WRITABLE+EXECUTABLE: $folder")
             }
         }
         if ($writeExecute.Count -eq 0) {
@@ -226,45 +238,38 @@ function Install-CustomerPolicy {
     if ($programDataWriteExecute.Count -eq 0) {
         $report.Add("PROGRAMDATA CUSTOMER-WRITABLE+EXECUTABLE FOLDERS: none")
     }
-    # Find launcher/game libraries outside the locations covered by the requested deny rules.
-    # Any customer-writable folder on another fixed-drive path requires owner review; do not allow it silently.
+    # Inventory all Customer-writable fixed-drive folders outside the standard deny roots.
     $unlistedWritableFolders = New-Object System.Collections.Generic.List[string]
     $unlistedWritableExecute = New-Object System.Collections.Generic.List[string]
-    if ($Ci) {
-        $report.Add("UNLISTED FIXED-DRIVE SCAN: skipped for the ephemeral GitHub Actions image; production installs scan all fixed-drive folders and stop for owner review if any are Customer-writable.")
-        $report.Add("CI Program Files writable folders are added as Customer-only deny paths below; they are runner-image folders, not gaming-cafe launcher approvals.")
-    } else {
-        $systemDriveRoot = "$env:SystemDrive\"
-        $coveredRoots = @($programFiles, $programFilesX86, $programData, "$env:SystemDrive\Users", $env:WINDIR)
-        $fixedDrives = @(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue)
-        foreach ($drive in $fixedDrives) {
-            $driveRoot = "$($drive.DeviceID)\"
-            $scanRoots = @()
-            if ($driveRoot -eq $systemDriveRoot) {
-                $rootAccess = Get-CustomerDirectoryAccess $driveRoot $principals
-                if ($rootAccess -and $rootAccess.Writable) {
-                    $unlistedWritableFolders.Add($driveRoot)
-                    $report.Add("UNLISTED CUSTOMER-WRITABLE FIXED-DRIVE ROOT REQUIRES OWNER REVIEW: $driveRoot")
-                }
+    $systemDriveRoot = "$env:SystemDrive\\"
+    $coveredRoots = @($programFiles, $programFilesX86, $programData, "$env:SystemDrive\\Users", $env:WINDIR)
+    $fixedDrives = @(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue)
+    foreach ($drive in $fixedDrives) {
+        $driveRoot = "$($drive.DeviceID)\\"
+        $scanRoots = @()
+        if ($driveRoot -eq $systemDriveRoot) {
+            $rootAccess = Get-CustomerDirectoryAccess $driveRoot $principals
+            if ($rootAccess.Writable) {
+                $unlistedWritableFolders.Add($driveRoot)
+                $report.Add("UNLISTED CUSTOMER-WRITABLE FIXED-DRIVE FOLDER: $driveRoot (execute=$($rootAccess.Executable))")
+                $report.Add("SDDL: $($rootAccess.Sddl)")
+                if ($rootAccess.Executable) { $unlistedWritableExecute.Add($driveRoot); $allWritableExecute.Add($driveRoot) }
+            } else {
                 foreach ($child in [IO.Directory]::GetDirectories($driveRoot)) {
-                    $isCovered = @($coveredRoots | Where-Object { $_ -and $child.TrimEnd('\') -ieq $_.TrimEnd('\') }).Count -gt 0
+                    $isCovered = @($coveredRoots | Where-Object { $_ -and $child.TrimEnd('\\') -ieq $_.TrimEnd('\\') }).Count -gt 0
                     if (-not $isCovered) { $scanRoots += $child }
                 }
-            } else {
-                $scanRoots = @($driveRoot)
             }
-            foreach ($scanRoot in $scanRoots) {
-                foreach ($folder in (Get-DirectoryTree $scanRoot)) {
-                    $access = Get-CustomerDirectoryAccess $folder $principals
-                    if ($access -and $access.Writable) {
-                        $unlistedWritableFolders.Add($folder)
-                        $report.Add("UNLISTED CUSTOMER-WRITABLE FIXED-DRIVE FOLDER REQUIRES OWNER REVIEW: $folder (execute=$($access.Executable))")
-                        if ($access.Executable) {
-                            $unlistedWritableExecute.Add($folder)
-                            $allWritableExecute.Add($folder)
-                            $report.Add("CUSTOMER-WRITABLE+EXECUTABLE: $folder")
-                        }
-                    }
+        } else { $scanRoots = @($driveRoot) }
+        foreach ($scanRoot in $scanRoots) {
+            foreach ($entry in (Get-CustomerWritableDirectoryTree $scanRoot $principals)) {
+                $folder = $entry.Path; $access = $entry.Access
+                $unlistedWritableFolders.Add($folder)
+                $report.Add("UNLISTED CUSTOMER-WRITABLE FIXED-DRIVE FOLDER: $folder (execute=$($access.Executable))")
+                if ($access.Sddl) { $report.Add("SDDL: $($access.Sddl)") }
+                if ($access.Executable) {
+                    $unlistedWritableExecute.Add($folder); $allWritableExecute.Add($folder)
+                    $report.Add("CUSTOMER-WRITABLE+EXECUTABLE: $folder")
                 }
             }
         }
@@ -277,9 +282,9 @@ function Install-CustomerPolicy {
     }
     $steamPaths = @(@($allWritableExecute) + @($programDataWritable) + @($programFilesWritableFolders) + @($unlistedWritableFolders) | Where-Object { $_ -match "(?i)(^|\\)SteamLibrary(\\|$)|(^|\\)steamapps(\\|$)" })
     if ($steamPaths.Count -eq 0) {
-        $report.Add("CUSTOMER-WRITABLE+EXECUTABLE STEAM/LIBRARY FOLDERS: none in Customer profile, Public, Windows Temp, Program Files, Program Files (x86) or ProgramData")
+        $report.Add("CUSTOMER-WRITABLE+EXECUTABLE STEAM/LIBRARY FOLDERS: none found in scanned standard and fixed-drive scopes")
     } else {
-        foreach ($folder in $steamPaths) { $report.Add("CUSTOMER-WRITABLE+EXECUTABLE STEAM/LIBRARY FOLDER REQUIRES OWNER REVIEW: $folder") }
+        foreach ($folder in $steamPaths) { $report.Add("CUSTOMER-WRITABLE STEAM/GAME-LIBRARY FOLDER: $folder") }
     }
     $report.Add("")
     $report.Add("Profile and Public paths covered by %OSDRIVE%\Users\*: Customer profile (Desktop, Downloads, Documents, AppData and Temp) and C:\Users\Public.")
@@ -288,24 +293,55 @@ function Install-CustomerPolicy {
     if ($removableDrives.Count -eq 0) { $report.Add("REMOVABLE DRIVES PRESENT DURING INVENTORY: none; %REMOVABLE%\* and %HOT%\* deny cover later insertions") }
     else { foreach ($drive in $removableDrives) { $report.Add("REMOVABLE DRIVE PRESENT: $drive (covered by %REMOVABLE%\*)") } }
     $report.Add("Removable paths covered: %REMOVABLE%\* (CD/DVD) and %HOT%\* (USB/removable storage).")
+    # Owner choice: checked means Allow (default); unchecked means Block.
+    $candidateFolders = @(@($programFilesWritableFolders) + @($unlistedWritableFolders) | Sort-Object -Unique)
+    $allowedFolders = @()
+    if ($allowFoldersWasSpecified) {
+        $allowedFolders = @($AllowFolders -split ';' | ForEach-Object { $_.Trim().TrimEnd('\\') } | Where-Object { $_ })
+    } elseif ($candidateFolders.Count -gt 0) {
+        Add-Type -AssemblyName System.Windows.Forms
+        Add-Type -AssemblyName System.Drawing
+        $form = New-Object System.Windows.Forms.Form
+        $form.Text = "Customer-writable folders"; $form.Width = 760; $form.Height = 520
+        $form.StartPosition = "CenterScreen"; $form.TopMost = $true; $form.ControlBox = $false
+        $label = New-Object System.Windows.Forms.Label
+        $label.Text = "These folders are writable by Customer. Ticked = Allow (default); unticked = Block."
+        $label.Left = 12; $label.Top = 12; $label.Width = 720; $label.Height = 38
+        $list = New-Object System.Windows.Forms.CheckedListBox
+        $list.Left = 12; $list.Top = 55; $list.Width = 720; $list.Height = 365; $list.CheckOnClick = $true
+        foreach ($folder in $candidateFolders) { [void]$list.Items.Add($folder, $true) }
+        $ok = New-Object System.Windows.Forms.Button
+        $ok.Text = "OK"; $ok.Width = 100; $ok.Height = 32; $ok.Left = 632; $ok.Top = 430
+        $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
+        $form.Controls.AddRange(@($label, $list, $ok)); $form.AcceptButton = $ok
+        $result = $form.ShowDialog()
+        if ($result -ne [System.Windows.Forms.DialogResult]::OK) { throw "Owner folder selection was not confirmed." }
+        $allowedFolders = @($list.CheckedItems | ForEach-Object { [string]$_ })
+        $form.Dispose()
+    }
+    $allowedSet = @{}
+    foreach ($folder in $allowedFolders) { $allowedSet[$folder.TrimEnd('\\')] = $true }
+    foreach ($folder in @($allowedFolders | Where-Object { $_ -notin $candidateFolders })) {
+        $report.Add("ALLOW REQUEST NOT FOUND IN INVENTORY (not allowed): $folder")
+    }
+    $blockedFolders = @($candidateFolders | Where-Object { -not $allowedSet.ContainsKey($_.TrimEnd('\\')) })
+    foreach ($folder in $candidateFolders) {
+        $decision = if ($allowedSet.ContainsKey($folder.TrimEnd('\\'))) { "ALLOW" } else { "BLOCK" }
+        $report.Add("OWNER DECISION: $decision : $folder")
+    }
+    $report.Add("OWNER ALLOW-FOLDERS ARGUMENT: $($allowedFolders -join '; ')")
+    $report.Add("OWNER BLOCK-FOLDERS: $($blockedFolders -join '; ')")
+    $report.Add("")
     [IO.File]::WriteAllLines($reportPath, $report.ToArray(), (New-Object Text.UTF8Encoding($false)))
     Get-Content -LiteralPath $reportPath | Write-Host
-    if ($unlistedWritableFolders.Count -gt 0) {
-        throw "Customer-writable folder(s) outside the requested deny paths require owner review: $($unlistedWritableFolders -join '; ')"
-    }
-    if ($programFilesWritableFolders.Count -gt 0 -and -not $Ci) {
-        throw "Customer-writable folder(s) exist under Program Files; owner review is required before installing D1: $($programFilesWritableFolders -join '; ')"
-    }
 
     $denyPaths = New-Object System.Collections.Generic.List[string]
-    $denyPaths.Add("%OSDRIVE%\Users\*")
-    $denyPaths.Add("$env:WINDIR\Temp\*")
-    foreach ($folder in $programDataWritable) { $denyPaths.Add("$folder\*") }
-    if ($Ci) {
-        foreach ($folder in $programFilesWritableFolders) { $denyPaths.Add("$folder\*") }
-    }
-    $denyPaths.Add("%REMOVABLE%\*")
-    $denyPaths.Add("%HOT%\*")
+    $denyPaths.Add("%OSDRIVE%\\Users\\*")
+    $denyPaths.Add("$env:WINDIR\\Temp\\*")
+    foreach ($folder in $programDataWritable) { $denyPaths.Add("$folder\\*") }
+    foreach ($folder in $blockedFolders) { $denyPaths.Add("$folder\\*") }
+    $denyPaths.Add("%REMOVABLE%\\*")
+    $denyPaths.Add("%HOT%\\*")
     $denyPaths = @($denyPaths | Select-Object -Unique)
 
     $xml = New-Object System.Collections.Generic.List[string]
