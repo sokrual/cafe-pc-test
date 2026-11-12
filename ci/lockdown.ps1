@@ -543,8 +543,37 @@ try {
         $allowedBatOk = $allowedBatExited -and $allowedBat.ExitCode -eq 0 -and (Test-Path -LiteralPath $programFilesBatMarker)
         Check "D1.C8" "A .bat in Program Files still runs as Customer" $allowedBatOk "exit $($allowedBat.ExitCode); marker $((Test-Path $programFilesBatMarker))"
     } finally {
-        if ($hadDisableCmd) { Set-ItemProperty -LiteralPath $cmdPolicyKey -Name DisableCMD -Value $disableCmdBefore -Type DWord }
-        if ($mountedD1Hive) { [gc]::Collect(); [gc]::WaitForPendingFinalizers(); & reg.exe unload "HKU\$($u.SID.Value)" | Out-Null }
+        if ($hadDisableCmd) {
+            $restoreHivePath = $customerHivePath
+            $restoreHiveName = "CafeD1Restore_$PID"
+            $restoreHiveMounted = $false
+            if (-not (Test-Path -LiteralPath $restoreHivePath)) {
+                & reg.exe load "HKU\$restoreHiveName" "$prof\NTUSER.DAT" | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "Customer's hive was unloaded during AsCustomer tests and could not be reloaded to restore DisableCMD." }
+                $restoreHiveMounted = $true
+                $restoreHivePath = "Registry::HKEY_USERS\$restoreHiveName"
+            }
+            try {
+                $restorePolicyKey = "$restoreHivePath\Software\Policies\Microsoft\Windows\System"
+                if (-not (Test-Path -LiteralPath $restorePolicyKey)) {
+                    New-Item -Path $restorePolicyKey -Force | Out-Null
+                }
+                Set-ItemProperty -LiteralPath $restorePolicyKey -Name DisableCMD -Value $disableCmdBefore -Type DWord
+            } finally {
+                if ($restoreHiveMounted) {
+                    [gc]::Collect()
+                    [gc]::WaitForPendingFinalizers()
+                    & reg.exe unload "HKU\$restoreHiveName" | Out-Null
+                    if ($LASTEXITCODE -ne 0) { throw "Could not unload the temporary Customer hive after restoring DisableCMD." }
+                }
+            }
+        }
+        if ($mountedD1Hive -and (Test-Path -LiteralPath $customerHivePath)) {
+            [gc]::Collect()
+            [gc]::WaitForPendingFinalizers()
+            & reg.exe unload "HKU\$($u.SID.Value)" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Could not unload the Customer hive mounted for AppLocker batch-file tests." }
+        }
     }
 
     $agentProcesses = @(Get-Process Cafe.Agent -IncludeUserName -ErrorAction SilentlyContinue | Where-Object {
