@@ -53,6 +53,13 @@ B4  Customer sign-up and data rules                                 NOT STARTED
     Sign-up and visit register as required by the Rajasthan cyber cafe rules and Indian data law, how long
     the data is kept and how it is deleted. The detailed spec is kept by the project owner and is given
     separately. Until B4 exists, customers have name, phone and PIN only, and the register is kept on paper.
+    Decided 12 Nov: every register item is a setting (required / optional / off) filled in by the region
+    chosen at setup; the owner can change all of them; a "check your local laws" message; warnings below a
+    region's legal minimum. Minors: a child with own photo ID plays alone, without one needs an adult; a
+    setting for one-time parent consent. Companion record on (India) with a switch. Retention chosen by the
+    owner. Staff see all register data; every opening of an ID copy or photo is logged. Monthly report kept
+    locally until the owner deletes it, with a yearly reminder. Also: set the web filter's query log to the
+    chosen website-history period (India: 1 year).
 
 B5  Owner features                                                  IN PROGRESS
     B5.1 Accounts, adding PCs, owner two-step login, staff auto-logout        DONE
@@ -99,12 +106,12 @@ B5  Owner features                                                  IN PROGRESS
           Decided 11 Nov: our own buttons for daily use (lock, unlock, message, log out, restart, shut down,
           wake). v1: MeshCentral (Apache-2.0) as it is, for screen view and control from the phone or the
           counter PC. Version 1.3.1 or newer only. v2: our own screen view and control, replacing it.
-    Build order: on hold until the project owner says go.
+    Build order: started 11 Nov (project owner said go).
     Rate cards are set by the owner after install, not in the code:
          the first set-up asks for the rate card; the owner can add more rate cards, discounts and promotions,
          edit them and delete them (other cafes will have their own). Today's rate card becomes the default.
     B5.8 Owner access from his phone (Tailscale) and a view-only screen view
-    B5.9 Turning PCs on and off from the counter
+    B5.9 Turning PCs on and off from the counter (own PR, kept separate from B5.12 for testing; decided 12 Nov)
 
 A0  Stable lockdown CI: DONE (PR #17, 11 Nov). Lockdown registry check reads the restored hive file; job result
     = failed checks only; PC installer waits for old programs to close and retries in-use copies by error code.
