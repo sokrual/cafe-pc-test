@@ -271,7 +271,7 @@ $inboundBlocks = @(
     @{ DisplayName = "Cafe: block Windows Remote Management (TCP 5985-5986)"; Protocol = "TCP"; Ports = @("5985-5986") }
 )
 foreach ($rule in $inboundBlocks) {
-    Get-NetFirewallRule -Group "Cafe PC" -DisplayName $rule.DisplayName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    Get-NetFirewallRule -DisplayName $rule.DisplayName -ErrorAction SilentlyContinue | Where-Object Group -eq "Cafe PC" | Remove-NetFirewallRule
     New-NetFirewallRule -Group "Cafe PC" -DisplayName $rule.DisplayName -Direction Inbound -Action Block -Enabled True -Profile Any -Protocol $rule.Protocol -LocalPort $rule.Ports -RemoteAddress Any | Out-Null
 }
 
