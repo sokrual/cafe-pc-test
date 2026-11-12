@@ -598,10 +598,15 @@ try {
             }
         }
         if ($mountedD1Hive -and (Test-Path -LiteralPath $customerHivePath)) {
-            [gc]::Collect()
-            [gc]::WaitForPendingFinalizers()
-            & reg.exe unload "HKU\$($u.SID.Value)" | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "Could not unload the Customer hive mounted for AppLocker batch-file tests." }
+            $customerProfileForHive = Get-CimInstance Win32_UserProfile | Where-Object SID -eq $u.SID.Value
+            if ($customerProfileForHive -and $customerProfileForHive.Loaded) {
+                Write-Host "Customer profile service owns the hive after AsCustomer tests; leaving it mounted for the profile-reset tests."
+            } else {
+                [gc]::Collect()
+                [gc]::WaitForPendingFinalizers()
+                & reg.exe unload "HKU\$($u.SID.Value)" | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "Could not unload the Customer hive mounted for AppLocker batch-file tests." }
+            }
         }
     }
 
