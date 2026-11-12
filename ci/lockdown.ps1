@@ -846,6 +846,7 @@ try {
     Remove-Item "$app\test-wipe-mode.flag" -Force -ErrorAction SilentlyContinue
     Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
     Copy-Item "$data\logs\*" $wd -ErrorAction SilentlyContinue   # the watchdog's log goes with the uninstall; keep it for the artifacts
+    $postUninstallPassword = [Cafe.Lsa]::Read("DefaultPassword")
     & "$app\install-pc.ps1" -Uninstall -Ci
     $afterIfIndexes = @(Get-NetRoute -DestinationPrefix "0.0.0.0/0" | Sort-Object RouteMetric | Select-Object -ExpandProperty InterfaceIndex -Unique)
     $dnsAfter = @($afterIfIndexes | ForEach-Object { $i = $_; "$i=$((Get-DnsClientServerAddress -InterfaceIndex $i -AddressFamily IPv4).ServerAddresses -join ',')" })
@@ -866,6 +867,40 @@ try {
     Check "D1.I1" "PC uninstall restores the previous AppLocker policy and removes every D1 rule" ($policyRestored -and -not $d1RulesRemain) "policy restored $policyRestored; D1 rules remain $d1RulesRemain"
     $appIdServiceAfter = Get-CimInstance Win32_Service -Filter "Name='AppIDSvc'"
     Check "D1.I2" "PC uninstall restores AppIDSvc startup mode and running state" ($appIdServiceAfter.StartMode -eq $appIdServiceBefore.StartMode -and $appIdServiceAfter.State -eq $appIdServiceBefore.State) "before $($appIdServiceBefore.StartMode)/$($appIdServiceBefore.State); after $($appIdServiceAfter.StartMode)/$($appIdServiceAfter.State)"
+
+    $postUninstallRuns = $false
+    $postUninstallDetail = "Customer test account was not recreated."
+    $postUninstallUser = $null
+    try {
+        if ([string]::IsNullOrWhiteSpace($postUninstallPassword)) { throw "The pre-uninstall Customer password was unavailable." }
+        $postUninstallSecurePassword = ConvertTo-SecureString $postUninstallPassword -AsPlainText -Force
+        $postUninstallUser = New-LocalUser -Name "Customer" -Password $postUninstallSecurePassword -PasswordNeverExpires -AccountNeverExpires -UserMayNotChangePassword -FullName "Customer"
+        Add-LocalGroupMember -SID "S-1-5-32-545" -Member $postUninstallUser
+        [Cafe.Lsa]::Store("DefaultPassword", $postUninstallPassword)
+        $profileProbe = AsCustomer "$env:WINDIR\System32\cmd.exe" "/c exit"
+        $profileProbe.WaitForExit(10000)
+        $postUninstallProfile = Get-CimInstance Win32_UserProfile | Where-Object SID -eq $postUninstallUser.SID.Value | Select-Object -First 1
+        if (-not $postUninstallProfile -or -not $postUninstallProfile.LocalPath) { throw "The post-uninstall Customer profile was not created." }
+        $postUninstallDownloads = Join-Path $postUninstallProfile.LocalPath "Downloads"
+        New-Item -ItemType Directory -Path $postUninstallDownloads -Force | Out-Null
+        $postUninstallExe = Join-Path $postUninstallDownloads "d1-after-uninstall.exe"
+        Copy-Item -LiteralPath $pingSource -Destination $postUninstallExe -Force
+        $postUninstallProcess = AsCustomer $postUninstallExe "-n 1 127.0.0.1"
+        $postUninstallExited = $postUninstallProcess.WaitForExit(10000)
+        if (-not $postUninstallExited) { Stop-Process -Id $postUninstallProcess.Id -Force -ErrorAction SilentlyContinue }
+        $postUninstallRuns = $postUninstallExited -and $postUninstallProcess.ExitCode -eq 0
+        $postUninstallDetail = "Customer Downloads PING.EXE exit $($postUninstallProcess.ExitCode); AppLocker policy restored $policyRestored; D1 rules remain $d1RulesRemain"
+    } catch {
+        $postUninstallDetail = $_.Exception.Message
+    } finally {
+        [Cafe.Lsa]::Store("DefaultPassword", $null)
+        if ($postUninstallUser) {
+            $postUninstallProfile = Get-CimInstance Win32_UserProfile | Where-Object SID -eq $postUninstallUser.SID.Value
+            if ($postUninstallProfile) { $postUninstallProfile | Remove-CimInstance -ErrorAction SilentlyContinue }
+            Remove-LocalUser -Name "Customer" -ErrorAction SilentlyContinue
+        }
+    }
+    Check "D1.I3" "After uninstall, Customer can run PING.EXE from Downloads and the previous AppLocker policy is restored" ($postUninstallRuns -and $policyRestored -and -not $d1RulesRemain) $postUninstallDetail
 
     & "$stageA\install-admin.ps1" -Uninstall -Ci
     Check "B3.I4" "Counter PC uninstall: server and filter gone" (-not (Get-Service CafeServer, AdGuardHome -ErrorAction SilentlyContinue)) ""

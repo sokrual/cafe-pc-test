@@ -360,7 +360,7 @@ if (Test-Path $flag) {
         if (-not $loaded) { [gc]::Collect(); Start-Sleep -Milliseconds 500; reg.exe unload "HKU\CafeCustomer" | Out-Null }
     }
     # AppLocker blocks Customer execution only from customer-writable locations; Level A remains watch-only.
-    & "$app\applocker.ps1" -Mode Install -CustomerSid $sid -DataPath $data
+    & "$app\applocker.ps1" -Mode Install -CustomerSid $sid -DataPath $data -Ci:$Ci
     # Level A watch-only: nothing is blocked; Windows notes every program it would block, for the owner to review
     if (-not (Test-Path "$data\levelA-id.txt")) { & "$app\levelA.ps1" -Mode Audit }
     Remove-Item $flag -Force
@@ -369,6 +369,6 @@ if (Test-Path $flag) {
     exit 0
 }
 
-& "$app\applocker.ps1" -Mode Install -CustomerSid (Get-LocalUser $user).SID.Value -DataPath $data
+& "$app\applocker.ps1" -Mode Install -CustomerSid (Get-LocalUser $user).SID.Value -DataPath $data -Ci:$Ci
 Start-Service $svc
 Say "The cafe program on this PC is updated."

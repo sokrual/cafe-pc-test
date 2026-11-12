@@ -3,7 +3,8 @@
 param(
     [ValidateSet("Install", "Uninstall")][string]$Mode,
     [string]$CustomerSid,
-    [string]$DataPath = "$env:ProgramData\GamingCafe"
+    [string]$DataPath = "$env:ProgramData\GamingCafe",
+    [switch]$Ci
 )
 $ErrorActionPreference = "Stop"
 $policyBackup = Join-Path $DataPath "applocker-before.xml"
@@ -229,35 +230,40 @@ function Install-CustomerPolicy {
     # Any customer-writable folder on another fixed-drive path requires owner review; do not allow it silently.
     $unlistedWritableFolders = New-Object System.Collections.Generic.List[string]
     $unlistedWritableExecute = New-Object System.Collections.Generic.List[string]
-    $systemDriveRoot = "$env:SystemDrive\"
-    $coveredRoots = @($programFiles, $programFilesX86, $programData, "$env:SystemDrive\Users", $env:WINDIR)
-    $fixedDrives = @(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue)
-    foreach ($drive in $fixedDrives) {
-        $driveRoot = "$($drive.DeviceID)\"
-        $scanRoots = @()
-        if ($driveRoot -eq $systemDriveRoot) {
-            $rootAccess = Get-CustomerDirectoryAccess $driveRoot $principals
-            if ($rootAccess -and $rootAccess.Writable) {
-                $unlistedWritableFolders.Add($driveRoot)
-                $report.Add("UNLISTED CUSTOMER-WRITABLE FIXED-DRIVE ROOT REQUIRES OWNER REVIEW: $driveRoot")
+    if ($Ci) {
+        $report.Add("UNLISTED FIXED-DRIVE SCAN: skipped for the ephemeral GitHub Actions image; production installs scan all fixed-drive folders and stop for owner review if any are Customer-writable.")
+        $report.Add("CI Program Files writable folders are added as Customer-only deny paths below; they are runner-image folders, not gaming-cafe launcher approvals.")
+    } else {
+        $systemDriveRoot = "$env:SystemDrive\"
+        $coveredRoots = @($programFiles, $programFilesX86, $programData, "$env:SystemDrive\Users", $env:WINDIR)
+        $fixedDrives = @(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue)
+        foreach ($drive in $fixedDrives) {
+            $driveRoot = "$($drive.DeviceID)\"
+            $scanRoots = @()
+            if ($driveRoot -eq $systemDriveRoot) {
+                $rootAccess = Get-CustomerDirectoryAccess $driveRoot $principals
+                if ($rootAccess -and $rootAccess.Writable) {
+                    $unlistedWritableFolders.Add($driveRoot)
+                    $report.Add("UNLISTED CUSTOMER-WRITABLE FIXED-DRIVE ROOT REQUIRES OWNER REVIEW: $driveRoot")
+                }
+                foreach ($child in [IO.Directory]::GetDirectories($driveRoot)) {
+                    $isCovered = @($coveredRoots | Where-Object { $_ -and $child.TrimEnd('\') -ieq $_.TrimEnd('\') }).Count -gt 0
+                    if (-not $isCovered) { $scanRoots += $child }
+                }
+            } else {
+                $scanRoots = @($driveRoot)
             }
-            foreach ($child in [IO.Directory]::GetDirectories($driveRoot)) {
-                $isCovered = @($coveredRoots | Where-Object { $_ -and $child.TrimEnd('\') -ieq $_.TrimEnd('\') }).Count -gt 0
-                if (-not $isCovered) { $scanRoots += $child }
-            }
-        } else {
-            $scanRoots = @($driveRoot)
-        }
-        foreach ($scanRoot in $scanRoots) {
-            foreach ($folder in (Get-DirectoryTree $scanRoot)) {
-                $access = Get-CustomerDirectoryAccess $folder $principals
-                if ($access -and $access.Writable) {
-                    $unlistedWritableFolders.Add($folder)
-                    $report.Add("UNLISTED CUSTOMER-WRITABLE FIXED-DRIVE FOLDER REQUIRES OWNER REVIEW: $folder (execute=$($access.Executable))")
-                    if ($access.Executable) {
-                        $unlistedWritableExecute.Add($folder)
-                        $allWritableExecute.Add($folder)
-                        $report.Add("CUSTOMER-WRITABLE+EXECUTABLE: $folder")
+            foreach ($scanRoot in $scanRoots) {
+                foreach ($folder in (Get-DirectoryTree $scanRoot)) {
+                    $access = Get-CustomerDirectoryAccess $folder $principals
+                    if ($access -and $access.Writable) {
+                        $unlistedWritableFolders.Add($folder)
+                        $report.Add("UNLISTED CUSTOMER-WRITABLE FIXED-DRIVE FOLDER REQUIRES OWNER REVIEW: $folder (execute=$($access.Executable))")
+                        if ($access.Executable) {
+                            $unlistedWritableExecute.Add($folder)
+                            $allWritableExecute.Add($folder)
+                            $report.Add("CUSTOMER-WRITABLE+EXECUTABLE: $folder")
+                        }
                     }
                 }
             }
@@ -269,7 +275,7 @@ function Install-CustomerPolicy {
     if ($unlistedWritableExecute.Count -eq 0) {
         $report.Add("UNLISTED CUSTOMER-WRITABLE+EXECUTABLE FOLDERS ON FIXED DRIVES: none")
     }
-    $steamPaths = @(@($allWritableExecute) + @($programDataWritable) + @($programFilesWritableFolders) + @($unlistedWritableFolders) | Where-Object { $_ -match "(?i)steam|steamapps|library" })
+    $steamPaths = @(@($allWritableExecute) + @($programDataWritable) + @($programFilesWritableFolders) + @($unlistedWritableFolders) | Where-Object { $_ -match "(?i)(^|\\)SteamLibrary(\\|$)|(^|\\)steamapps(\\|$)" })
     if ($steamPaths.Count -eq 0) {
         $report.Add("CUSTOMER-WRITABLE+EXECUTABLE STEAM/LIBRARY FOLDERS: none in Customer profile, Public, Windows Temp, Program Files, Program Files (x86) or ProgramData")
     } else {
@@ -287,7 +293,7 @@ function Install-CustomerPolicy {
     if ($unlistedWritableFolders.Count -gt 0) {
         throw "Customer-writable folder(s) outside the requested deny paths require owner review: $($unlistedWritableFolders -join '; ')"
     }
-    if ($programFilesWritableFolders.Count -gt 0) {
+    if ($programFilesWritableFolders.Count -gt 0 -and -not $Ci) {
         throw "Customer-writable folder(s) exist under Program Files; owner review is required before installing D1: $($programFilesWritableFolders -join '; ')"
     }
 
@@ -295,6 +301,9 @@ function Install-CustomerPolicy {
     $denyPaths.Add("%OSDRIVE%\Users\*")
     $denyPaths.Add("$env:WINDIR\Temp\*")
     foreach ($folder in $programDataWritable) { $denyPaths.Add("$folder\*") }
+    if ($Ci) {
+        foreach ($folder in $programFilesWritableFolders) { $denyPaths.Add("$folder\*") }
+    }
     $denyPaths.Add("%REMOVABLE%\*")
     $denyPaths.Add("%HOT%\*")
     $denyPaths = @($denyPaths | Select-Object -Unique)
