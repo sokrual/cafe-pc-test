@@ -41,14 +41,18 @@ function Restore-OriginalState {
     }
     if (Test-Path -LiteralPath $serviceBackup) {
         $original = Get-Content -LiteralPath $serviceBackup -Raw | ConvertFrom-Json
-        Set-AppIdStartupMode $original.StartMode
+        try {
+            Set-AppIdStartupMode $original.StartMode
+        } catch {
+            Write-Warning "Could not restore AppIDSvc startup mode to '$($original.StartMode)' (the protected service refused the change); continuing uninstall because the AppLocker policy has already been restored. $($_.Exception.Message)"
+        }
         if ($original.WasRunning) {
             Start-Service -Name AppIDSvc -ErrorAction Stop
         } else {
             Stop-Service -Name AppIDSvc -Force -ErrorAction SilentlyContinue
         }
     }
-    Write-Host "AppLocker policy and Application Identity service restored."
+    Write-Host "AppLocker policy restored; Application Identity service state restoration attempted."
 }
 
 function Get-CustomerWritableDirectoryTree([string]$Root, [string[]]$PrincipalSids) {
@@ -81,7 +85,7 @@ function Get-CustomerWritableDirectoryTree([string]$Root, [string[]]$PrincipalSi
             try { $children = [IO.Directory]::GetDirectories($current) }
             catch {
                 $script:scanDeniedFolders.Add($current)
-                Write-Warning "Could not enumerate '$current'; adding a Customer-only deny rule for this subtree: $($_.Exception.Message)"
+                Write-Warning "Could not enumerate '$current'; not changed (scan inaccessible): $($_.Exception.Message)"
                 continue
             }
             foreach ($child in $children) {
@@ -94,7 +98,7 @@ function Get-CustomerWritableDirectoryTree([string]$Root, [string[]]$PrincipalSi
             }
         } catch {
             $script:scanDeniedFolders.Add($current)
-            Write-Warning "Could not inspect '$current'; adding a Customer-only deny rule for this subtree: $($_.Exception.Message)"
+            Write-Warning "Could not inspect '$current'; not changed (scan inaccessible): $($_.Exception.Message)"
         }
     }
     return $found.ToArray()
@@ -276,7 +280,7 @@ function Install-CustomerPolicy {
                 }
             } catch {
                 $script:scanDeniedFolders.Add($driveRoot)
-                Write-Warning "Could not inspect fixed-drive root '$driveRoot'; adding a Customer-only deny rule: $($_.Exception.Message)"
+                Write-Warning "Could not inspect fixed-drive root '$driveRoot'; not changed (scan inaccessible): $($_.Exception.Message)"
             }
         } else { $scanRoots = @($driveRoot) }
         foreach ($scanRoot in $scanRoots) {
@@ -399,6 +403,7 @@ function Install-CustomerPolicy {
     Start-Service -Name AppIDSvc
     $running = Wait-ForService
     if (-not $running) { throw "Application Identity service did not start." }
+    Start-AppLockerFilter
     foreach ($channel in $channels) {
         & wevtutil.exe sl $channel /e:true | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Could not enable AppLocker event channel $channel." }
@@ -423,6 +428,30 @@ function Wait-ForService {
         Start-Sleep -Milliseconds 500
     }
     return $false
+}
+
+function Start-AppLockerFilter {
+    $filter = Get-CimInstance Win32_SystemDriver -Filter "Name='applockerfltr'" -ErrorAction SilentlyContinue
+    if (-not $filter) { throw "The AppLocker filter driver (AppLockerFltr) is not installed." }
+    if ($filter.State -ne "Running") {
+        $appidtelPath = Join-Path $env:WINDIR "System32\appidtel.exe"
+        if (-not (Test-Path -LiteralPath $appidtelPath)) {
+            $appidtelCommand = Get-Command appidtel -ErrorAction SilentlyContinue
+            if ($appidtelCommand) { $appidtelPath = $appidtelCommand.Source }
+        }
+        if (-not (Test-Path -LiteralPath $appidtelPath)) { throw "appidtel.exe was not found; cannot start the AppLocker filter driver." }
+        & $appidtelPath start | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "appidtel start failed (exit $LASTEXITCODE)." }
+    }
+    for ($i = 0; $i -lt 20; $i++) {
+        $filter = Get-CimInstance Win32_SystemDriver -Filter "Name='applockerfltr'" -ErrorAction SilentlyContinue
+        if ($filter -and $filter.State -eq "Running") {
+            Write-Host "AppLocker filter driver (AppLockerFltr) is running."
+            return
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    throw "AppLocker filter driver (AppLockerFltr) did not reach Running after appidtel start."
 }
 
 if ($Mode -eq "Uninstall") {
