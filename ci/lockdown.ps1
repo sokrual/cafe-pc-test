@@ -149,7 +149,22 @@ try {
     # ===== A. counter (admin) PC =====
     $stageA = Join-Path $env:TEMP "stage-admin"; New-Item $stageA -ItemType Directory -Force | Out-Null
     Copy-Item "$repo\install\install-admin.ps1", "$out\server\Cafe.Server.exe" $stageA
+    $bitLockerExpected = try {
+        if (-not (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue)) { "Unavailable" }
+        else {
+            $v = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop
+            if ($v.ProtectionStatus -eq "On") { "On" } else { "Off" }
+        }
+    } catch { "Unknown" }
     & "$stageA\install-admin.ps1" -Ci
+    $adminInstallLog = Get-Content "$stageA\install-log.txt" -Raw
+    $bitLockerCheck = switch ($bitLockerExpected) {
+        "On" { $adminInstallLog -match "BitLocker status: On" -and $adminInstallLog -notmatch [regex]::Escape("Disk encryption (BitLocker) is off on this counter PC. If the PC or its disk is stolen, the cafe data can be read. Turn it on: see SECURITY-GUIDE.txt, part 1.") -and $adminInstallLog -notmatch [regex]::Escape("BitLocker is not available on this counter PC (Windows Home may not include it). See SECURITY-GUIDE.txt, part 1.") }
+        "Off" { $adminInstallLog -match "BitLocker status: Off" -and $adminInstallLog.Contains("Disk encryption (BitLocker) is off on this counter PC. If the PC or its disk is stolen, the cafe data can be read. Turn it on: see SECURITY-GUIDE.txt, part 1.") }
+        "Unavailable" { $adminInstallLog -match "BitLocker status: Unavailable" -and $adminInstallLog.Contains("BitLocker is not available on this counter PC (Windows Home may not include it). See SECURITY-GUIDE.txt, part 1.") }
+        default { $adminInstallLog -match "BitLocker status: Unknown" -and $adminInstallLog.Contains("Could not check BitLocker on this counter PC. Check disk encryption: see SECURITY-GUIDE.txt, part 1.") }
+    }
+    Check "B3.A8" "Counter installer warns only when BitLocker is not confirmed On" $bitLockerCheck "runner state $bitLockerExpected; install log contains matching status and warning"
     Check "B3.A1" "Cafe server runs as a Windows service" ((Get-Service CafeServer).Status -eq "Running") (Get-Service CafeServer).StartType
     [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }   # the test only; PCs pin the certificate
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -189,7 +204,15 @@ try {
     $stage = Join-Path $env:TEMP "stage-pc"; New-Item $stage -ItemType Directory -Force | Out-Null
     Copy-Item "$repo\install\*", "$out\agent\Cafe.Agent.exe", "$out\watchdog\Cafe.Watchdog.exe" $stage
     Copy-Item "$tdata\pc1.token" "$stage\pc.token"; Copy-Item "$tdata\server.pin" $stage
+    $secureBootExpected = try { if (Confirm-SecureBootUEFI -ErrorAction Stop) { "On" } else { "Off" } } catch { "Unknown" }
     & "$stage\install-pc.ps1" -Server 127.0.0.1 -DnsServer $runnerDns -Ci
+    $pcInstallLog = Get-Content "$stage\install-log.txt" -Raw
+    $secureBootCheck = switch ($secureBootExpected) {
+        "On" { $pcInstallLog -match "Secure Boot status: On" -and $pcInstallLog -notmatch [regex]::Escape("Secure Boot is off on this gaming PC. Turn it on: see SECURITY-GUIDE.txt, part 2.") -and $pcInstallLog -notmatch [regex]::Escape("Secure Boot could not be checked on this gaming PC. Check it: see SECURITY-GUIDE.txt, part 2.") }
+        "Off" { $pcInstallLog -match "Secure Boot status: Off" -and $pcInstallLog.Contains("Secure Boot is off on this gaming PC. Turn it on: see SECURITY-GUIDE.txt, part 2.") }
+        default { $pcInstallLog -match "Secure Boot status: Unknown" -and $pcInstallLog.Contains("Secure Boot could not be checked on this gaming PC. Check it: see SECURITY-GUIDE.txt, part 2.") }
+    }
+    Check "B3.C9" "Gaming PC installer warns only when Secure Boot is off or cannot be checked" $secureBootCheck "runner state $secureBootExpected; install log contains matching status and warning"
     $u = Get-LocalUser Customer
     $isAdmin = [bool]((net.exe localgroup (Get-LocalGroup -SID S-1-5-32-544).Name) -match '^Customer$')   # Get-LocalGroupMember breaks on unknown members
     Check "B3.C1" "Customer account made, not an admin" ($u.Enabled -and -not $isAdmin) "SID $($u.SID)"
@@ -247,6 +270,30 @@ try {
     $poll = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpClient").SpecialPollInterval
     Check "B3.C8" "Clock synced hourly with India's official time servers (NIC, NPL)" ((Get-ItemProperty $ntpKey).NtpServer -match "samay1.nic.in" -and $poll -eq 3600 -and (Get-Service w32time).Status -eq "Running") "time source now: $((w32tm.exe /query /source) -join ' ')"
     Check "B3.C7" "Browsers' own secure DNS switched off" ((Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge").DnsOverHttpsMode -eq "off") "Edge, Chrome, Firefox policies"
+    $expectedInboundBlocks = @(
+        @{ Id = "B3.C10a"; Name = "Cafe: block SMB (TCP 445)"; Protocol = "TCP"; Ports = "445" },
+        @{ Id = "B3.C10b"; Name = "Cafe: block NetBIOS name service (UDP 137-138)"; Protocol = "UDP"; Ports = "137-138" },
+        @{ Id = "B3.C10c"; Name = "Cafe: block NetBIOS session service (TCP 139)"; Protocol = "TCP"; Ports = "139" },
+        @{ Id = "B3.C10d"; Name = "Cafe: block Remote Desktop (TCP 3389)"; Protocol = "TCP"; Ports = "3389" },
+        @{ Id = "B3.C10e"; Name = "Cafe: block Remote Desktop (UDP 3389)"; Protocol = "UDP"; Ports = "3389" },
+        @{ Id = "B3.C10f"; Name = "Cafe: block Windows Remote Management (TCP 5985-5986)"; Protocol = "TCP"; Ports = "5985-5986" }
+    )
+    foreach ($expected in $expectedInboundBlocks) {
+        $rules = @(Get-NetFirewallRule -Group "Cafe PC" -DisplayName $expected.Name -ErrorAction SilentlyContinue)
+        $valid = $rules.Count -eq 1
+        $detail = "found $($rules.Count)"
+        if ($valid) {
+            $rule = $rules[0]
+            $port = $rule | Get-NetFirewallPortFilter
+            $address = $rule | Get-NetFirewallAddressFilter
+            $actualPorts = @($port.LocalPort | ForEach-Object { "$_" }) -join ","
+            $valid = ($rule.Enabled -eq "True" -and $rule.Direction -eq "Inbound" -and $rule.Action -eq "Block" -and
+                $rule.Group -eq "Cafe PC" -and $port.Protocol -eq $expected.Protocol -and
+                $actualPorts -eq $expected.Ports -and @($address.RemoteAddress).Contains("Any"))
+            $detail = "enabled $($rule.Enabled); $($rule.Direction) $($rule.Action); $($port.Protocol) $actualPorts; group $($rule.Group); remote $($address.RemoteAddress)"
+        }
+        Check $expected.Id "Inbound firewall rule $($expected.Name) is enabled, blocks the correct ports from any address in Cafe PC" $valid $detail
+    }
 
     # ===== D. the owner sets the Customer account up (here: an "installed Discord" and a shortcut) =====
     $prof = (Get-CimInstance Win32_UserProfile | Where-Object SID -eq $u.SID.Value).LocalPath
@@ -637,6 +684,11 @@ try {
     $afterIfIndexes = @(Get-NetRoute -DestinationPrefix "0.0.0.0/0" | Sort-Object RouteMetric | Select-Object -ExpandProperty InterfaceIndex -Unique)
     $dnsAfter = @($afterIfIndexes | ForEach-Object { $i = $_; "$i=$((Get-DnsClientServerAddress -InterfaceIndex $i -AddressFamily IPv4).ServerAddresses -join ',')" })
     Check "B3.I1" "PC uninstall: service, account, files and rules gone" (-not (Get-Service CafeWatchdog -ErrorAction SilentlyContinue) -and -not (Get-LocalUser Customer -ErrorAction SilentlyContinue) -and -not (Test-Path $app) -and -not (Get-NetFirewallRule -Group "Cafe PC" -ErrorAction SilentlyContinue)) ""
+    $blockedNames = @("Cafe: block SMB (TCP 445)", "Cafe: block NetBIOS name service (UDP 137-138)",
+        "Cafe: block NetBIOS session service (TCP 139)", "Cafe: block Remote Desktop (TCP 3389)",
+        "Cafe: block Remote Desktop (UDP 3389)", "Cafe: block Windows Remote Management (TCP 5985-5986)")
+    $remainingBlocks = @($blockedNames | ForEach-Object { Get-NetFirewallRule -DisplayName $_ -ErrorAction SilentlyContinue })
+    Check "B3.I5" "PC uninstall removes every new inbound sharing and remote-administration block rule" ($remainingBlocks.Count -eq 0) "remaining rules $($remainingBlocks.Count)"
     Check "B3.I2" "PC uninstall: DNS and automatic sign-in back as before" (("$dnsAfter" -eq "$dnsBefore") -and (Get-ItemProperty $winlogon).AutoAdminLogon -eq $autoBefore) "DNS before $dnsBefore, after $dnsAfter"
     Check "B3.I2b" "PC uninstall: clock settings back as before" ((Get-ItemProperty $ntpKey).NtpServer -eq $ntpBefore) "$ntpBefore"
     Check "B3.I2c" "PC uninstall: browsers' secure DNS setting back as before" ((Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -ErrorAction SilentlyContinue).DnsOverHttpsMode -eq $dohOriginal) "before: '$dohOriginal'"

@@ -36,6 +36,7 @@
   .row > * { flex: 1 1 auto; }
   #msg { min-height: 24px; padding: 0 16px; }
   #alerts { color: var(--bad); padding: 0 16px; }
+  .security-warning { margin: 12px 16px; padding: 12px; border: 1px solid var(--warn); border-radius: 8px; color: var(--warn); }
   #msg.err { color: var(--bad); } #msg.ok { color: var(--ok); }
   #login { max-width: 360px; margin: 10vh auto; background: var(--card); padding: 24px; border-radius: 12px; }
   #login input { width: 100%; }
@@ -67,6 +68,7 @@
     <button class="quiet" id="itemsBtn">Items</button>
     <button class="quiet" id="logout">Sign out</button>
   </header>
+  <div id="securityWarning" class="security-warning" hidden role="alert" aria-live="polite"></div>
   <div id="alerts" role="alert" aria-live="assertive"></div>
   <p id="msg" role="status" aria-live="polite"></p>
   <main>

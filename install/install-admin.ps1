@@ -36,6 +36,31 @@ if ($Uninstall) {
     exit 0
 }
 
+# --- counter PC disk encryption: warn, but never enable BitLocker or stop setup ---
+$bitLockerWarning = "Disk encryption (BitLocker) is off on this counter PC. If the PC or its disk is stolen, the cafe data can be read. Turn it on: see SECURITY-GUIDE.txt, part 1."
+$bitLockerUnavailable = "BitLocker is not available on this counter PC (Windows Home may not include it). See SECURITY-GUIDE.txt, part 1."
+$bitLockerUnknown = "Could not check BitLocker on this counter PC. Check disk encryption: see SECURITY-GUIDE.txt, part 1."
+if (-not (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue)) {
+    Write-Host "BitLocker status: Unavailable"
+    Write-Host $bitLockerUnavailable
+    Say $bitLockerUnavailable
+} else {
+    try {
+        $systemVolume = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop
+        if ($null -ne $systemVolume -and "$($systemVolume.ProtectionStatus)" -eq "On") {
+            Write-Host "BitLocker status: On"
+        } else {
+            Write-Host "BitLocker status: Off"
+            Write-Host $bitLockerWarning
+            Say $bitLockerWarning
+        }
+    } catch {
+        Write-Host "BitLocker status: Unknown"
+        Write-Host $bitLockerUnknown
+        Say $bitLockerUnknown
+    }
+}
+
 # --- the cafe server ---
 if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force }
 Get-Process Cafe.Server -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Seconds 1
