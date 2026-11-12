@@ -427,7 +427,7 @@ try {
     try {
         Remove-ItemProperty -LiteralPath $cmdPolicyKey -Name DisableCMD -ErrorAction SilentlyContinue
         $downloadBat = "$prof\Downloads\d1-$d1Suffix.bat"
-        $downloadBatMarker = Join-Path $env:TEMP "d1-bat-download-$d1Suffix.txt"
+        $downloadBatMarker = Join-Path "$prof\AppData\Local\Temp" "d1-bat-download-$d1Suffix.txt"
         [IO.File]::WriteAllText($downloadBat, "@echo off`r`necho ran> `"$downloadBatMarker`"`r`nexit /b 0`r`n")
         $batRan = $false
         try {
@@ -439,7 +439,7 @@ try {
         Check "D1.C5" "Customer cannot run a .bat from Downloads; AppLocker logs event 8007" ((-not $batRan) -and $batLogged) "ran $batRan; event 8007 $batLogged"
 
         $downloadPs1 = "$prof\Downloads\d1-$d1Suffix.ps1"
-        $downloadPsMarker = Join-Path $env:TEMP "d1-ps-download-$d1Suffix.txt"
+        $downloadPsMarker = Join-Path "$prof\AppData\Local\Temp" "d1-ps-download-$d1Suffix.txt"
         [IO.File]::WriteAllText($downloadPs1, "Set-Content -LiteralPath '$downloadPsMarker' -Value 'ran'`r`n")
         $psRan = $false
         try {
@@ -460,7 +460,7 @@ try {
         Check "D1.C7" "A fake installed game in Program Files still runs as Customer" $gameOk "exit $($gameProcess.ExitCode)"
 
         $programFilesBat = "$fakeGameDir\allowed.bat"
-        $programFilesBatMarker = Join-Path $env:TEMP "d1-bat-programfiles-$d1Suffix.txt"
+        $programFilesBatMarker = Join-Path "$prof\AppData\Local\Temp" "d1-bat-programfiles-$d1Suffix.txt"
         [IO.File]::WriteAllText($programFilesBat, "@echo off`r`necho ran> `"$programFilesBatMarker`"`r`nexit /b 0`r`n")
         $allowedBat = AsCustomer "$env:WINDIR\System32\cmd.exe" "/d /c `"$programFilesBat`""
         $allowedBatExited = $allowedBat.WaitForExit(10000)
