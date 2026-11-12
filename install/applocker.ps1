@@ -1,0 +1,343 @@
+# AppLocker policy for customer-writable locations. Run only from the elevated PC installer.
+#Requires -RunAsAdministrator
+param(
+    [ValidateSet("Install", "Uninstall")][string]$Mode,
+    [string]$CustomerSid,
+    [string]$DataPath = "$env:ProgramData\GamingCafe"
+)
+$ErrorActionPreference = "Stop"
+$policyBackup = Join-Path $DataPath "applocker-before.xml"
+$serviceBackup = Join-Path $DataPath "appidsvc-before.json"
+$logBackup = Join-Path $DataPath "applocker-logs-before.json"
+$reportPath = Join-Path $DataPath "customer-writable-folders.txt"
+$channels = @("Microsoft-Windows-AppLocker/EXE and DLL", "Microsoft-Windows-AppLocker/MSI and Script")
+
+function Get-StartupType([string]$mode) {
+    switch ($mode) {
+        "Auto" { "Automatic" }
+        "Manual" { "Manual" }
+        "Disabled" { "Disabled" }
+        default { throw "Unknown AppIDSvc startup mode: $mode" }
+    }
+}
+
+function Restore-OriginalState {
+    Import-Module AppLocker -ErrorAction Stop
+    if (Test-Path -LiteralPath $policyBackup) {
+        Set-AppLockerPolicy -XmlPolicy $policyBackup
+    }
+    if (Test-Path -LiteralPath $logBackup) {
+        foreach ($entry in (Get-Content -LiteralPath $logBackup -Raw | ConvertFrom-Json)) {
+            $enabled = if ($entry.Enabled) { "true" } else { "false" }
+            & wevtutil.exe sl $entry.Channel "/e:$enabled" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Could not restore event log setting for $($entry.Channel)." }
+        }
+    }
+    if (Test-Path -LiteralPath $serviceBackup) {
+        $original = Get-Content -LiteralPath $serviceBackup -Raw | ConvertFrom-Json
+        $startup = Get-StartupType $original.StartMode
+        if ($original.WasRunning) {
+            Start-Service -Name AppIDSvc -ErrorAction Stop
+            Set-Service -Name AppIDSvc -StartupType $startup
+        } else {
+            Stop-Service -Name AppIDSvc -Force -ErrorAction SilentlyContinue
+            Set-Service -Name AppIDSvc -StartupType $startup
+        }
+    }
+    Write-Host "AppLocker policy and Application Identity service restored."
+}
+
+function Get-DirectoryTree([string]$Root) {
+    $all = New-Object System.Collections.Generic.List[string]
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) { return @() }
+    $pending = New-Object System.Collections.Generic.Stack[string]
+    $pending.Push($Root)
+    while ($pending.Count -gt 0) {
+        $current = $pending.Pop()
+        $all.Add($current)
+        try {
+            foreach ($child in [IO.Directory]::GetDirectories($current)) {
+                try {
+                    $attributes = [IO.File]::GetAttributes($child)
+                    if (($attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+                        $pending.Push($child)
+                    }
+                } catch { }
+            }
+        } catch { }
+    }
+    return $all.ToArray()
+}
+
+function Get-CustomerDirectoryAccess([string]$Path, [string[]]$PrincipalSids) {
+    try {
+        $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+        $allowMask = [int64]0
+        $denyMask = [int64]0
+        foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+            if (($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
+            if ($PrincipalSids -contains $rule.IdentityReference.Value) {
+                $mask = [int64]$rule.FileSystemRights
+                if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Deny) {
+                    $denyMask = $denyMask -bor $mask
+                } else {
+                    $allowMask = $allowMask -bor $mask
+                }
+            }
+        }
+        $effectiveMask = $allowMask -band (-bnot $denyMask)
+        $writeMask = [int64]([int][IO.FileSystemRights]::WriteData -bor
+            [int][IO.FileSystemRights]::AppendData -bor
+            [int][IO.FileSystemRights]::WriteExtendedAttributes -bor
+            [int][IO.FileSystemRights]::WriteAttributes)
+        $executeMask = [int64][int][IO.FileSystemRights]::ExecuteFile
+        $ownerSid = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if ($PrincipalSids -contains $ownerSid) {
+            $effectiveMask = $effectiveMask -bor $writeMask -bor $executeMask
+        }
+        return [pscustomobject]@{
+            Path = $Path
+            Writable = (($effectiveMask -band $writeMask) -ne 0)
+            Executable = (($effectiveMask -band $executeMask) -ne 0)
+            OwnerSid = $ownerSid
+            Sddl = $acl.Sddl
+        }
+    } catch {
+        return $null
+    }
+}
+
+function Install-CustomerPolicy {
+    if ($CustomerSid -notmatch '^S-1-5-21-(\d+-){3}\d+$') {
+        throw "A valid local Customer SID is required to install AppLocker rules."
+    }
+    Import-Module AppLocker -ErrorAction Stop
+    $service = Get-CimInstance Win32_Service -Filter "Name='AppIDSvc'"
+    if (-not $service) { throw "The Application Identity service (AppIDSvc) is not installed." }
+
+    if (-not (Test-Path -LiteralPath $policyBackup)) {
+        $before = Get-AppLockerPolicy -Local -Xml
+        [IO.File]::WriteAllText($policyBackup, [string]$before, (New-Object Text.UTF8Encoding($false)))
+    }
+    if (-not (Test-Path -LiteralPath $serviceBackup)) {
+        $serviceState = [pscustomobject]@{ StartMode = $service.StartMode; WasRunning = ($service.State -eq "Running") }
+        $serviceState | ConvertTo-Json | Set-Content -LiteralPath $serviceBackup -Encoding UTF8
+    }
+    if (-not (Test-Path -LiteralPath $logBackup)) {
+        $logStates = foreach ($channel in $channels) {
+            $details = (& wevtutil.exe gl $channel 2>&1) -join [Environment]::NewLine
+            if ($LASTEXITCODE -ne 0) { throw "Could not read AppLocker event channel $channel." }
+            [pscustomobject]@{
+                Channel = $channel
+                Enabled = [bool]($details -match "(?im)^\s*enabled:\s*true\s*$")
+            }
+        }
+        @($logStates) | ConvertTo-Json | Set-Content -LiteralPath $logBackup -Encoding UTF8
+    }
+
+    # Report the effective allow/deny ACEs before generating any rules. Customer is a standard local user.
+    $principals = @($CustomerSid, "S-1-1-0", "S-1-5-11", "S-1-5-32-545", "S-1-5-4", "S-1-5-113")
+    $programFiles = $env:ProgramFiles
+    $programFilesX86 = $env:ProgramFiles + " (x86)"
+    $programData = $env:ProgramData
+    $roots = @($programFiles, $programFilesX86, $programData) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+    $report = New-Object System.Collections.Generic.List[string]
+    $report.Add("D1 customer-writable folder inventory (ACL-based, before AppLocker policy installation)")
+    $report.Add("Customer SID: $CustomerSid")
+    $report.Add("ACL effective-access calculation includes Customer, Everyone, Authenticated Users, BUILTIN\Users, Interactive and Local account ACEs plus owner rights; deny ACE masks are subtracted from allow ACE masks.")
+    $report.Add("")
+    foreach ($root in $roots) {
+        $rootAcl = Get-Acl -LiteralPath $root
+        $report.Add("ACL ROOT: $root")
+        $report.Add("SDDL: $($rootAcl.Sddl)")
+    }
+
+    $allWritableExecute = New-Object System.Collections.Generic.List[string]
+    $customerProfile = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $CustomerSid } | Select-Object -First 1).LocalPath
+    $profileRoots = @($customerProfile, "$env:SystemDrive\Users\Public", "$env:WINDIR\Temp") | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) }
+    foreach ($profileRoot in $profileRoots) {
+        foreach ($folder in (Get-DirectoryTree $profileRoot)) {
+            $access = Get-CustomerDirectoryAccess $folder $principals
+            if ($access -and $access.Writable -and $access.Executable) {
+                $allWritableExecute.Add($folder)
+                $report.Add("CUSTOMER-WRITABLE+EXECUTABLE: $folder")
+            }
+        }
+    }
+
+    $programDataWritable = New-Object System.Collections.Generic.List[string]
+    $programDataWriteExecute = New-Object System.Collections.Generic.List[string]
+    foreach ($folder in (Get-DirectoryTree $programData)) {
+        $access = Get-CustomerDirectoryAccess $folder $principals
+        if ($access -and $access.Writable) {
+            $programDataWritable.Add($folder)
+            $report.Add("PROGRAMDATA WRITABLE: $folder (execute=$($access.Executable))")
+            $report.Add("SDDL: $($access.Sddl)")
+            if ($access.Executable) {
+                $programDataWriteExecute.Add($folder)
+                $allWritableExecute.Add($folder)
+                $report.Add("CUSTOMER-WRITABLE+EXECUTABLE: $folder")
+            }
+        }
+    }
+
+    $programFilesWritableFolders = New-Object System.Collections.Generic.List[string]
+    $programFilesWritableExecute = New-Object System.Collections.Generic.List[string]
+    foreach ($root in @($programFiles, $programFilesX86)) {
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+        $writeExecute = New-Object System.Collections.Generic.List[string]
+        foreach ($folder in (Get-DirectoryTree $root)) {
+            $access = Get-CustomerDirectoryAccess $folder $principals
+            if ($access -and $access.Writable) {
+                $programFilesWritableFolders.Add($folder)
+                $report.Add("PROGRAM FILES CUSTOMER-WRITABLE: $folder (execute=$($access.Executable))")
+                if ($access.Executable) {
+                    $writeExecute.Add($folder)
+                    $programFilesWritableExecute.Add($folder)
+                    $allWritableExecute.Add($folder)
+                    $report.Add("CUSTOMER-WRITABLE+EXECUTABLE: $folder")
+                }
+            }
+        }
+        if ($writeExecute.Count -eq 0) {
+            $report.Add("PROGRAM FILES CUSTOMER-WRITABLE+EXECUTABLE: none under $root")
+        } else {
+            foreach ($folder in $writeExecute) { $report.Add("PROGRAM FILES CUSTOMER-WRITABLE+EXECUTABLE: $folder") }
+        }
+        if ($programFilesWritableFolders.Count -eq 0) { $report.Add("PROGRAM FILES CUSTOMER-WRITABLE FOLDERS: none under $root") }
+    }
+
+    if ($programDataWritable.Count -eq 0) {
+        $report.Add("PROGRAMDATA CUSTOMER-WRITABLE FOLDERS: none")
+    }
+    if ($programDataWriteExecute.Count -eq 0) {
+        $report.Add("PROGRAMDATA CUSTOMER-WRITABLE+EXECUTABLE FOLDERS: none")
+    }
+    # Find launcher/game libraries outside the locations covered by the requested deny rules.
+    # Any customer-writable folder on another fixed-drive path requires owner review; do not allow it silently.
+    $unlistedWritableFolders = New-Object System.Collections.Generic.List[string]
+    $unlistedWritableExecute = New-Object System.Collections.Generic.List[string]
+    $systemDriveRoot = "$env:SystemDrive\"
+    $coveredRoots = @($programFiles, $programFilesX86, $programData, "$env:SystemDrive\Users", $env:WINDIR)
+    $fixedDrives = @(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue)
+    foreach ($drive in $fixedDrives) {
+        $driveRoot = "$($drive.DeviceID)\"
+        $scanRoots = @()
+        if ($driveRoot -eq $systemDriveRoot) {
+            $rootAccess = Get-CustomerDirectoryAccess $driveRoot $principals
+            if ($rootAccess -and $rootAccess.Writable) {
+                $unlistedWritableFolders.Add($driveRoot)
+                $report.Add("UNLISTED CUSTOMER-WRITABLE FIXED-DRIVE ROOT REQUIRES OWNER REVIEW: $driveRoot")
+            }
+            foreach ($child in [IO.Directory]::GetDirectories($driveRoot)) {
+                $isCovered = @($coveredRoots | Where-Object { $_ -and $child.TrimEnd('\') -ieq $_.TrimEnd('\') }).Count -gt 0
+                if (-not $isCovered) { $scanRoots += $child }
+            }
+        } else {
+            $scanRoots = @($driveRoot)
+        }
+        foreach ($scanRoot in $scanRoots) {
+            foreach ($folder in (Get-DirectoryTree $scanRoot)) {
+                $access = Get-CustomerDirectoryAccess $folder $principals
+                if ($access -and $access.Writable) {
+                    $unlistedWritableFolders.Add($folder)
+                    $report.Add("UNLISTED CUSTOMER-WRITABLE FIXED-DRIVE FOLDER REQUIRES OWNER REVIEW: $folder (execute=$($access.Executable))")
+                    if ($access.Executable) {
+                        $unlistedWritableExecute.Add($folder)
+                        $allWritableExecute.Add($folder)
+                        $report.Add("CUSTOMER-WRITABLE+EXECUTABLE: $folder")
+                    }
+                }
+            }
+        }
+    }
+    if ($unlistedWritableFolders.Count -eq 0) {
+        $report.Add("UNLISTED CUSTOMER-WRITABLE FOLDERS ON FIXED DRIVES: none")
+    }
+    if ($unlistedWritableExecute.Count -eq 0) {
+        $report.Add("UNLISTED CUSTOMER-WRITABLE+EXECUTABLE FOLDERS ON FIXED DRIVES: none")
+    }
+    $steamPaths = @(@($allWritableExecute) + @($programDataWritable) + @($programFilesWritableFolders) + @($unlistedWritableFolders) | Where-Object { $_ -match "(?i)steam|steamapps|library" })
+    if ($steamPaths.Count -eq 0) {
+        $report.Add("CUSTOMER-WRITABLE+EXECUTABLE STEAM/LIBRARY FOLDERS: none in Customer profile, Public, Windows Temp, Program Files, Program Files (x86) or ProgramData")
+    } else {
+        foreach ($folder in $steamPaths) { $report.Add("CUSTOMER-WRITABLE+EXECUTABLE STEAM/LIBRARY FOLDER REQUIRES OWNER REVIEW: $folder") }
+    }
+    $report.Add("")
+    $report.Add("Profile and Public paths covered by %OSDRIVE%\Users\*: Customer profile (Desktop, Downloads, Documents, AppData and Temp) and C:\Users\Public.")
+    $report.Add("Windows temporary path covered: $env:WINDIR\Temp\*")
+    $removableDrives = @(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=2" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty DeviceID)
+    if ($removableDrives.Count -eq 0) { $report.Add("REMOVABLE DRIVES PRESENT DURING INVENTORY: none; %REMOVABLE%\* and %HOT%\* deny cover later insertions") }
+    else { foreach ($drive in $removableDrives) { $report.Add("REMOVABLE DRIVE PRESENT: $drive (covered by %REMOVABLE%\*)") } }
+    $report.Add("Removable paths covered: %REMOVABLE%\* (CD/DVD) and %HOT%\* (USB/removable storage).")
+    [IO.File]::WriteAllLines($reportPath, $report.ToArray(), (New-Object Text.UTF8Encoding($false)))
+    Get-Content -LiteralPath $reportPath | Write-Host
+    if ($unlistedWritableFolders.Count -gt 0) {
+        throw "Customer-writable folder(s) outside the requested deny paths require owner review: $($unlistedWritableFolders -join '; ')"
+    }
+    if ($programFilesWritableFolders.Count -gt 0) {
+        throw "Customer-writable folder(s) exist under Program Files; owner review is required before installing D1: $($programFilesWritableFolders -join '; ')"
+    }
+
+    $denyPaths = New-Object System.Collections.Generic.List[string]
+    $denyPaths.Add("%OSDRIVE%\Users\*")
+    $denyPaths.Add("$env:WINDIR\Temp\*")
+    foreach ($folder in $programDataWritable) { $denyPaths.Add("$folder\*") }
+    $denyPaths.Add("%REMOVABLE%\*")
+    $denyPaths.Add("%HOT%\*")
+    $denyPaths = @($denyPaths | Select-Object -Unique)
+
+    $xml = New-Object System.Collections.Generic.List[string]
+    $xml.Add('<?xml version="1.0" encoding="utf-8"?>')
+    $xml.Add('<AppLockerPolicy Version="1">')
+    foreach ($collection in @("Exe", "Msi", "Script", "Dll")) {
+        $xml.Add('  <RuleCollection Type="' + $collection + '" EnforcementMode="Enabled">')
+        $allowId = [guid]::NewGuid().ToString("B")
+        $xml.Add('    <FilePathRule Id="' + $allowId + '" Name="Cafe D1 allow Everyone - ' + $collection + '" Description="Allow paths except Customer writable locations" UserOrGroupSid="S-1-1-0" Action="Allow">')
+        $xml.Add('      <Conditions><FilePathCondition Path="*" /></Conditions>')
+        $xml.Add('    </FilePathRule>')
+        foreach ($path in $denyPaths) {
+            $safePath = [Security.SecurityElement]::Escape($path)
+            $denyId = [guid]::NewGuid().ToString("B")
+            $xml.Add('    <FilePathRule Id="' + $denyId + '" Name="Cafe D1 deny Customer - ' + $collection + '" Description="Block Customer execution from writable folders" UserOrGroupSid="' + $CustomerSid + '" Action="Deny">')
+            $xml.Add('      <Conditions><FilePathCondition Path="' + $safePath + '" /></Conditions>')
+            $xml.Add('    </FilePathRule>')
+        }
+        $xml.Add("  </RuleCollection>")
+    }
+    $xml.Add("</AppLockerPolicy>")
+    $policyPath = Join-Path $DataPath "applocker-policy.xml"
+    [IO.File]::WriteAllLines($policyPath, $xml.ToArray(), (New-Object Text.UTF8Encoding($false)))
+
+    Set-Service -Name AppIDSvc -StartupType Automatic
+    Start-Service -Name AppIDSvc
+    $running = Wait-ForService
+    if (-not $running) { throw "Application Identity service did not start." }
+    foreach ($channel in $channels) {
+        & wevtutil.exe sl $channel /e:true | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not enable AppLocker event channel $channel." }
+    }
+    Set-AppLockerPolicy -XmlPolicy $policyPath
+    $applied = [xml](Get-AppLockerPolicy -Local -Xml)
+    foreach ($type in @("Exe", "Msi", "Script", "Dll")) {
+        $collectionNode = @($applied.AppLockerPolicy.RuleCollection | Where-Object { $_.Type -eq $type })
+        if ($collectionNode.Count -ne 1 -or $collectionNode[0].EnforcementMode -ne "Enabled") {
+            throw "AppLocker $type collection was not applied in Enforce mode."
+        }
+    }
+    Write-Host "AppLocker D1 enforced for Customer in Exe, Msi, Script and Dll collections."
+}
+
+function Wait-ForService {
+    for ($i = 0; $i -lt 20; $i++) {
+        if ((Get-Service -Name AppIDSvc).Status -eq "Running") { return $true }
+        Start-Sleep -Milliseconds 500
+    }
+    return $false
+}
+
+if ($Mode -eq "Uninstall") {
+    Restore-OriginalState
+    exit 0
+}
+Install-CustomerPolicy

@@ -104,6 +104,7 @@ if ($Uninstall) {
     if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force; sc.exe delete $svc | Out-Null }
     foreach ($m in "Minimal", "Network") { Remove-Item "HKLM:\SYSTEM\CurrentControlSet\Control\SafeBoot\$m\$svc" -Recurse -ErrorAction SilentlyContinue }
     Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force
+    if (Test-Path "$app\applocker.ps1") { & "$app\applocker.ps1" -Mode Uninstall -DataPath $data }
     if (Test-Path "$app\levelA.ps1") { & "$app\levelA.ps1" -Mode Off }
     [Cafe.Lsa]::Store("DefaultPassword", $null)
     if (Test-Path "$data\before.json") { # put back each Windows setting exactly as it was before the first install
@@ -140,7 +141,7 @@ foreach ($f in "pc.token", "server.pin") {
 if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force }
 Get-Process Cafe.Watchdog, Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force -PassThru | Wait-Process -Timeout 30
 New-Item $app -ItemType Directory -Force | Out-Null   # inside Program Files: customers can read and run, not change
-foreach ($f in "Cafe.Agent.exe", "Cafe.Watchdog.exe", "keep-running.txt", "install-pc.ps1", "levelA.ps1", "SETUP-MODE.bat") {
+foreach ($f in "Cafe.Agent.exe", "Cafe.Watchdog.exe", "keep-running.txt", "install-pc.ps1", "levelA.ps1", "applocker.ps1", "SETUP-MODE.bat") {
     if ($src -ne $app -and (Test-Path "$src\$f")) { Copy-WithRetry "$src\$f" $app }   # SETUP-MODE runs from $app itself
 }
 "`"$app\Cafe.Agent.exe`" --server https://${Server}:5443" | Set-Content "$app\watchdog.args" -Encoding ascii
@@ -358,6 +359,8 @@ if (Test-Path $flag) {
     } finally {
         if (-not $loaded) { [gc]::Collect(); Start-Sleep -Milliseconds 500; reg.exe unload "HKU\CafeCustomer" | Out-Null }
     }
+    # AppLocker blocks Customer execution only from customer-writable locations; Level A remains watch-only.
+    & "$app\applocker.ps1" -Mode Install -CustomerSid $sid -DataPath $data
     # Level A watch-only: nothing is blocked; Windows notes every program it would block, for the owner to review
     if (-not (Test-Path "$data\levelA-id.txt")) { & "$app\levelA.ps1" -Mode Audit }
     Remove-Item $flag -Force
@@ -366,5 +369,6 @@ if (Test-Path $flag) {
     exit 0
 }
 
+& "$app\applocker.ps1" -Mode Install -CustomerSid (Get-LocalUser $user).SID.Value -DataPath $data
 Start-Service $svc
 Say "The cafe program on this PC is updated."
