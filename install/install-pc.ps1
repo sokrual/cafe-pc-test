@@ -6,8 +6,9 @@
 # counter PC; only for tests). -Setup: open the Customer account for changes again.
 # -Uninstall: take everything off this PC. -Ci: unattended test run (no pop-ups, no restart).
 #Requires -RunAsAdministrator
-param([string]$Server, [string]$DnsServer, [switch]$Setup, [switch]$Uninstall, [switch]$Ci)
+param([string]$Server, [string]$DnsServer, [switch]$Setup, [switch]$Uninstall, [switch]$Ci, [AllowEmptyString()][string]$AllowFolders)
 $ErrorActionPreference = "Stop"
+$allowFoldersWasSpecified = $PSBoundParameters.ContainsKey("AllowFolders")
 $src = $PSScriptRoot
 $app = "$env:ProgramFiles\GamingCafe"     # program files: only admins can change them
 $data = "$env:ProgramData\GamingCafe"     # clean copy and settings: only admins and Windows can open them
@@ -360,7 +361,10 @@ if (Test-Path $flag) {
         if (-not $loaded) { [gc]::Collect(); Start-Sleep -Milliseconds 500; reg.exe unload "HKU\CafeCustomer" | Out-Null }
     }
     # AppLocker blocks Customer execution only from customer-writable locations; Level A remains watch-only.
-    & "$app\applocker.ps1" -Mode Install -CustomerSid $sid -DataPath $data -Ci:$Ci
+    $appLockerArgs = @{ Mode = "Install"; CustomerSid = $sid; DataPath = $data }
+    if ($Ci) { $appLockerArgs.AllowFolders = "" }
+    elseif ($allowFoldersWasSpecified) { $appLockerArgs.AllowFolders = $AllowFolders }
+    & "$app\applocker.ps1" @appLockerArgs
     # Level A watch-only: nothing is blocked; Windows notes every program it would block, for the owner to review
     if (-not (Test-Path "$data\levelA-id.txt")) { & "$app\levelA.ps1" -Mode Audit }
     Remove-Item $flag -Force
@@ -369,6 +373,9 @@ if (Test-Path $flag) {
     exit 0
 }
 
-& "$app\applocker.ps1" -Mode Install -CustomerSid (Get-LocalUser $user).SID.Value -DataPath $data -Ci:$Ci
+$appLockerArgs = @{ Mode = "Install"; CustomerSid = (Get-LocalUser $user).SID.Value; DataPath = $data }
+if ($Ci) { $appLockerArgs.AllowFolders = "" }
+elseif ($allowFoldersWasSpecified) { $appLockerArgs.AllowFolders = $AllowFolders }
+& "$app\applocker.ps1" @appLockerArgs
 Start-Service $svc
 Say "The cafe program on this PC is updated."
