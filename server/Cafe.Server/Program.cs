@@ -37,13 +37,7 @@ async Task RefreshCounterBitLocker()
         var output = process.StandardOutput.ReadToEndAsync();
         var error = process.StandardError.ReadToEndAsync();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        try { await process.WaitForExitAsync(timeout.Token); }
-        catch (OperationCanceledException)
-        {
-            process.Kill(entireProcessTree: true);
-            await process.WaitForExitAsync();
-            throw;
-        }
+        await process.WaitForExitAsync(timeout.Token);
         var result = (await output).Trim();
         _ = await error;
         state = process.ExitCode == 0 && result is "On" or "Off" or "Unavailable" ? result : "Unknown";

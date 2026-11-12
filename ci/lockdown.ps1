@@ -158,11 +158,17 @@ try {
     } catch { "Unknown" }
     & "$stageA\install-admin.ps1" -Ci
     $adminInstallLog = Get-Content "$stageA\install-log.txt" -Raw
+    $offBitLockerWarning = "Disk encryption (BitLocker) is off on this counter PC. If the PC or its disk is stolen, the cafe data can be read. Turn it on: see SECURITY-GUIDE.txt, part 1."
+    $unavailableBitLockerWarning = "BitLocker is not available on this counter PC (Windows Home may not include it). See SECURITY-GUIDE.txt, part 1."
+    $unknownBitLockerWarning = "Could not check BitLocker on this counter PC. Check disk encryption: see SECURITY-GUIDE.txt, part 1."
+    $hasOffBitLockerWarning = $adminInstallLog.Contains($offBitLockerWarning)
+    $hasUnavailableBitLockerWarning = $adminInstallLog.Contains($unavailableBitLockerWarning)
+    $hasUnknownBitLockerWarning = $adminInstallLog.Contains($unknownBitLockerWarning)
     $bitLockerCheck = switch ($bitLockerExpected) {
-        "On" { $adminInstallLog -match "BitLocker status: On" -and $adminInstallLog -notmatch [regex]::Escape("Disk encryption (BitLocker) is off on this counter PC. If the PC or its disk is stolen, the cafe data can be read. Turn it on: see SECURITY-GUIDE.txt, part 1.") -and $adminInstallLog -notmatch [regex]::Escape("BitLocker is not available on this counter PC (Windows Home may not include it). See SECURITY-GUIDE.txt, part 1.") }
-        "Off" { $adminInstallLog -match "BitLocker status: Off" -and $adminInstallLog.Contains("Disk encryption (BitLocker) is off on this counter PC. If the PC or its disk is stolen, the cafe data can be read. Turn it on: see SECURITY-GUIDE.txt, part 1.") }
-        "Unavailable" { $adminInstallLog -match "BitLocker status: Unavailable" -and $adminInstallLog.Contains("BitLocker is not available on this counter PC (Windows Home may not include it). See SECURITY-GUIDE.txt, part 1.") }
-        default { $adminInstallLog -match "BitLocker status: Unknown" -and $adminInstallLog.Contains("Could not check BitLocker on this counter PC. Check disk encryption: see SECURITY-GUIDE.txt, part 1.") }
+        "On" { $adminInstallLog -match "BitLocker status: On" -and -not $hasOffBitLockerWarning -and -not $hasUnavailableBitLockerWarning -and -not $hasUnknownBitLockerWarning }
+        "Off" { $adminInstallLog -match "BitLocker status: Off" -and $hasOffBitLockerWarning -and -not $hasUnavailableBitLockerWarning -and -not $hasUnknownBitLockerWarning }
+        "Unavailable" { $adminInstallLog -match "BitLocker status: Unavailable" -and $hasUnavailableBitLockerWarning -and -not $hasOffBitLockerWarning -and -not $hasUnknownBitLockerWarning }
+        default { $adminInstallLog -match "BitLocker status: Unknown" -and $hasUnknownBitLockerWarning -and -not $hasOffBitLockerWarning -and -not $hasUnavailableBitLockerWarning }
     }
     Check "B3.A8" "Counter installer warns only when BitLocker is not confirmed On" $bitLockerCheck "runner state $bitLockerExpected; install log contains matching status and warning"
     Check "B3.A1" "Cafe server runs as a Windows service" ((Get-Service CafeServer).Status -eq "Running") (Get-Service CafeServer).StartType
@@ -207,10 +213,14 @@ try {
     $secureBootExpected = try { if (Confirm-SecureBootUEFI -ErrorAction Stop) { "On" } else { "Off" } } catch { "Unknown" }
     & "$stage\install-pc.ps1" -Server 127.0.0.1 -DnsServer $runnerDns -Ci
     $pcInstallLog = Get-Content "$stage\install-log.txt" -Raw
+    $offSecureBootWarning = "Secure Boot is off on this gaming PC. Turn it on: see SECURITY-GUIDE.txt, part 2."
+    $unknownSecureBootWarning = "Secure Boot could not be checked on this gaming PC. Check it: see SECURITY-GUIDE.txt, part 2."
+    $hasOffSecureBootWarning = $pcInstallLog.Contains($offSecureBootWarning)
+    $hasUnknownSecureBootWarning = $pcInstallLog.Contains($unknownSecureBootWarning)
     $secureBootCheck = switch ($secureBootExpected) {
-        "On" { $pcInstallLog -match "Secure Boot status: On" -and $pcInstallLog -notmatch [regex]::Escape("Secure Boot is off on this gaming PC. Turn it on: see SECURITY-GUIDE.txt, part 2.") -and $pcInstallLog -notmatch [regex]::Escape("Secure Boot could not be checked on this gaming PC. Check it: see SECURITY-GUIDE.txt, part 2.") }
-        "Off" { $pcInstallLog -match "Secure Boot status: Off" -and $pcInstallLog.Contains("Secure Boot is off on this gaming PC. Turn it on: see SECURITY-GUIDE.txt, part 2.") }
-        default { $pcInstallLog -match "Secure Boot status: Unknown" -and $pcInstallLog.Contains("Secure Boot could not be checked on this gaming PC. Check it: see SECURITY-GUIDE.txt, part 2.") }
+        "On" { $pcInstallLog -match "Secure Boot status: On" -and -not $hasOffSecureBootWarning -and -not $hasUnknownSecureBootWarning }
+        "Off" { $pcInstallLog -match "Secure Boot status: Off" -and $hasOffSecureBootWarning -and -not $hasUnknownSecureBootWarning }
+        default { $pcInstallLog -match "Secure Boot status: Unknown" -and $hasUnknownSecureBootWarning -and -not $hasOffSecureBootWarning }
     }
     Check "B3.C9" "Gaming PC installer warns only when Secure Boot is off or cannot be checked" $secureBootCheck "runner state $secureBootExpected; install log contains matching status and warning"
     $u = Get-LocalUser Customer
