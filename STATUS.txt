@@ -47,7 +47,11 @@ B3  Lockdown and installers                                         BUILT - fina
          PR C BitLocker warning, firmware/USB/Secure Boot guide, firewall between gaming PCs (F2, F11)   DONE (PR #21, 12 Nov)
               Guide: SECURITY-GUIDE.txt. Inbound blocks only (SMB, NetBIOS, RDP, WinRM); general outbound
               limits not done (remaining F11 risk is written in the guide).
-         PR D block programs from customer-writable folders, owner-approved pen drives (F1)            NEXT
+         PR D (F1), split in two:                                                                       NEXT
+              D1 programs cannot run from customer-writable folders or removable drives
+              D2 pen drives blocked unless owner or staff approve (decided 12 Nov), scanned with Defender,
+                 never run, access ends at logout; every approval logged
+         Rule (decided 12 Nov): every action by staff and owner is logged, the owner's included.
          PC follow-ups: show PcState.Notice; offline "30/60/90 min" text when the block changes; reset erases
               the remembered lock setting (F4); pipe identity check is path-based (F14); check the lock screen
               takes focus back when another program's window appears (seen once in CI: Win+D left wsl.exe in front)
