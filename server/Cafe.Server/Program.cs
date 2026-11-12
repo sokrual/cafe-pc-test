@@ -23,7 +23,7 @@ async Task RefreshCounterBitLocker()
     {
         var start = new ProcessStartInfo
         {
-            FileName = "powershell.exe",
+            FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe"),
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
@@ -55,7 +55,6 @@ async Task RefreshCounterBitLocker()
     diskProtection.SetState(state);
     Log($"Counter PC BitLocker status: {state}");
 }
-await RefreshCounterBitLocker();
 if (args.Contains("--seed-test")) Seed(cafe, data, args.Contains("--seed-offline-lock"), args.Contains("--seed-offline-secret-test"));
 var cert = Cert(data);
 
@@ -133,7 +132,7 @@ app.MapPost("/pc/logout", (HttpContext c, long? ago) => { var pc = Pc(c); var bi
 app.MapPost("/staff/login", (HttpContext c, LoginBody b) =>
 {
     var user = cafe.StaffLogin(b.Phone, b.Pin, b.Code);
-    return Results.Ok(new { token = staffTokens.Issue(user) }); // shortcut: in memory, so a server restart logs staff out
+    return Results.Ok(new { token = staffTokens.Issue(user), owner = cafe.IsOwner(user) }); // shortcut: in memory, so a server restart logs staff out
 }).RequireRateLimiting("login");
 app.MapPost("/staff/logout", (HttpContext c) => { staffTokens.End(TokenOf(c)); return Results.Ok(); });
 app.MapPost("/staff/users", (HttpContext c, UserBody b) => new { id = cafe.AddUser(Staff(c), b.Role, b.Name, b.Phone, b.Pin) });
@@ -290,9 +289,10 @@ app.Lifetime.ApplicationStarted.Register(() => _ = Task.Run(async () =>
 }));
 app.Lifetime.ApplicationStarted.Register(() => _ = Task.Run(async () =>
 {
-    using var timer = new PeriodicTimer(TimeSpan.FromHours(3));
     try
     {
+        await RefreshCounterBitLocker();
+        using var timer = new PeriodicTimer(TimeSpan.FromHours(3));
         while (await timer.WaitForNextTickAsync(app.Lifetime.ApplicationStopping))
             await RefreshCounterBitLocker();
     }
