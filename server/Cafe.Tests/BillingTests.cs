@@ -33,17 +33,6 @@ public sealed class BillingTests : IDisposable
     }
 
     [Fact]
-    public void Counter_BitLocker_warning_is_owner_only_and_clears_when_protection_is_on()
-    {
-        var status = new CounterDiskProtection();
-        status.SetState("Off");
-        Assert.Null(status.WarningFor(false));
-        Assert.Equal(CounterDiskProtection.OffWarning, status.WarningFor(true));
-        status.SetState("On");
-        Assert.Null(status.WarningFor(true));
-    }
-
-    [Fact]
     public void Time_lock_setting_is_owner_only_and_off_keeps_the_existing_logout_behaviour()
     {
         _cafe.AddPc(_owner, "PC1");

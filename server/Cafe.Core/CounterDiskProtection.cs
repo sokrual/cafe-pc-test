@@ -7,7 +7,7 @@ public sealed class CounterDiskProtection
     public const string UnavailableWarning = "BitLocker is not available on this counter PC (Windows Home may not include it). See SECURITY-GUIDE.txt, part 1.";
     public const string UnknownWarning = "Could not check BitLocker on this counter PC. Check disk encryption: see SECURITY-GUIDE.txt, part 1.";
 
-    private string _state = "Unknown";
+    private volatile string _state = "Unknown";
 
     public void SetState(string state)
     {

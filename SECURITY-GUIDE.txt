@@ -36,6 +36,8 @@ starts are F2, Delete, F10 or Esc.
 
 1. Set a BIOS/UEFI administrator or setup password. This stops a customer from changing boot settings.
    Keep the password in the owner's password manager or another safe place, not on the PC.
+   Save, restart, enter firmware setup again and check that it asks for this password before it lets
+   you change settings. Exit without changing anything.
 2. Set the first and only allowed boot device to Windows Boot Manager or the internal SSD.
 3. Turn off USB or removable-device boot. If the firmware has a separate "External Device Boot" setting,
    turn that off too. Save the changes and restart.

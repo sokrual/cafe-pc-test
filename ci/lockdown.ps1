@@ -287,9 +287,10 @@ try {
             $port = $rule | Get-NetFirewallPortFilter
             $address = $rule | Get-NetFirewallAddressFilter
             $actualPorts = @($port.LocalPort | ForEach-Object { "$_" }) -join ","
-            $valid = ($rule.Enabled -eq "True" -and $rule.Direction -eq "Inbound" -and $rule.Action -eq "Block" -and
+            $remoteAny = @($address.RemoteAddress | Where-Object { $_ -eq "Any" }).Count -gt 0
+            $valid = ("$($rule.Enabled)" -eq "True" -and $rule.Direction -eq "Inbound" -and $rule.Action -eq "Block" -and
                 $rule.Group -eq "Cafe PC" -and $port.Protocol -eq $expected.Protocol -and
-                $actualPorts -eq $expected.Ports -and @($address.RemoteAddress).Contains("Any"))
+                $actualPorts -eq $expected.Ports -and $remoteAny)
             $detail = "enabled $($rule.Enabled); $($rule.Direction) $($rule.Action); $($port.Protocol) $actualPorts; group $($rule.Group); remote $($address.RemoteAddress)"
         }
         Check $expected.Id "Inbound firewall rule $($expected.Name) is enabled, blocks the correct ports from any address in Cafe PC" $valid $detail
