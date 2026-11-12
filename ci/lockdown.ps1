@@ -366,6 +366,13 @@ try {
         $d1CollectionsOk = $d1CollectionsOk -and $ok
     }
     Check "D1.C1" "AppLocker enforces Exe, Msi, Script and Dll collections with Everyone allow and Customer-only path denies" $d1CollectionsOk ($d1RuleDetails -join " | ")
+    $appxCollection = @($d1Policy.AppLockerPolicy.RuleCollection | Where-Object { $_.Type -eq "Appx" })
+    $appxAllow = $false
+    if ($appxCollection.Count -eq 1 -and $appxCollection[0].EnforcementMode -eq "Enabled") {
+        $appxAllow = @($appxCollection[0].FilePublisherRule | Where-Object { $_.Action -eq "Allow" -and $_.UserOrGroupSid -eq "S-1-1-0" -and $_.Conditions.FilePublisherCondition.PublisherName -eq "*" -and $_.Conditions.FilePublisherCondition.ProductName -eq "*" -and $_.Conditions.FilePublisherCondition.BinaryName -eq "*" }).Count -gt 0
+        $appxAllow = $appxAllow -and @($appxCollection[0].FilePublisherRule | Where-Object { $_.Action -eq "Deny" }).Count -eq 0
+    }
+    Check "D1.C1b" "Required Appx collection allows signed packaged apps without any deny rules" $appxAllow "Appx collection count $($appxCollection.Count)"
     $appIdNow = Get-CimInstance Win32_Service -Filter "Name='AppIDSvc'"
     Check "D1.C2" "Application Identity is automatic and running" ($appIdNow.StartMode -eq "Auto" -and $appIdNow.State -eq "Running") "start $($appIdNow.StartMode); state $($appIdNow.State)"
     $aclReport = "$data\customer-writable-folders.txt"

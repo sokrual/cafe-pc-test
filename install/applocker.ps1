@@ -305,6 +305,14 @@ function Install-CustomerPolicy {
         }
         $xml.Add("  </RuleCollection>")
     }
+    # AppLocker requires an Appx rule collection whenever the Exe collection is enforced.
+    # Keep signed packaged apps available; D1 adds no packaged-app deny rules.
+    $appxId = [guid]::NewGuid().ToString("B")
+    $xml.Add('  <RuleCollection Type="Appx" EnforcementMode="Enabled">')
+    $xml.Add('    <FilePublisherRule Id="' + $appxId + '" Name="Cafe D1 allow Everyone - Appx" Description="Allow all signed packaged apps" UserOrGroupSid="S-1-1-0" Action="Allow">')
+    $xml.Add('      <Conditions><FilePublisherCondition PublisherName="*" ProductName="*" BinaryName="*"><BinaryVersionRange LowSection="0.0.0.0" HighSection="*" /></FilePublisherCondition></Conditions>')
+    $xml.Add('    </FilePublisherRule>')
+    $xml.Add('  </RuleCollection>')
     $xml.Add("</AppLockerPolicy>")
     $policyPath = Join-Path $DataPath "applocker-policy.xml"
     [IO.File]::WriteAllLines($policyPath, $xml.ToArray(), (New-Object Text.UTF8Encoding($false)))
@@ -319,13 +327,16 @@ function Install-CustomerPolicy {
     }
     Set-AppLockerPolicy -XmlPolicy $policyPath
     $applied = [xml](Get-AppLockerPolicy -Local -Xml)
-    foreach ($type in @("Exe", "Msi", "Script", "Dll")) {
+    foreach ($type in @("Exe", "Msi", "Script", "Dll", "Appx")) {
         $collectionNode = @($applied.AppLockerPolicy.RuleCollection | Where-Object { $_.Type -eq $type })
         if ($collectionNode.Count -ne 1 -or $collectionNode[0].EnforcementMode -ne "Enabled") {
             throw "AppLocker $type collection was not applied in Enforce mode."
         }
     }
-    Write-Host "AppLocker D1 enforced for Customer in Exe, Msi, Script and Dll collections."
+    $appxCollection = @($applied.AppLockerPolicy.RuleCollection | Where-Object { $_.Type -eq "Appx" })
+    $appxAllow = @($appxCollection[0].FilePublisherRule | Where-Object { $_.Action -eq "Allow" -and $_.UserOrGroupSid -eq "S-1-1-0" -and $_.Conditions.FilePublisherCondition.PublisherName -eq "*" -and $_.Conditions.FilePublisherCondition.ProductName -eq "*" -and $_.Conditions.FilePublisherCondition.BinaryName -eq "*" }).Count -gt 0
+    if ($appxCollection.Count -ne 1 -or -not $appxAllow) { throw "The required allow-only Appx rule collection was not applied." }
+    Write-Host "AppLocker D1 enforced for Customer in Exe, Msi, Script and Dll; signed packaged apps remain allowed."
 }
 
 function Wait-ForService {
