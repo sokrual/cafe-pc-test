@@ -317,8 +317,43 @@ try {
     $ownerRun = CustomerPs "if (-not (Test-Path HKCU:\$runKey)) { New-Item HKCU:\$runKey | Out-Null }; Set-ItemProperty HKCU:\$runKey OwnerApp 'C:\owner.exe'"
     Start-Sleep -Seconds 5
 
+    # D1 diagnostics: preserve a representative Customer executable before installing AppLocker.
+    $d1DiagnosticExe = "$prof\Downloads\d1-policy-diagnostic.exe"
+    Copy-Item -LiteralPath "$env:WINDIR\System32\PING.EXE" -Destination $d1DiagnosticExe -Force
+    $d1InstallStarted = Get-Date
+
     # ===== E. step 2 =====
     & "$stage\install-pc.ps1" -Ci -AllowFolders ""
+
+    # Capture the effective policy decision, kernel/service state, and every AppLocker event since install.
+    Write-Host "===== D1 enforcement diagnostics (install started $($d1InstallStarted.ToString('o'))) ====="
+    Write-Host "AsCustomer launch path: Start-Process -Credential (CreateProcessWithLogonW); LOGON32_LOGON_INTERACTIVE=2; LoadUserProfile=true."
+    Write-Host "AsCustomer token evaluation: Test-AppLockerPolicy below evaluates the Customer SAM account; runtime block events are correlated against Customer SID $($u.SID.Value)."
+    $effectivePolicyPath = Join-Path $data "applocker-effective.xml"
+    try {
+        $effectivePolicyXml = Get-AppLockerPolicy -Effective -Xml
+        [IO.File]::WriteAllText($effectivePolicyPath, [string]$effectivePolicyXml, (New-Object Text.UTF8Encoding($false)))
+        Write-Host "Effective policy saved to $effectivePolicyPath"
+        $policyDecision = Test-AppLockerPolicy -XmlPolicy $effectivePolicyPath -Path $d1DiagnosticExe -User Customer
+        Write-Host "Test-AppLockerPolicy effective-policy result for Customer / $d1DiagnosticExe:"
+        $policyDecision | Format-List * | Out-String | Write-Host
+    } catch { Write-Warning "Effective-policy test failed: $($_.Exception.Message)" }
+    foreach ($serviceName in @("appid", "applockerfltr", "appidsvc")) {
+        Write-Host "===== sc.exe query $serviceName ====="
+        & "$env:WINDIR\System32\sc.exe" query $serviceName 2>&1 | Out-String | Write-Host
+    }
+    foreach ($channel in @("Microsoft-Windows-AppLocker/EXE and DLL", "Microsoft-Windows-AppLocker/MSI and Script")) {
+        Write-Host "===== AppLocker events in $channel since install ====="
+        try {
+            $channelEvents = @(Get-WinEvent -FilterHashtable @{ LogName = $channel; StartTime = $d1InstallStarted } -ErrorAction Stop | Sort-Object TimeCreated)
+            if ($channelEvents.Count -eq 0) { Write-Host "No events since install." }
+            foreach ($event in $channelEvents) {
+                Write-Host ("{0:o} ID={1} Provider={2}" -f $event.TimeCreated, $event.Id, $event.ProviderName)
+                Write-Host $event.Message
+            }
+        } catch { Write-Warning "Could not read $channel since install: $($_.Exception.Message)" }
+    }
+    Write-Host "===== End D1 enforcement diagnostics ====="
     # CI runs without a Customer interactive session; this admin-only marker exercises the profile reset after
     # the test Customer processes exit. Installed cafe PCs never contain this file and log off the real Customer session.
     New-Item "$app\test-wipe-mode.flag" -ItemType File -Force | Out-Null
