@@ -241,11 +241,11 @@ function Install-CustomerPolicy {
     # Inventory all Customer-writable fixed-drive folders outside the standard deny roots.
     $unlistedWritableFolders = New-Object System.Collections.Generic.List[string]
     $unlistedWritableExecute = New-Object System.Collections.Generic.List[string]
-    $systemDriveRoot = "$env:SystemDrive\\"
-    $coveredRoots = @($programFiles, $programFilesX86, $programData, "$env:SystemDrive\\Users", $env:WINDIR)
+    $systemDriveRoot = "$env:SystemDrive\"
+    $coveredRoots = @($programFiles, $programFilesX86, $programData, "$env:SystemDrive\Users", $env:WINDIR)
     $fixedDrives = @(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue)
     foreach ($drive in $fixedDrives) {
-        $driveRoot = "$($drive.DeviceID)\\"
+        $driveRoot = "$($drive.DeviceID)\"
         $scanRoots = @()
         if ($driveRoot -eq $systemDriveRoot) {
             $rootAccess = Get-CustomerDirectoryAccess $driveRoot $principals
@@ -256,7 +256,7 @@ function Install-CustomerPolicy {
                 if ($rootAccess.Executable) { $unlistedWritableExecute.Add($driveRoot); $allWritableExecute.Add($driveRoot) }
             } else {
                 foreach ($child in [IO.Directory]::GetDirectories($driveRoot)) {
-                    $isCovered = @($coveredRoots | Where-Object { $_ -and $child.TrimEnd('\\') -ieq $_.TrimEnd('\\') }).Count -gt 0
+                    $isCovered = @($coveredRoots | Where-Object { $_ -and $child.TrimEnd('\') -ieq $_.TrimEnd('\') }).Count -gt 0
                     if (-not $isCovered) { $scanRoots += $child }
                 }
             }
@@ -297,7 +297,7 @@ function Install-CustomerPolicy {
     $candidateFolders = @(@($programFilesWritableFolders) + @($unlistedWritableFolders) | Sort-Object -Unique)
     $allowedFolders = @()
     if ($allowFoldersWasSpecified) {
-        $allowedFolders = @($AllowFolders -split ';' | ForEach-Object { $_.Trim().TrimEnd('\\') } | Where-Object { $_ })
+        $allowedFolders = @($AllowFolders -split ';' | ForEach-Object { $_.Trim().TrimEnd('\') } | Where-Object { $_ })
     } elseif ($candidateFolders.Count -gt 0) {
         Add-Type -AssemblyName System.Windows.Forms
         Add-Type -AssemblyName System.Drawing
@@ -320,13 +320,13 @@ function Install-CustomerPolicy {
         $form.Dispose()
     }
     $allowedSet = @{}
-    foreach ($folder in $allowedFolders) { $allowedSet[$folder.TrimEnd('\\')] = $true }
+    foreach ($folder in $allowedFolders) { $allowedSet[$folder.TrimEnd('\')] = $true }
     foreach ($folder in @($allowedFolders | Where-Object { $_ -notin $candidateFolders })) {
         $report.Add("ALLOW REQUEST NOT FOUND IN INVENTORY (not allowed): $folder")
     }
-    $blockedFolders = @($candidateFolders | Where-Object { -not $allowedSet.ContainsKey($_.TrimEnd('\\')) })
+    $blockedFolders = @($candidateFolders | Where-Object { -not $allowedSet.ContainsKey($_.TrimEnd('\')) })
     foreach ($folder in $candidateFolders) {
-        $decision = if ($allowedSet.ContainsKey($folder.TrimEnd('\\'))) { "ALLOW" } else { "BLOCK" }
+        $decision = if ($allowedSet.ContainsKey($folder.TrimEnd('\'))) { "ALLOW" } else { "BLOCK" }
         $report.Add("OWNER DECISION: $decision : $folder")
     }
     $report.Add("OWNER ALLOW-FOLDERS ARGUMENT: $($allowedFolders -join '; ')")
@@ -336,12 +336,12 @@ function Install-CustomerPolicy {
     Get-Content -LiteralPath $reportPath | Write-Host
 
     $denyPaths = New-Object System.Collections.Generic.List[string]
-    $denyPaths.Add("%OSDRIVE%\\Users\\*")
-    $denyPaths.Add("$env:WINDIR\\Temp\\*")
-    foreach ($folder in $programDataWritable) { $denyPaths.Add("$folder\\*") }
-    foreach ($folder in $blockedFolders) { $denyPaths.Add("$folder\\*") }
-    $denyPaths.Add("%REMOVABLE%\\*")
-    $denyPaths.Add("%HOT%\\*")
+    $denyPaths.Add("%OSDRIVE%\Users\*")
+    $denyPaths.Add("$env:WINDIR\Temp\*")
+    foreach ($folder in $programDataWritable) { $denyPaths.Add("$folder\*") }
+    foreach ($folder in $blockedFolders) { $denyPaths.Add("$folder\*") }
+    $denyPaths.Add("%REMOVABLE%\*")
+    $denyPaths.Add("%HOT%\*")
     $denyPaths = @($denyPaths | Select-Object -Unique)
 
     $xml = New-Object System.Collections.Generic.List[string]
