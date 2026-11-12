@@ -2,6 +2,7 @@
 // Counter screen. Server values only ever go in as text (never HTML), so a name cannot run code here.
 const $ = id => document.getElementById(id);
 let token = sessionStorage.getItem("cafeToken"); // gone when the browser closes; Windows locks the PC when staff walk away
+let isOwner = sessionStorage.getItem("cafeOwner") === "true";
 let rows = [], selected = null, panelKey = "", poll = null, rate = null; // rate: the card in use, for the time choices
 
 function el(tag, props = {}, ...kids) {
@@ -36,11 +37,16 @@ const timeText = r => r.session ? (r.leftSec != null ? clock(r.leftSec) + " left
 
 async function refresh(forcePanel = false) {
   try { rows = await api("GET", "/staff/counter"); } catch (e) { say(e.message, false); return; }
-  try {
-    const disk = await api("GET", "/staff/security/bitlocker");
-    $("securityWarning").textContent = disk.warning || "";
-    $("securityWarning").hidden = !disk.warning;
-  } catch {
+  if (isOwner) {
+    try {
+      const disk = await api("GET", "/staff/security/bitlocker");
+      $("securityWarning").textContent = disk.warning || "";
+      $("securityWarning").hidden = !disk.warning;
+    } catch {
+      $("securityWarning").textContent = "";
+      $("securityWarning").hidden = true;
+    }
+  } else {
     $("securityWarning").textContent = "";
     $("securityWarning").hidden = true;
   }
@@ -189,7 +195,7 @@ async function stop(r) {
   } catch (e) { say(e.message, false); }
 }
 
-function signOut() { sessionStorage.removeItem("cafeToken"); token = null; clearInterval(poll); $("app").hidden = true; $("login").hidden = false; }
+function signOut() { sessionStorage.removeItem("cafeToken"); sessionStorage.removeItem("cafeOwner"); token = null; isOwner = false; clearInterval(poll); $("app").hidden = true; $("login").hidden = false; }
 function start() { $("login").hidden = true; $("app").hidden = false; loadRate(); refresh(); poll = setInterval(refresh, 3000); }
 
 $("login").onsubmit = async e => {
@@ -199,7 +205,7 @@ $("login").onsubmit = async e => {
       body: JSON.stringify({ phone: $("lphone").value.trim(), pin: $("lpin").value, code: $("lcode").value.trim() || null }) });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { $("lerr").textContent = d.error || (r.status === 429 ? "Too many tries. Wait a minute." : "Could not sign in."); return; }
-    token = d.token; sessionStorage.setItem("cafeToken", token); $("lpin").value = $("lcode").value = ""; $("lerr").textContent = ""; start();
+    token = d.token; isOwner = d.owner === true; sessionStorage.setItem("cafeToken", token); sessionStorage.setItem("cafeOwner", String(isOwner)); $("lpin").value = $("lcode").value = ""; $("lerr").textContent = ""; start();
   } catch { $("lerr").textContent = "The counter server is not answering."; }
 };
 $("logout").onclick = async () => { try { await api("POST", "/staff/logout"); } catch { } signOut(); };
