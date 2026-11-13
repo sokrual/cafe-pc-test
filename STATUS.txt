@@ -138,6 +138,13 @@ AFTER THE BUILD, WHILE THE CAFE TESTS
 TEST PHASES ON REAL PCS (after the build)
     Phase 0 kit (kit/): one cafe PC for 1-2 days, changes nothing for customers. Sent to the owner after B5.
     Then: 1 lock and escape, 2 billing, 3 sign-up and data, 4 owner features, 5 load, 6 real customers and rollout.
+    CI covers x64 and ARM64 Windows virtual machines with no graphics card. Real hardware is only tested here.
+    The cafe PCs are of mixed builds (exact models unknown, 13 Nov): test at least one PC of each build.
+    Phase 0 / phase 1 must also check, on each build: games in exclusive fullscreen vs the lock screen (on top when
+    time runs out); NVIDIA (Alt+Z), AMD (Alt+R) and Xbox Game Bar (Win+G) overlays as escape routes; graphics driver
+    update pop-ups; every monitor covered; AppLocker with Riot, Epic, Steam and Riot Vanguard; the owner's
+    allowed-folder dialog with real launcher folders; nothing breaks that runs from C:\ProgramData; time for the
+    AppLocker rules to compile after install; the lock screen takes focus back when another window appears.
 
 OWNER DECISIONS (10 Nov 2026)
     In the code: rate card 30 min Rs 40, 1 hour Rs 60, 1.5 hours Rs 100, then Rs 40 per 30 min (extra time past
