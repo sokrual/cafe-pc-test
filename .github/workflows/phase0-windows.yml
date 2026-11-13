@@ -91,11 +91,12 @@ jobs:
       - name: Build Cafe.Agent with runtime sidecars; watchdog and timer remain single-file
         shell: pwsh
         run: |
-          $f = "-c", "Release", "-r", "win-x64", "--self-contained", "true", "-p:PublishSingleFile=true", "-p:DebugType=none"
-          dotnet publish pc/Cafe.Agent @f -p:PublishSingleFile=false -p:IncludeNativeLibrariesForSelfExtract=false -o out/agent
-          dotnet publish pc/Cafe.Watchdog @f -o out/watchdog
-          dotnet publish timer @f -o out/timer
-          dotnet publish server/Cafe.Server @f -p:IncludeNativeLibrariesForSelfExtract=true -o out/server
+          $singleFile = "-c", "Release", "-r", "win-x64", "--self-contained", "true", "-p:PublishSingleFile=true", "-p:DebugType=none"
+          $agentFiles = "-c", "Release", "-r", "win-x64", "--self-contained", "true", "-p:PublishSingleFile=false", "-p:IncludeNativeLibrariesForSelfExtract=false", "-p:DebugType=none"
+          dotnet publish pc/Cafe.Agent @agentFiles -o out/agent
+          dotnet publish pc/Cafe.Watchdog @singleFile -o out/watchdog
+          dotnet publish timer @singleFile -o out/timer
+          dotnet publish server/Cafe.Server @singleFile -p:IncludeNativeLibrariesForSelfExtract=true -o out/server
           $agentFiles = @(Get-ChildItem out/agent -File)
           $agentNativeFiles = @(Get-ChildItem out/agent -File -Filter "*.dll")
           if (-not (Test-Path out/agent/Cafe.Agent.exe) -or $agentFiles.Count -lt 2 -or $agentNativeFiles.Count -eq 0) {
