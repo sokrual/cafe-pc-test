@@ -1173,12 +1173,12 @@ try {
         }
         $daclEntries = @()
         if ($sections.ContainsKey("D")) {
-            $daclEntries = @([regex]::Matches($sections["D"], '\\([^)]*\\)') |
+            $daclEntries = @([regex]::Matches($sections["D"], '\([^)]*\\)') |
                 ForEach-Object { $_.Value } | Sort-Object -Unique -CaseSensitive)
         }
         $labelEntries = @()
         if ($sections.ContainsKey("S")) {
-            $labelEntries = @([regex]::Matches($sections["S"], '\\(ML;[^)]*\\)') |
+            $labelEntries = @([regex]::Matches($sections["S"], '\(ML;[^)]*\\)') |
                 ForEach-Object { $_.Value } | Sort-Object -Unique -CaseSensitive)
         }
         [pscustomobject]@{
