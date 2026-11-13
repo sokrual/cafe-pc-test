@@ -32,6 +32,15 @@ function Restore-OriginalState {
     if (Test-Path -LiteralPath $policyBackup) {
         Set-AppLockerPolicy -XmlPolicy $policyBackup
     }
+    $rootAclBackup = Join-Path $DataPath "c-root-acl-before.sddl"
+    if (Test-Path -LiteralPath $rootAclBackup) {
+        $systemDriveRoot = "$env:SystemDrive\"
+        $originalRootSddl = (Get-Content -LiteralPath $rootAclBackup -Raw).Trim()
+        $rootAcl = Get-Acl -LiteralPath $systemDriveRoot
+        $rootAcl.SetSecurityDescriptorSddlForm($originalRootSddl)
+        Set-Acl -LiteralPath $systemDriveRoot -AclObject $rootAcl
+        Write-Host "Restored original ACL on $systemDriveRoot from the install-time backup."
+    }
     if (Test-Path -LiteralPath $logBackup) {
         foreach ($entry in (Get-Content -LiteralPath $logBackup -Raw | ConvertFrom-Json)) {
             $enabled = if ($entry.Enabled) { "true" } else { "false" }
@@ -122,10 +131,10 @@ function Get-CustomerDirectoryAccess([string]$Path, [string[]]$PrincipalSids, $A
             }
         }
         $effectiveMask = $allowMask -band (-bnot $denyMask)
-        # This routine evaluates directory ACLs. On directories, AppendData means CreateSubdirectories,
-        # not the ability to create/append files in this directory. Counting it as file-write access
-        # incorrectly classifies drive roots (for example C:\\) as executable writable folders.
+        # AppendData is CreateSubdirectories on directories. It is writable exposure:
+        # a Customer-created child is Customer-owned and can contain executables after installation.
         $writeMask = [int64]([int][Security.AccessControl.FileSystemRights]::WriteData -bor
+            [int][Security.AccessControl.FileSystemRights]::AppendData -bor
             [int][Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
             [int][Security.AccessControl.FileSystemRights]::WriteAttributes)
         $executeMask = [int64][int][Security.AccessControl.FileSystemRights]::ExecuteFile
@@ -175,6 +184,35 @@ function Install-CustomerPolicy {
 
     # Report the effective allow/deny ACEs before generating any rules. Customer is a standard local user.
     $principals = @($CustomerSid, "S-1-1-0", "S-1-5-11", "S-1-5-32-545", "S-1-5-4", "S-1-5-113")
+
+    # Prevent creation of new, previously-uninventoried folders directly under the system-drive root.
+    # Preserve the exact original descriptor once so repeated installs and uninstall remain reversible.
+    $systemDriveRoot = "$env:SystemDrive\"
+    $rootAclBackup = Join-Path $DataPath "c-root-acl-before.sddl"
+    if (-not (Test-Path -LiteralPath $rootAclBackup)) {
+        $originalRootSddl = (Get-Acl -LiteralPath $systemDriveRoot).Sddl
+        [IO.File]::WriteAllText($rootAclBackup, $originalRootSddl, (New-Object Text.UTF8Encoding($false)))
+    }
+    $systemRootAcl = Get-Acl -LiteralPath $systemDriveRoot
+    foreach ($principalSid in @("S-1-5-11", "S-1-5-32-545")) {
+        $alreadyDenied = @($systemRootAcl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]) |
+            Where-Object { $_.IdentityReference.Value -eq $principalSid -and
+                $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Deny -and
+                (([int64]$_.FileSystemRights -band [int64][int][Security.AccessControl.FileSystemRights]::CreateDirectories) -ne 0) -and
+                $_.InheritanceFlags -eq [Security.AccessControl.InheritanceFlags]::None }).Count -gt 0
+        if (-not $alreadyDenied) {
+            $denyCreateRootFolder = New-Object Security.AccessControl.FileSystemAccessRule(
+                (New-Object Security.Principal.SecurityIdentifier($principalSid)),
+                [Security.AccessControl.FileSystemRights]::CreateDirectories,
+                [Security.AccessControl.AccessControlType]::Deny,
+                [Security.AccessControl.InheritanceFlags]::None,
+                [Security.AccessControl.PropagationFlags]::None)
+            [void]$systemRootAcl.AddAccessRule($denyCreateRootFolder)
+        }
+    }
+    Set-Acl -LiteralPath $systemDriveRoot -AclObject $systemRootAcl
+    Write-Host "Removed effective CreateDirectories access for Authenticated Users and BUILTIN\\Users on $systemDriveRoot only; original ACL saved for uninstall."
+
     $programFiles = $env:ProgramFiles
     $programFilesX86 = $env:ProgramFiles + " (x86)"
     $programData = $env:ProgramData
@@ -410,26 +448,58 @@ function Install-CustomerPolicy {
         & wevtutil.exe sl $channel /e:true | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Could not enable AppLocker event channel $channel." }
     }
+    $cacheDirectory = Join-Path $env:WINDIR "System32\AppLocker"
+    $cacheNames = @("Exe.AppLocker", "Dll.AppLocker", "Msi.AppLocker", "Script.AppLocker", "Appx.AppLocker")
+    function Wait-ForCompiledPolicy([datetime]$ImportStarted) {
+        $deadline = (Get-Date).AddSeconds(30)
+        do {
+            $allFresh = $true
+            foreach ($cacheName in $cacheNames) {
+                $cacheFile = Join-Path $cacheDirectory $cacheName
+                if (-not (Test-Path -LiteralPath $cacheFile -PathType Leaf) -or
+                    (Get-Item -LiteralPath $cacheFile).LastWriteTimeUtc -lt $ImportStarted.ToUniversalTime().AddSeconds(-2)) {
+                    $allFresh = $false
+                    break
+                }
+            }
+            if ($allFresh) { return $true }
+            Start-Sleep -Milliseconds 500
+        } while ((Get-Date) -lt $deadline)
+        return $false
+    }
+    function Write-CompiledPolicyInventory([datetime]$ImportStarted, [string]$Attempt) {
+        Write-Host "AppLocker compiled-policy inventory ($Attempt; import started $($ImportStarted.ToString('o')); captured $((Get-Date).ToString('o'))):"
+        foreach ($cacheName in $cacheNames) {
+            $cacheFile = Join-Path $cacheDirectory $cacheName
+            if (Test-Path -LiteralPath $cacheFile -PathType Leaf) {
+                $cacheItem = Get-Item -LiteralPath $cacheFile
+                $fresh = $cacheItem.LastWriteTimeUtc -ge $ImportStarted.ToUniversalTime().AddSeconds(-2)
+                Write-Host ("  {0}: exists=True; bytes={1}; createdUtc={2:o}; modifiedUtc={3:o}; modifiedSinceImport={4}" -f $cacheName, $cacheItem.Length, $cacheItem.CreationTimeUtc, $cacheItem.LastWriteTimeUtc, $fresh)
+            } else {
+                Write-Host ("  {0}: exists=False" -f $cacheName)
+            }
+        }
+    }
+
     $policyInstallStarted = Get-Date
     Set-AppLockerPolicy -XmlPolicy $policyPath
     & "$env:WINDIR\System32\gpupdate.exe" /target:computer /force /wait:60 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Computer Group Policy refresh failed after applying AppLocker (gpupdate exit $LASTEXITCODE)." }
-    Write-Host "Computer Group Policy refreshed after applying the AppLocker policy."
-
-    # Capture the binary policy cache produced by the Windows Application Identity policy converter.
-    # These files are not XML inputs; AppIDSvc/AppID policy conversion materializes them from applied policy.
-    $cacheDirectory = Join-Path $env:WINDIR "System32\AppLocker"
-    Write-Host "AppLocker compiled-policy inventory (policy import started $($policyInstallStarted.ToString('o')); captured $((Get-Date).ToString('o'))):"
-    foreach ($cacheName in @("Exe.AppLocker", "Dll.AppLocker", "Msi.AppLocker", "Script.AppLocker", "Appx.AppLocker")) {
-        $cacheFile = Join-Path $cacheDirectory $cacheName
-        if (Test-Path -LiteralPath $cacheFile -PathType Leaf) {
-            $cacheItem = Get-Item -LiteralPath $cacheFile
-            $fresh = $cacheItem.LastWriteTime -ge $policyInstallStarted.AddSeconds(-2)
-            Write-Host ("  {0}: exists=True; bytes={1}; createdUtc={2:o}; modifiedUtc={3:o}; modifiedSincePolicyImport={4}" -f $cacheName, $cacheItem.Length, $cacheItem.CreationTimeUtc, $cacheItem.LastWriteTimeUtc, $fresh)
-        } else {
-            Write-Host "  $($cacheName): exists=False"
-        }
+    $compiled = Wait-ForCompiledPolicy $policyInstallStarted
+    Write-CompiledPolicyInventory $policyInstallStarted "first import"
+    if (-not $compiled) {
+        Write-Warning "AppLocker did not compile all five policy collections within 30 seconds; reapplying the policy once."
+        $policyRetryStarted = Get-Date
+        Set-AppLockerPolicy -XmlPolicy $policyPath
+        & "$env:WINDIR\System32\gpupdate.exe" /target:computer /force /wait:60 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Computer Group Policy refresh failed after retrying AppLocker policy application (gpupdate exit $LASTEXITCODE)." }
+        $compiled = Wait-ForCompiledPolicy $policyRetryStarted
+        Write-CompiledPolicyInventory $policyRetryStarted "second import"
     }
+    if (-not $compiled) {
+        throw "AppLocker policy compilation failed: one or more of $($cacheNames -join ', ') were missing or stale after two 30-second application attempts. Installation is unsafe and has been stopped."
+    }
+    Write-Host "All five AppLocker policy collections were compiled after policy import."
     foreach ($channel in $channels) {
         $conversionEvents = @(Get-WinEvent -FilterHashtable @{ LogName = $channel; Id = @(8000, 8001, 8002, 8003); StartTime = $policyInstallStarted.AddSeconds(-2) } -ErrorAction SilentlyContinue)
         Write-Host "AppLocker policy-conversion/runtime events 8000-8003 in '$channel' since policy import: $($conversionEvents.Count)"
