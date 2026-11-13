@@ -468,7 +468,7 @@ function Install-CustomerPolicy {
             foreach ($cacheName in $cacheNames) {
                 $cacheFile = Join-Path $cacheDirectory $cacheName
                 if (-not (Test-Path -LiteralPath $cacheFile -PathType Leaf) -or
-                    (Get-Item -LiteralPath $cacheFile).LastWriteTimeUtc -lt $ImportStarted.ToUniversalTime()) {
+                    (Get-Item -LiteralPath $cacheFile).LastWriteTimeUtc -le $ImportStarted.ToUniversalTime()) {
                     $allFresh = $false
                     break
                 }
@@ -484,7 +484,7 @@ function Install-CustomerPolicy {
             $cacheFile = Join-Path $cacheDirectory $cacheName
             if (Test-Path -LiteralPath $cacheFile -PathType Leaf) {
                 $cacheItem = Get-Item -LiteralPath $cacheFile
-                $fresh = $cacheItem.LastWriteTimeUtc -ge $ImportStarted.ToUniversalTime().AddSeconds(-2)
+                $fresh = $cacheItem.LastWriteTimeUtc -gt $ImportStarted.ToUniversalTime()
                 Write-Host ("  {0}: exists=True; bytes={1}; createdUtc={2:o}; modifiedUtc={3:o}; modifiedSinceImport={4}" -f $cacheName, $cacheItem.Length, $cacheItem.CreationTimeUtc, $cacheItem.LastWriteTimeUtc, $fresh)
             } else {
                 Write-Host ("  {0}: exists=False" -f $cacheName)
