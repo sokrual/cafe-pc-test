@@ -440,6 +440,65 @@ try {
         }
         return $false
     }
+    function Invoke-CustomerInteractiveTaskProbe([string]$FilePath, [string]$CustomerSid) {
+        $taskName = "CafeD1InteractiveProbe-" + [guid]::NewGuid().ToString("N")
+        $taskFolder = $null
+        $registeredTask = $null
+        $agentSession = $null
+        $agent = Get-Process Cafe.Agent -IncludeUserName -ErrorAction SilentlyContinue |
+            Where-Object { $_.UserName -eq "$env:COMPUTERNAME\Customer" } | Select-Object -First 1
+        if ($agent) { $agentSession = $agent.SessionId }
+        Write-Host "Interactive Customer-session probe: Cafe.Agent session ID=$agentSession; target=$FilePath"
+        try {
+            $taskService = New-Object -ComObject "Schedule.Service"
+            $taskService.Connect()
+            $definition = $taskService.NewTask(0)
+            $definition.RegistrationInfo.Description = "Temporary Cafe D1 AppLocker interactive-session diagnostic"
+            $definition.Principal.UserId = "$env:COMPUTERNAME\Customer"
+            $definition.Principal.LogonType = 3 # TASK_LOGON_INTERACTIVE_TOKEN: use an already logged-on Customer session
+            $definition.Principal.RunLevel = 0
+            $definition.Settings.Enabled = $true
+            $definition.Settings.Hidden = $true
+            $definition.Settings.ExecutionTimeLimit = "PT30S"
+            $action = $definition.Actions.Create(0)
+            $action.Path = $FilePath
+            $action.Arguments = "-t 127.0.0.1"
+            $taskFolder = $taskService.GetFolder("\")
+            $registeredTask = $taskFolder.RegisterTaskDefinition($taskName, $definition, 6,
+                "$env:COMPUTERNAME\Customer", $null, 3, $null)
+            $null = $registeredTask.Run($null)
+
+            $probe = $null
+            for ($probeWait = 0; $probeWait -lt 20; $probeWait++) {
+                $probe = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                    Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($FilePath, [StringComparison]::OrdinalIgnoreCase) } |
+                    Select-Object -First 1
+                if ($probe) { break }
+                Start-Sleep -Milliseconds 500
+            }
+            $interactiveSession = $null
+            $startedInInteractiveSession = $false
+            if ($probe) {
+                $startedInInteractiveSession = $true
+                $interactiveSession = $probe.SessionId
+                Stop-Process -Id $probe.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+            Start-Sleep -Milliseconds 500
+            $taskResult = $registeredTask.LastTaskResult
+            $blocked = Get-D1BlockEvent "Microsoft-Windows-AppLocker/EXE and DLL" 8004 $FilePath $CustomerSid
+            $sameSession = ($null -ne $agentSession -and $null -ne $interactiveSession -and $agentSession -eq $interactiveSession)
+            Write-Host "Interactive Customer-session probe result: processStarted=$startedInInteractiveSession; processSessionId=$interactiveSession; Cafe.AgentSessionId=$agentSession; sameSessionAsCafeAgent=$sameSession; taskLastResult=$taskResult; event8004=$blocked"
+            if (-not $agent) { Write-Host "No Customer-owned Cafe.Agent process was present to identify the lock-screen session." }
+            return [pscustomobject]@{ Started = $startedInInteractiveSession; SessionId = $interactiveSession; AgentSessionId = $agentSession; SameSession = $sameSession; TaskResult = $taskResult; BlockedEvent = $blocked }
+        } catch {
+            Write-Host "Interactive Customer-session probe could not run: $($_.Exception.Message)"
+            return [pscustomobject]@{ Started = $false; SessionId = $null; AgentSessionId = $agentSession; SameSession = $false; TaskResult = $null; BlockedEvent = $false; Error = $_.Exception.Message }
+        } finally {
+            if ($taskFolder -and $taskName) {
+                try { $taskFolder.DeleteTask($taskName, 0) } catch { Write-Host "Could not remove temporary interactive diagnostic task: $($_.Exception.Message)" }
+            }
+        }
+    }
     $d1Started = Get-Date
     $pingSource = "$env:WINDIR\System32\PING.EXE"
     $d1Suffix = [guid]::NewGuid().ToString("N")
@@ -459,6 +518,10 @@ try {
             if ($process.WaitForExit(10000)) { $ran = ($process.ExitCode -eq 0) }
             else { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue; $ran = $true }
         } catch { $ran = $false }
+        if ($case.Id -eq "D1.C4a") {
+            $interactiveProbe = Invoke-CustomerInteractiveTaskProbe $case.File $u.SID.Value
+            Write-Host "D1 comparison (same probe image): Start-Process -Credential ran=$ran; InteractiveToken task started=$($interactiveProbe.Started); same Cafe.Agent session=$($interactiveProbe.SameSession); interactive 8004=$($interactiveProbe.BlockedEvent)"
+        }
         $logged = WaitFor 20 { Get-D1BlockEvent "Microsoft-Windows-AppLocker/EXE and DLL" 8004 $case.File $u.SID.Value }
         Check $case.Id "Customer cannot run PING.EXE from $($case.Name); AppLocker logs event 8004" ((-not $ran) -and $logged) "ran $ran; event 8004 $logged; $($case.File)"
     }
