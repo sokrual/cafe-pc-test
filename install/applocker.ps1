@@ -528,7 +528,8 @@ function Install-CustomerPolicy {
     if ($converterTasks.Count -gt 0) {
         foreach ($converterTask in $converterTasks) {
             $fullTaskName = $converterTask.TaskPath + $converterTask.TaskName
-            $runRequestedAt = Get-Date
+            $previousTaskInfo = Get-ScheduledTaskInfo -TaskName $converterTask.TaskName -TaskPath $converterTask.TaskPath -ErrorAction SilentlyContinue
+            $previousLastRunTime = if ($previousTaskInfo) { $previousTaskInfo.LastRunTime } else { [datetime]::MinValue }
             Write-Host "Starting AppID policy-conversion scheduled task: $fullTaskName"
             & "$env:WINDIR\System32\schtasks.exe" /run /tn $fullTaskName
             if ($LASTEXITCODE -ne 0) { throw "Could not start AppID policy-conversion task '$fullTaskName' (schtasks exit $LASTEXITCODE)." }
@@ -538,7 +539,7 @@ function Install-CustomerPolicy {
                 Start-Sleep -Milliseconds 500
                 $currentTask = Get-ScheduledTask -TaskName $converterTask.TaskName -TaskPath $converterTask.TaskPath -ErrorAction Stop
                 $currentInfo = Get-ScheduledTaskInfo -TaskName $converterTask.TaskName -TaskPath $converterTask.TaskPath -ErrorAction SilentlyContinue
-                if ($currentInfo -and $currentInfo.LastRunTime -ge $runRequestedAt.AddSeconds(-2)) { $taskStarted = $true }
+                if ($currentInfo -and $currentInfo.LastRunTime -gt $previousLastRunTime) { $taskStarted = $true }
                 if ($taskStarted -and $currentTask.State -ne "Running") { break }
             } while ((Get-Date) -lt $taskDeadline)
             if (-not $taskStarted) { throw "AppID policy-conversion task '$fullTaskName' did not record a new run within 2 minutes." }
@@ -549,7 +550,7 @@ function Install-CustomerPolicy {
     } else {
         Write-Host "No appidpolicyconverter.exe task was found under $appIdTaskPath. Searching all tasks under \Microsoft\Windows\ for appidpolicyconverter.exe or appidtel.exe actions."
         $windowsTaskPath = "\Microsoft\Windows\"
-        $allWindowsTasks = @(Get-ScheduledTask -TaskPath $windowsTaskPath -ErrorAction SilentlyContinue)
+        $allWindowsTasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskPath -like "$windowsTaskPath*" })
         $relatedTasks = @($allWindowsTasks | Where-Object {
             @($_.Actions | Where-Object {
                 $_.Execute -and [IO.Path]::GetFileName($_.Execute) -match "(?i)^appid(policyconverter|tel)\.exe$"
