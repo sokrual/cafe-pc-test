@@ -224,7 +224,6 @@ function Install-CustomerPolicy {
         throw "Could not remove the CreateDirectories right for Authenticated Users and BUILTIN\Users on $systemDriveRoot."
     }
     Write-Host "Removed the CreateDirectories (directory AppendData) right for Authenticated Users and BUILTIN\Users on $systemDriveRoot only; original ACL saved for uninstall."
-    Write-Host "Removed effective CreateDirectories access for Authenticated Users and BUILTIN\\Users on $systemDriveRoot only; original ACL saved for uninstall."
 
     $programFiles = $env:ProgramFiles
     $programFilesX86 = $env:ProgramFiles + " (x86)"
