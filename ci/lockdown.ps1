@@ -1167,28 +1167,25 @@ try {
     $appIdStartModeRestored = $appIdServiceAfter.StartMode -eq $appIdServiceBefore.StartMode
     Check "D1.I2" "PC uninstall removes the D1 AppLocker policy and restores AppIDSvc start mode or logs the protected-service refusal" ($appLockerPolicyRemoved -and ($appIdStartModeRestored -or $appIdRestoreWarning)) "D1 policy removed $appLockerPolicyRemoved; start mode before $($appIdServiceBefore.StartMode), after $($appIdServiceAfter.StartMode); protected-service warning logged $appIdRestoreWarning"
     function Get-CRootAclMeaning([string]$Sddl) {
-        $descriptor = New-Object Security.AccessControl.RawSecurityDescriptor($Sddl)
+        $sections = @{}
+        foreach ($match in [regex]::Matches($Sddl, '([OGDS]):(.*?)(?=[OGDS]:|$)', [Text.RegularExpressions.RegexOptions]::Singleline)) {
+            $sections[$match.Groups[1].Value] = $match.Groups[2].Value
+        }
         $daclEntries = @()
-        if ($null -eq $descriptor.DiscretionaryAcl) {
-            $daclEntries = @("<null DACL>")
-        } else {
-            foreach ($ace in $descriptor.DiscretionaryAcl) {
-                $daclEntries += $ace.GetSddlForm([Security.AccessControl.AccessControlSections]::Access)
-            }
+        if ($sections.ContainsKey("D")) {
+            $daclEntries = @([regex]::Matches($sections["D"], '\\([^)]*\\)') |
+                ForEach-Object { $_.Value } | Sort-Object -Unique -CaseSensitive)
         }
         $labelEntries = @()
-        if ($null -ne $descriptor.SystemAcl) {
-            foreach ($ace in $descriptor.SystemAcl) {
-                if ([int]$ace.AceType -eq 17) {
-                    $labelEntries += $ace.GetSddlForm([Security.AccessControl.AccessControlSections]::Audit)
-                }
-            }
+        if ($sections.ContainsKey("S")) {
+            $labelEntries = @([regex]::Matches($sections["S"], '\\(ML;[^)]*\\)') |
+                ForEach-Object { $_.Value } | Sort-Object -Unique -CaseSensitive)
         }
         [pscustomobject]@{
-            Owner = $descriptor.Owner.Value
-            Group = $descriptor.Group.Value
-            Dacl = ($daclEntries | Sort-Object) -join "`n"
-            MandatoryLabel = ($labelEntries | Sort-Object) -join "`n"
+            Owner = $sections["O"]
+            Group = $sections["G"]
+            Dacl = $daclEntries -join "`n"
+            MandatoryLabel = $labelEntries -join "`n"
         }
     }
     $cRootAclAfterUninstall = (Get-Acl -LiteralPath "$env:SystemDrive\").Sddl
