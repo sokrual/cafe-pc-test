@@ -462,13 +462,13 @@ function Install-CustomerPolicy {
     $cacheDirectory = Join-Path $env:WINDIR "System32\AppLocker"
     $cacheNames = @("Exe.AppLocker", "Dll.AppLocker", "Msi.AppLocker", "Script.AppLocker", "Appx.AppLocker")
     function Wait-ForCompiledPolicy([datetime]$ImportStarted) {
-        $deadline = (Get-Date).AddSeconds(180)
+        $deadline = $ImportStarted.AddSeconds(180)
         do {
             $allFresh = $true
             foreach ($cacheName in $cacheNames) {
                 $cacheFile = Join-Path $cacheDirectory $cacheName
                 if (-not (Test-Path -LiteralPath $cacheFile -PathType Leaf) -or
-                    (Get-Item -LiteralPath $cacheFile).LastWriteTimeUtc -lt $ImportStarted.ToUniversalTime().AddSeconds(-2)) {
+                    (Get-Item -LiteralPath $cacheFile).LastWriteTimeUtc -lt $ImportStarted.ToUniversalTime()) {
                     $allFresh = $false
                     break
                 }
@@ -505,7 +505,7 @@ function Install-CustomerPolicy {
     $running = Wait-ForService
     if (-not $running) { throw "Application Identity service did not start." }
     Start-AppLockerFilter
-    # No scheduled-task or converter invocation is used; diagnose policy cache updates directly.
+    # AppIDSvc compiles the imported policy after service startup; no scheduled-task or converter invocation is used.
 
     $serviceStartEvent = Get-WinEvent -FilterHashtable @{ LogName = "System"; Id = 7036; StartTime = $policyInstallStarted.AddSeconds(-2) } -ErrorAction SilentlyContinue |
         Where-Object { $_.Message -match "(?i)Application Identity" -and $_.Message -match "(?i)running" } |
