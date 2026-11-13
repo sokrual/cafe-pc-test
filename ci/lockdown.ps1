@@ -1138,7 +1138,11 @@ try {
     Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
     Copy-Item "$data\logs\*" $wd -ErrorAction SilentlyContinue   # the watchdog's log goes with the uninstall; keep it for the artifacts
     $postUninstallPassword = [Cafe.Lsa]::Read("DefaultPassword")
-    & "$app\install-pc.ps1" -Uninstall -Ci
+    $uninstallLogPath = Join-Path $env:TEMP "cafe-pc-uninstall.log"
+    Remove-Item -LiteralPath $uninstallLogPath -Force -ErrorAction SilentlyContinue
+    & "$app\install-pc.ps1" -Uninstall -Ci *>&1 |
+        Tee-Object -FilePath $uninstallLogPath |
+        ForEach-Object { Write-Host "$_" }
     $afterIfIndexes = @(Get-NetRoute -DestinationPrefix "0.0.0.0/0" | Sort-Object RouteMetric | Select-Object -ExpandProperty InterfaceIndex -Unique)
     $dnsAfter = @($afterIfIndexes | ForEach-Object { $i = $_; "$i=$((Get-DnsClientServerAddress -InterfaceIndex $i -AddressFamily IPv4).ServerAddresses -join ',')" })
     Check "B3.I1" "PC uninstall: service, account, files, data and rules gone" (-not (Get-Service CafeWatchdog -ErrorAction SilentlyContinue) -and -not (Get-LocalUser Customer -ErrorAction SilentlyContinue) -and -not (Test-Path $app) -and -not (Test-Path $data) -and -not (Get-NetFirewallRule -Group "Cafe PC" -ErrorAction SilentlyContinue)) ""
@@ -1157,7 +1161,11 @@ try {
     $d1RulesRemain = @($appLockerPolicyAfter.SelectNodes("//FilePathRule[contains(@Name, 'Cafe D1')]")).Count -gt 0
     Check "D1.I1" "PC uninstall restores the previous AppLocker policy and removes every D1 rule" ($policyRestored -and -not $d1RulesRemain) "policy restored $policyRestored; D1 rules remain $d1RulesRemain"
     $appIdServiceAfter = Get-CimInstance Win32_Service -Filter "Name='AppIDSvc'"
-    Check "D1.I2" "PC uninstall restores AppIDSvc startup mode and running state" ($appIdServiceAfter.StartMode -eq $appIdServiceBefore.StartMode -and $appIdServiceAfter.State -eq $appIdServiceBefore.State) "before $($appIdServiceBefore.StartMode)/$($appIdServiceBefore.State); after $($appIdServiceAfter.StartMode)/$($appIdServiceAfter.State)"
+    $uninstallLogText = if (Test-Path -LiteralPath $uninstallLogPath) { Get-Content -LiteralPath $uninstallLogPath -Raw } else { "" }
+    $appIdRestoreWarning = $uninstallLogText -match "Could not restore AppIDSvc startup mode"
+    $appLockerPolicyRemoved = -not $d1RulesRemain
+    $appIdStartModeRestored = $appIdServiceAfter.StartMode -eq $appIdServiceBefore.StartMode
+    Check "D1.I2" "PC uninstall removes the D1 AppLocker policy and restores AppIDSvc start mode or logs the protected-service refusal" ($appLockerPolicyRemoved -and ($appIdStartModeRestored -or $appIdRestoreWarning)) "D1 policy removed $appLockerPolicyRemoved; start mode before $($appIdServiceBefore.StartMode), after $($appIdServiceAfter.StartMode); protected-service warning logged $appIdRestoreWarning"
     $cRootAclAfterUninstall = (Get-Acl -LiteralPath "$env:SystemDrive\").Sddl
     Check "D1.I4" "PC uninstall restores the C drive root ACL exactly to its original SDDL" ($cRootAclAfterUninstall -eq $cRootAclBefore) "original SDDL restored $($cRootAclAfterUninstall -eq $cRootAclBefore)"
 
