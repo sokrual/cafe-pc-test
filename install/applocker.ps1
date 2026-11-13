@@ -122,8 +122,10 @@ function Get-CustomerDirectoryAccess([string]$Path, [string[]]$PrincipalSids, $A
             }
         }
         $effectiveMask = $allowMask -band (-bnot $denyMask)
+        # This routine evaluates directory ACLs. On directories, AppendData means CreateSubdirectories,
+        # not the ability to create/append files in this directory. Counting it as file-write access
+        # incorrectly classifies drive roots (for example C:\\) as executable writable folders.
         $writeMask = [int64]([int][Security.AccessControl.FileSystemRights]::WriteData -bor
-            [int][Security.AccessControl.FileSystemRights]::AppendData -bor
             [int][Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
             [int][Security.AccessControl.FileSystemRights]::WriteAttributes)
         $executeMask = [int64][int][Security.AccessControl.FileSystemRights]::ExecuteFile
