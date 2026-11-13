@@ -132,7 +132,13 @@ if ($Uninstall) {
 if (-not $Server -and (Test-Path "$app\watchdog.args")) { $Server = ((Get-Content "$app\watchdog.args" -Raw) -split '--server https://')[1] -replace '(?s):5443.*', '' }
 if (-not $Server -and -not $Ci) { Add-Type -AssemblyName Microsoft.VisualBasic; $Server = [Microsoft.VisualBasic.Interaction]::InputBox("Type the counter PC's address (for example 192.168.1.10):", "Gaming Cafe setup") }
 if ($Server -notmatch '^[A-Za-z0-9.-]{1,63}$') { throw "The counter PC's address '$Server' is not valid. Use its address, for example 192.168.1.10." }
-foreach ($f in "pc.token", "server.pin") {
+$agentRuntimeSource = Join-Path $src "agent-runtime"
+$agentExeSource = Join-Path $agentRuntimeSource "Cafe.Agent.exe"
+if (-not (Test-Path -LiteralPath $agentExeSource)) { $agentExeSource = Join-Path $src "Cafe.Agent.exe" }
+if (-not (Test-Path -LiteralPath $agentExeSource) -and -not (Test-Path -LiteralPath "$app\Cafe.Agent.exe")) {
+    throw "Cafe.Agent.exe and its runtime files are missing. Copy the agent-runtime folder into this installer folder."
+}
+foreach ($f in "Cafe.Watchdog.exe", "pc.token", "server.pin") {
     if (-not (Test-Path "$src\$f") -and -not (Test-Path "$app\$f") -and -not (Test-Path "$data\keys\$f")) {
         throw "The file $f is missing. Copy it from the counter PC into this folder."
     }
@@ -142,8 +148,18 @@ foreach ($f in "pc.token", "server.pin") {
 if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force }
 Get-Process Cafe.Watchdog, Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force -PassThru | Wait-Process -Timeout 30
 New-Item $app -ItemType Directory -Force | Out-Null   # inside Program Files: customers can read and run, not change
-foreach ($f in "Cafe.Agent.exe", "Cafe.Watchdog.exe", "keep-running.txt", "install-pc.ps1", "levelA.ps1", "applocker.ps1", "SETUP-MODE.bat") {
+foreach ($f in "Cafe.Watchdog.exe", "keep-running.txt", "install-pc.ps1", "levelA.ps1", "applocker.ps1", "SETUP-MODE.bat") {
     if ($src -ne $app -and (Test-Path "$src\$f")) { Copy-WithRetry "$src\$f" $app }   # SETUP-MODE runs from $app itself
+}
+if ($src -ne $app -and (Test-Path -LiteralPath $agentRuntimeSource -PathType Container)) {
+    # Cafe.Agent is multi-file published: native runtime libraries stay beside the EXE in Program Files,
+    # rather than being extracted by the Customer process into its AppData\Local\Temp directory.
+    foreach ($agentFile in Get-ChildItem -LiteralPath $agentRuntimeSource -File) {
+        Copy-WithRetry $agentFile.FullName (Join-Path $app $agentFile.Name)
+    }
+} elseif ($src -ne $app -and (Test-Path -LiteralPath $agentExeSource -PathType Leaf)) {
+    # Backward-compatible single-file installer source.
+    Copy-WithRetry $agentExeSource $app
 }
 "`"$app\Cafe.Agent.exe`" --server https://${Server}:5443" | Set-Content "$app\watchdog.args" -Encoding ascii
 
@@ -364,7 +380,6 @@ if (Test-Path $flag) {
     $appLockerArgs = @{ Mode = "Install"; CustomerSid = $sid; DataPath = $data }
     if ($Ci) { $appLockerArgs.AllowFolders = "" }
     elseif ($allowFoldersWasSpecified) { $appLockerArgs.AllowFolders = $AllowFolders }
-    if ($Ci -and -not (Test-Path (Join-Path $data "applocker-diagnostic-first-install.done"))) { $appLockerArgs.DiagnosticContinueOnCompilationFailure = $true }
     & "$app\applocker.ps1" @appLockerArgs
     # Level A watch-only: nothing is blocked; Windows notes every program it would block, for the owner to review
     if (-not (Test-Path "$data\levelA-id.txt")) { & "$app\levelA.ps1" -Mode Audit }
