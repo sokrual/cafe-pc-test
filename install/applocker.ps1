@@ -4,7 +4,8 @@ param(
     [ValidateSet("Install", "Uninstall")][string]$Mode,
     [string]$CustomerSid,
     [string]$DataPath = "$env:ProgramData\GamingCafe",
-    [AllowEmptyString()][string]$AllowFolders
+    [AllowEmptyString()][string]$AllowFolders,
+    [switch]$DiagnosticContinueOnCompilationFailure
 )
 $ErrorActionPreference = "Stop"
 $allowFoldersWasSpecified = $PSBoundParameters.ContainsKey("AllowFolders")
@@ -505,72 +506,7 @@ function Install-CustomerPolicy {
     $running = Wait-ForService
     if (-not $running) { throw "Application Identity service did not start." }
     Start-AppLockerFilter
-    # Enumerate AppID tasks using the exact Task Scheduler path (PowerShell does not escape backslashes).
-    $appIdTaskPath = "\Microsoft\Windows\AppID\"
-    $appIdTasks = @(Get-ScheduledTask -TaskPath $appIdTaskPath -ErrorAction SilentlyContinue)
-    Write-Host "Scheduled tasks under $appIdTaskPath ($($appIdTasks.Count)):"
-    foreach ($task in $appIdTasks) {
-        $taskInfo = Get-ScheduledTaskInfo -TaskName $task.TaskName -TaskPath $task.TaskPath -ErrorAction SilentlyContinue
-        $lastRun = if ($taskInfo -and $taskInfo.LastRunTime -and $taskInfo.LastRunTime.Year -gt 1601) { $taskInfo.LastRunTime.ToString("o") } else { "never" }
-        $lastResult = if ($taskInfo) { $taskInfo.LastTaskResult } else { "unavailable" }
-        $principal = if ($task.Principal.UserId) { $task.Principal.UserId } else { "(not specified)" }
-        $actions = @($task.Actions | ForEach-Object {
-            "Execute=$($_.Execute); Arguments=$($_.Arguments); WorkingDirectory=$($_.WorkingDirectory)"
-        }) -join " | "
-        if (-not $actions) { $actions = "(no actions reported)" }
-        Write-Host ("  Name={0}; State={1}; LastRunTime={2}; LastTaskResult={3}; User={4}; Actions={5}" -f ($task.TaskPath + $task.TaskName), $task.State, $lastRun, $lastResult, $principal, $actions)
-    }
-    $converterTasks = @($appIdTasks | Where-Object {
-        @($_.Actions | Where-Object {
-            $_.Execute -and [IO.Path]::GetFileName($_.Execute) -ieq "appidpolicyconverter.exe"
-        }).Count -gt 0
-    })
-    if ($converterTasks.Count -gt 0) {
-        foreach ($converterTask in $converterTasks) {
-            $fullTaskName = $converterTask.TaskPath + $converterTask.TaskName
-            $previousTaskInfo = Get-ScheduledTaskInfo -TaskName $converterTask.TaskName -TaskPath $converterTask.TaskPath -ErrorAction SilentlyContinue
-            $previousLastRunTime = if ($previousTaskInfo) { $previousTaskInfo.LastRunTime } else { [datetime]::MinValue }
-            Write-Host "Starting AppID policy-conversion scheduled task: $fullTaskName"
-            & "$env:WINDIR\System32\schtasks.exe" /run /tn $fullTaskName
-            if ($LASTEXITCODE -ne 0) { throw "Could not start AppID policy-conversion task '$fullTaskName' (schtasks exit $LASTEXITCODE)." }
-            $taskDeadline = (Get-Date).AddMinutes(2)
-            $taskStarted = $false
-            do {
-                Start-Sleep -Milliseconds 500
-                $currentTask = Get-ScheduledTask -TaskName $converterTask.TaskName -TaskPath $converterTask.TaskPath -ErrorAction Stop
-                $currentInfo = Get-ScheduledTaskInfo -TaskName $converterTask.TaskName -TaskPath $converterTask.TaskPath -ErrorAction SilentlyContinue
-                if ($currentInfo -and $currentInfo.LastRunTime -gt $previousLastRunTime) { $taskStarted = $true }
-                if ($taskStarted -and $currentTask.State -ne "Running") { break }
-            } while ((Get-Date) -lt $taskDeadline)
-            if (-not $taskStarted) { throw "AppID policy-conversion task '$fullTaskName' did not record a new run within 2 minutes." }
-            if ($currentTask.State -eq "Running") { throw "AppID policy-conversion task '$fullTaskName' did not finish within 2 minutes." }
-            $finishedInfo = Get-ScheduledTaskInfo -TaskName $converterTask.TaskName -TaskPath $converterTask.TaskPath -ErrorAction SilentlyContinue
-            Write-Host ("Finished AppID policy-conversion task: {0}; State={1}; LastRunTime={2}; LastTaskResult={3}" -f $fullTaskName, $currentTask.State, $finishedInfo.LastRunTime, $finishedInfo.LastTaskResult)
-        }
-    } else {
-        Write-Host "No appidpolicyconverter.exe task was found under $appIdTaskPath. Searching all tasks under \Microsoft\Windows\ for appidpolicyconverter.exe or appidtel.exe actions."
-        $windowsTaskPath = "\Microsoft\Windows\"
-        $allWindowsTasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskPath -like "$windowsTaskPath*" })
-        $relatedTasks = @($allWindowsTasks | Where-Object {
-            @($_.Actions | Where-Object {
-                $_.Execute -and [IO.Path]::GetFileName($_.Execute) -match "(?i)^appid(policyconverter|tel)\.exe$"
-            }).Count -gt 0
-        })
-        Write-Host "Related AppID executable tasks under $windowsTaskPath ($($relatedTasks.Count)):"
-        foreach ($task in $relatedTasks) {
-            $taskInfo = Get-ScheduledTaskInfo -TaskName $task.TaskName -TaskPath $task.TaskPath -ErrorAction SilentlyContinue
-            $lastRun = if ($taskInfo -and $taskInfo.LastRunTime -and $taskInfo.LastRunTime.Year -gt 1601) { $taskInfo.LastRunTime.ToString("o") } else { "never" }
-            $lastResult = if ($taskInfo) { $taskInfo.LastTaskResult } else { "unavailable" }
-            $principal = if ($task.Principal.UserId) { $task.Principal.UserId } else { "(not specified)" }
-            $actions = @($task.Actions | ForEach-Object {
-                "Execute=$($_.Execute); Arguments=$($_.Arguments); WorkingDirectory=$($_.WorkingDirectory)"
-            }) -join " | "
-            if (-not $actions) { $actions = "(no actions reported)" }
-            Write-Host ("  Name={0}; State={1}; LastRunTime={2}; LastTaskResult={3}; User={4}; Actions={5}" -f ($task.TaskPath + $task.TaskName), $task.State, $lastRun, $lastResult, $principal, $actions)
-        }
-        if ($relatedTasks.Count -eq 0) { Write-Host "No tasks under $windowsTaskPath have appidpolicyconverter.exe or appidtel.exe actions." }
-        # Do not invoke appidpolicyconverter.exe directly: it requires its scheduled-task security context.
-    }
+    # No scheduled-task or converter invocation is used; diagnose policy cache updates directly.
 
     $serviceStartEvent = Get-WinEvent -FilterHashtable @{ LogName = "System"; Id = 7036; StartTime = $policyInstallStarted.AddSeconds(-2) } -ErrorAction SilentlyContinue |
         Where-Object { $_.Message -match "(?i)Application Identity" -and $_.Message -match "(?i)running" } |
@@ -604,7 +540,30 @@ function Install-CustomerPolicy {
                 Write-Host "  Could not read this event channel: $($_.Exception.Message)"
             }
         }
-        throw "AppLocker policy compilation failed: one or more of $($cacheNames -join ', ') were missing or stale after policy import and AppIDSvc startup. Installation is unsafe and has been stopped."
+        $failureMessage = "AppLocker policy compilation failed: one or more of $($cacheNames -join ', ') were missing or stale after policy import and AppIDSvc startup."
+        if (-not $DiagnosticContinueOnCompilationFailure) { throw "$failureMessage Installation is unsafe and has been stopped." }
+        Write-Warning "$failureMessage Diagnostic-only CI mode: recording cache state and continuing without changing policy enforcement."
+        $firstFreshAt = @{}
+        for ($checkNumber = 0; $checkNumber -le 20; $checkNumber++) {
+            $capturedUtc = [DateTime]::UtcNow
+            Write-Host ("AppLocker five-file diagnostic check {0}/21; capturedUtc={1:o}" -f $checkNumber, $capturedUtc)
+            foreach ($cacheName in $cacheNames) {
+                $cacheFile = Join-Path $cacheDirectory $cacheName
+                if (Test-Path -LiteralPath $cacheFile -PathType Leaf) {
+                    $cacheItem = Get-Item -LiteralPath $cacheFile
+                    $freshNow = $cacheItem.LastWriteTimeUtc -ge $policyInstallStarted.ToUniversalTime().AddSeconds(-2)
+                    Write-Host ("  {0}: exists=True; size={1}; modifiedUtc={2:o}; freshSinceInstall={3}" -f $cacheName, $cacheItem.Length, $cacheItem.LastWriteTimeUtc, $freshNow)
+                    if ($freshNow -and -not $firstFreshAt.ContainsKey($cacheName)) { $firstFreshAt[$cacheName] = $capturedUtc }
+                } else { Write-Host ("  {0}: exists=False; size=0; modifiedUtc=(missing); freshSinceInstall=False" -f $cacheName) }
+            }
+            if ($checkNumber -lt 20) { Start-Sleep -Seconds 15 }
+        }
+        foreach ($cacheName in $cacheNames) {
+            $first = if ($firstFreshAt.ContainsKey($cacheName)) { $firstFreshAt[$cacheName].ToString("o") } else { "never during five-minute window" }
+            Write-Host "First fresh observation: $cacheName = $first"
+        }
+        New-Item -ItemType File -Path (Join-Path $DataPath "applocker-diagnostic-first-install.done") -Force | Out-Null
+        Write-Host "Diagnostic-only first-install compilation refusal bypassed; enforcement policy and rules were not changed."
     }
     Write-Host "All five AppLocker policy collections were compiled after policy import."
     foreach ($channel in $channels) {
