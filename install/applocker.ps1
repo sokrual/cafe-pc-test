@@ -542,7 +542,9 @@ function Install-CustomerPolicy {
         }
         $failureMessage = "AppLocker policy compilation failed: one or more of $($cacheNames -join ', ') were missing or stale after policy import and AppIDSvc startup."
         if (-not $DiagnosticContinueOnCompilationFailure) { throw "$failureMessage Installation is unsafe and has been stopped." }
-        Write-Warning "$failureMessage Diagnostic-only CI mode: recording cache state and continuing without changing policy enforcement."
+        Write-Warning "$failureMessage Diagnostic-only CI mode: continuing to observe cache files; policy enforcement is unchanged."
+    }
+    if ($DiagnosticContinueOnCompilationFailure) {
         $firstFreshAt = @{}
         for ($checkNumber = 0; $checkNumber -le 20; $checkNumber++) {
             $capturedUtc = [DateTime]::UtcNow
@@ -563,9 +565,14 @@ function Install-CustomerPolicy {
             Write-Host "First fresh observation: $cacheName = $first"
         }
         New-Item -ItemType File -Path (Join-Path $DataPath "applocker-diagnostic-first-install.done") -Force | Out-Null
-        Write-Host "Diagnostic-only first-install compilation refusal bypassed; enforcement policy and rules were not changed."
+        if (-not $compiled) {
+            Write-Warning "AppLocker compiled-policy files were not fresh within the initial wait/retry; diagnostic five-minute observation completed and installation is continuing only for this CI diagnostic run."
+        } else {
+            Write-Host "AppLocker compiled-policy files passed the initial freshness wait; five-minute diagnostic observation completed."
+        }
+    } elseif ($compiled) {
+        Write-Host "All five AppLocker policy collections were compiled after policy import."
     }
-    Write-Host "All five AppLocker policy collections were compiled after policy import."
     foreach ($channel in $channels) {
         $conversionEvents = @(Get-WinEvent -FilterHashtable @{ LogName = $channel; Id = @(8000, 8001, 8002, 8003); StartTime = $policyInstallStarted.AddSeconds(-2) } -ErrorAction SilentlyContinue)
         Write-Host "AppLocker policy-conversion/runtime events 8000-8003 in '$channel' since policy import: $($conversionEvents.Count)"
