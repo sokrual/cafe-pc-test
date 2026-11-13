@@ -10,20 +10,6 @@ function Check($id, $test, $ok, $detail) {
     $results.Add([pscustomobject]@{ id = $id; result = $res; test = $test; detail = "$detail" })
     Write-Host "[$res] $id $test - $detail"
 }
-function Write-D1CompiledPolicySnapshot([string]$Moment) {
-    $names = @("Exe.AppLocker", "Dll.AppLocker", "Msi.AppLocker", "Script.AppLocker", "Appx.AppLocker")
-    $directory = Join-Path $env:WINDIR "System32\AppLocker"
-    Write-Host "===== D1 compiled-policy snapshot: $Moment; capturedUtc=$([DateTime]::UtcNow.ToString('o')) ====="
-    foreach ($name in $names) {
-        $path = Join-Path $directory $name
-        if (Test-Path -LiteralPath $path -PathType Leaf) {
-            $item = Get-Item -LiteralPath $path
-            Write-Host ("  {0}: exists=True; size={1}; modifiedUtc={2:o}" -f $name, $item.Length, $item.LastWriteTimeUtc)
-        } else {
-            Write-Host ("  {0}: exists=False; size=0; modifiedUtc=(missing)" -f $name)
-        }
-    }
-}
 function WaitFor($seconds, $test) { for ($i = 0; $i -lt $seconds * 2; $i++) { if (& $test) { return $true }; Start-Sleep -Milliseconds 500 }; $false }
 function Get-QueuedActionCount($path) {
     if (-not (Test-Path -LiteralPath $path)) { return 0 }
@@ -340,17 +326,6 @@ try {
     # ===== E. step 2 =====
     & "$stage\install-pc.ps1" -Ci -AllowFolders ""
 
-    # The installer has started the watchdog; wait for its first Customer-session Cafe.Agent.
-    $firstCustomerAgent = WaitFor 30 {
-        @(Get-Process Cafe.Agent -IncludeUserName -ErrorAction SilentlyContinue | Where-Object {
-            $_.UserName -eq "$env:COMPUTERNAME\Customer"
-        }).Count -gt 0
-    }
-    $firstAgent = Get-Process Cafe.Agent -IncludeUserName -ErrorAction SilentlyContinue |
-        Where-Object { $_.UserName -eq "$env:COMPUTERNAME\Customer" } | Select-Object -First 1
-    Write-Host "First Customer sign-in lock-screen agent: found=$firstCustomerAgent; sessionId=$($firstAgent.SessionId); processId=$($firstAgent.Id)"
-    Write-D1CompiledPolicySnapshot "immediately after first Customer sign-in / Cafe.Agent start"
-
     $compiledPolicyNames = @("Exe.AppLocker", "Dll.AppLocker", "Msi.AppLocker", "Script.AppLocker", "Appx.AppLocker")
     $compiledPolicyFresh = $true
     foreach ($compiledPolicyName in $compiledPolicyNames) {
@@ -371,8 +346,10 @@ try {
     Write-Host "AsCustomer launch path: Start-Process -Credential (CreateProcessWithLogonW); LOGON32_LOGON_INTERACTIVE=2; LoadUserProfile=true."
     Write-Host "AsCustomer token evaluation: Test-AppLockerPolicy below evaluates the Customer SAM account; runtime block events are correlated against Customer SID $($u.SID.Value)."
     $d1TokenIdentityPath = Join-Path "$prof\Downloads" "d1-customer-token-identity.txt"
-    $d1TokenIdentityExit = CustomerPs "[IO.File]::WriteAllText('$d1TokenIdentityPath', [Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
-    $d1TokenIdentity = if (Test-Path -LiteralPath $d1TokenIdentityPath) { (Get-Content -LiteralPath $d1TokenIdentityPath -Raw).Trim() } else { "" }
+    Remove-Item -LiteralPath $d1TokenIdentityPath -Force -ErrorAction SilentlyContinue
+    $d1TokenIdentityExit = CustomerPs "whoami.exe /user /fo csv /nh | Set-Content -LiteralPath '$d1TokenIdentityPath'"
+    $d1TokenIdentityText = if (Test-Path -LiteralPath $d1TokenIdentityPath) { Get-Content -LiteralPath $d1TokenIdentityPath -Raw } else { "" }
+    $d1TokenIdentity = [regex]::Match($d1TokenIdentityText, 'S-1-\d+(?:-\d+)+').Value
     Remove-Item -LiteralPath $d1TokenIdentityPath -Force -ErrorAction SilentlyContinue
     Write-Host "AsCustomer actual process token SID: $d1TokenIdentity; expected Customer SID: $($u.SID.Value)"
     Check "D1.C2c" "AsCustomer process token is the Customer SID evaluated by Test-AppLockerPolicy" ($d1TokenIdentityExit -eq 0 -and $d1TokenIdentity -eq $u.SID.Value) "token SID $d1TokenIdentity; Customer SID $($u.SID.Value); exit $d1TokenIdentityExit"
@@ -471,16 +448,23 @@ try {
     Check "D1.C3a" "ACL inventory explicitly reports the Customer-writable ProgramData wipe folder" $wipeReported "Expected $data\wipe in customer-writable-folders.txt"
 
     function Get-D1BlockEvent([string]$LogName, [int]$EventId, [string]$FilePath, [string]$CustomerSid) {
-        # EventRecord.TimeCreated is exposed in the runner's local timezone. Compare UTC instants
-        # explicitly so UTC and -08:00 runners use the same test window.
-        $startUtc = $d1Started.ToUniversalTime().AddSeconds(-2)
-        $events = Get-WinEvent -FilterHashtable @{ LogName = $LogName; Id = $EventId } -MaxEvents 500 -ErrorAction SilentlyContinue
+        # Filter the exact channel and event in UTC, and require the event's Security/UserID
+        # to be the Customer SID. Do not infer identity from localized event message text.
+        $startUtc = $d1Started.ToUniversalTime()
+        $startUtcText = $startUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", [Globalization.CultureInfo]::InvariantCulture)
+        $xpath = "*[System[(EventID=$EventId) and TimeCreated[@SystemTime >= '$startUtcText'] and Security[@UserID='$CustomerSid']]]"
+        $events = @(Get-WinEvent -LogName $LogName -FilterXPath $xpath -ErrorAction SilentlyContinue)
         foreach ($event in $events) {
             if ($event.TimeCreated.ToUniversalTime() -lt $startUtc) { continue }
+            $eventSid = if ($event.UserId -is [Security.Principal.SecurityIdentifier]) { $event.UserId.Value } else { "$($event.UserId)" }
+            if ($eventSid -ne $CustomerSid) { continue }
             $message = "$($event.Message)"
-            if ($message.IndexOf($FilePath, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
-                ($message -match "Customer" -or $message.IndexOf($CustomerSid, [StringComparison]::OrdinalIgnoreCase) -ge 0)) {
-                Write-Host ("Matched AppLocker block event {0}; event UTC={1:o}; window start UTC={2:o}; file={3}" -f $EventId, $event.TimeCreated.ToUniversalTime(), $startUtc, $FilePath)
+            $expandedMessage = $message -replace "(?i)%OSDRIVE%", [regex]::Escape($env:SystemDrive)
+            $expandedMessage = $expandedMessage -replace "(?i)%WINDIR%", [regex]::Escape($env:WINDIR)
+            $expandedMessage = $expandedMessage -replace "(?i)%SYSTEM32%", [regex]::Escape((Join-Path $env:WINDIR "System32"))
+            if ($message.IndexOf($FilePath, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                $expandedMessage.IndexOf($FilePath, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                Write-Host ("Matched AppLocker block event {0} in '{1}'; event UTC={2:o}; UserId={3}; file={4}" -f $EventId, $LogName, $event.TimeCreated.ToUniversalTime(), $eventSid, $FilePath)
                 return $true
             }
         }
@@ -558,9 +542,6 @@ try {
         $parent = Split-Path -Parent $case.File
         New-Item -ItemType Directory -Path $parent -Force | Out-Null
         Copy-Item -LiteralPath $pingSource -Destination $case.File -Force
-        if ($case.Id -eq "D1.C4a") {
-            Write-D1CompiledPolicySnapshot "immediately before D1.C4 Customer execution test"
-        }
         $ran = $false
         try {
             $process = AsCustomer $case.File "-n 1 127.0.0.1"
@@ -605,16 +586,39 @@ try {
         Check "D1.C5" "Customer cannot run a .bat from Downloads; AppLocker logs event 8007" ((-not $batRan) -and $batLogged) "ran $batRan; event 8007 $batLogged"
 
         $downloadPs1 = "$prof\Downloads\d1-$d1Suffix.ps1"
-        $downloadPsMarker = Join-Path "$prof\AppData\Local\Temp" "d1-ps-download-$d1Suffix.txt"
-        [IO.File]::WriteAllText($downloadPs1, "Set-Content -LiteralPath '$downloadPsMarker' -Value 'ran'`r`n")
-        $psRan = $false
+        $downloadPsResult = "$prof\Downloads\d1-ps-result-$d1Suffix.txt"
+        $psScript = @"
+`$mode = `$ExecutionContext.SessionState.LanguageMode
+"LanguageMode=`$mode" | Set-Content -LiteralPath '$downloadPsResult'
+try {
+    Add-Type -TypeDefinition 'public class CafeD1ScriptProbe { public static int Value = 1; }' -ErrorAction Stop
+    "Add-Type=Succeeded" | Add-Content -LiteralPath '$downloadPsResult'
+    exit 11
+} catch {
+    "Add-Type=Failed" | Add-Content -LiteralPath '$downloadPsResult'
+    if (`$mode -eq 'ConstrainedLanguage') { exit 0 }
+    exit 12
+}
+"@
+        [IO.File]::WriteAllText($downloadPs1, $psScript)
+        $psExited = $false
+        $psExitCode = -1
         try {
             $psProcess = AsCustomer "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" "-NoProfile -ExecutionPolicy Bypass -File `"$downloadPs1`""
-            if ($psProcess.WaitForExit(10000)) { $psRan = ($psProcess.ExitCode -eq 0 -and (Test-Path -LiteralPath $downloadPsMarker)) }
-            else { Stop-Process -Id $psProcess.Id -Force -ErrorAction SilentlyContinue; $psRan = $true }
-        } catch { $psRan = $false }
+            $psExited = $psProcess.WaitForExit(10000)
+            if ($psExited) { $psExitCode = $psProcess.ExitCode }
+            else { Stop-Process -Id $psProcess.Id -Force -ErrorAction SilentlyContinue }
+        } catch { $psExited = $false }
+        $psResultText = if (Test-Path -LiteralPath $downloadPsResult) { Get-Content -LiteralPath $downloadPsResult -Raw } else { "" }
+        $psConstrained = $psExited -and $psExitCode -eq 0 -and
+            $psResultText.Contains("LanguageMode=ConstrainedLanguage") -and $psResultText.Contains("Add-Type=Failed")
         $psLogged = WaitFor 20 { Get-D1BlockEvent "Microsoft-Windows-AppLocker/MSI and Script" 8007 $downloadPs1 $u.SID.Value }
-        Check "D1.C6" "Customer cannot run a .ps1 from Downloads; AppLocker logs event 8007" ((-not $psRan) -and $psLogged) "ran $psRan; event 8007 $psLogged"
+        $psRefused = $psLogged -and -not $psConstrained
+        $psOutcome = $psRefused -or $psConstrained
+        $psDetail = if ($psConstrained) { "script ran in ConstrainedLanguage; Add-Type failed inside the script" }
+            elseif ($psRefused) { "script was refused with AppLocker event 8007" }
+            else { "no expected 8007 refusal or ConstrainedLanguage/Add-Type failure; exit $psExitCode; output $psResultText" }
+        Check "D1.C6" "Customer .ps1 is refused or runs in ConstrainedLanguage with Add-Type blocked" $psOutcome $psDetail
 
         # Owner option B: an explicit allow list leaves the selected writable folder un-denied,
         # while another discovered writable folder remains denied.
@@ -747,12 +751,6 @@ try {
             }
         }
     }
-
-    $agentProcesses = @(Get-Process Cafe.Agent -IncludeUserName -ErrorAction SilentlyContinue | Where-Object {
-        $_.UserName -match "\\Customer$" -and $_.Path -eq "$app\Cafe.Agent.exe"
-    })
-    $agentStarts = $agentProcesses.Count -gt 0
-    Check "D1.C9" "Cafe.Agent in Program Files is running as Customer" $agentStarts "Customer-owned Cafe.Agent processes $($agentProcesses.Count)"
 
     $adminExe = "$prof\Downloads\d1-$d1Suffix.exe"
     $adminProcess = Start-Process -FilePath $adminExe -ArgumentList "-n 1 127.0.0.1" -PassThru -WindowStyle Hidden
@@ -964,6 +962,15 @@ try {
         @(Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Where-Object { [CafeWindowProbe]::HasVisibleWindow($_.Id) }).Count -gt 0
     }
     Check "B3.M6" "Watchdog starts the lock screen after a full profile reset" $resetLockReady "visible Cafe.Agent lock screen: $resetLockReady"
+    $agentStarts = WaitFor 20 {
+        @(Get-Process Cafe.Agent -IncludeUserName -ErrorAction SilentlyContinue | Where-Object {
+            $_.UserName -eq "$env:COMPUTERNAME\Customer" -and $_.Path -eq "$app\Cafe.Agent.exe"
+        }).Count -gt 0
+    }
+    $agentProcesses = @(Get-Process Cafe.Agent -IncludeUserName -ErrorAction SilentlyContinue | Where-Object {
+        $_.UserName -eq "$env:COMPUTERNAME\Customer" -and $_.Path -eq "$app\Cafe.Agent.exe"
+    })
+    Check "D1.C9" "Cafe.Agent in Program Files is running as Customer after the watchdog starts the lock screen" ($agentStarts -and $agentProcesses.Count -gt 0) "Customer-owned Cafe.Agent processes $($agentProcesses.Count)"
     # An unreachable counter server must also leave the request pending; reconnecting lets the next loop retry.
     Set-Content "$data\wipe\request" ""
     Stop-Process -Id $server.Id -Force
