@@ -455,11 +455,6 @@ function Install-CustomerPolicy {
     $policyPath = Join-Path $DataPath "applocker-policy.xml"
     [IO.File]::WriteAllLines($policyPath, $xml.ToArray(), (New-Object Text.UTF8Encoding($false)))
 
-    Set-AppIdStartupMode "Auto"
-    Start-Service -Name AppIDSvc
-    $running = Wait-ForService
-    if (-not $running) { throw "Application Identity service did not start." }
-    Start-AppLockerFilter
     foreach ($channel in $channels) {
         & wevtutil.exe sl $channel /e:true | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Could not enable AppLocker event channel $channel." }
@@ -498,9 +493,24 @@ function Install-CustomerPolicy {
     }
 
     $policyInstallStarted = Get-Date
+    # Write and refresh the policy before starting Application Identity. On a first
+    # install, AppIDSvc compiles the policy when it starts; starting it beforehand
+    # can leave the initial policy write uncompiled until a later reapplication.
     Set-AppLockerPolicy -XmlPolicy $policyPath
     & "$env:WINDIR\System32\gpupdate.exe" /target:computer /force /wait:60 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Computer Group Policy refresh failed after applying AppLocker (gpupdate exit $LASTEXITCODE)." }
+
+    Set-AppIdStartupMode "Auto"
+    Start-Service -Name AppIDSvc
+    $running = Wait-ForService
+    if (-not $running) { throw "Application Identity service did not start." }
+    Start-AppLockerFilter
+    $serviceStartEvent = Get-WinEvent -FilterHashtable @{ LogName = "System"; Id = 7036; StartTime = $policyInstallStarted.AddSeconds(-2) } -ErrorAction SilentlyContinue |
+        Where-Object { $_.Message -match "(?i)Application Identity" -and $_.Message -match "(?i)running" } |
+        Sort-Object TimeCreated -Descending | Select-Object -First 1
+    $appidServiceStartTime = if ($serviceStartEvent) { $serviceStartEvent.TimeCreated } else { (Get-Date) }
+    Write-Host "AppIDSvc start time: $($appidServiceStartTime.ToString('o')) (System service-state event when available)."
+
     $compiled = Wait-ForCompiledPolicy $policyInstallStarted
     Write-CompiledPolicyInventory $policyInstallStarted "first import"
     if (-not $compiled) {
@@ -513,7 +523,21 @@ function Install-CustomerPolicy {
         Write-CompiledPolicyInventory $policyRetryStarted "second import"
     }
     if (-not $compiled) {
-        throw "AppLocker policy compilation failed: one or more of $($cacheNames -join ', ') were missing or stale after two 30-second application attempts. Installation is unsafe and has been stopped."
+        Write-Host "AppLocker compilation failure diagnostics; install started $($policyInstallStarted.ToString('o')); AppIDSvc start time $($appidServiceStartTime.ToString('o'))."
+        $diagnosticChannels = @("Microsoft-Windows-AppID/Operational") + $channels
+        foreach ($diagnosticChannel in $diagnosticChannels) {
+            Write-Host "Events from '$diagnosticChannel' since install:"
+            try {
+                $diagnosticEvents = @(Get-WinEvent -FilterHashtable @{ LogName = $diagnosticChannel; StartTime = $policyInstallStarted.AddSeconds(-2) } -ErrorAction Stop | Sort-Object TimeCreated)
+                Write-Host "  Event count: $($diagnosticEvents.Count)"
+                foreach ($event in $diagnosticEvents) {
+                    Write-Host ("  EventId={0}; TimeCreated={1:o}; RecordId={2}; Level={3}; Provider={4}; Message={5}" -f $event.Id, $event.TimeCreated, $event.RecordId, $event.LevelDisplayName, $event.ProviderName, ($event.Message -replace "[\r\n]+", " "))
+                }
+            } catch {
+                Write-Host "  Could not read this event channel: $($_.Exception.Message)"
+            }
+        }
+        throw "AppLocker policy compilation failed: one or more of $($cacheNames -join ', ') were missing or stale after policy import and AppIDSvc startup. Installation is unsafe and has been stopped."
     }
     Write-Host "All five AppLocker policy collections were compiled after policy import."
     foreach ($channel in $channels) {
