@@ -965,15 +965,25 @@ try {
         @(Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Where-Object { [CafeWindowProbe]::HasVisibleWindow($_.Id) }).Count -gt 0
     }
     Check "B3.M6" "Watchdog starts the lock screen after a full profile reset" $resetLockReady "visible Cafe.Agent lock screen: $resetLockReady"
-    $agentStarts = WaitFor 20 {
+    $customerAgentQuery = {
         @(Get-Process Cafe.Agent -IncludeUserName -ErrorAction SilentlyContinue | Where-Object {
             $_.UserName -eq "$env:COMPUTERNAME\Customer" -and $_.Path -eq "$app\Cafe.Agent.exe"
         }).Count -gt 0
     }
+    $agentStarts = WaitFor 5 $customerAgentQuery
+    $customerAgentProbe = $null
+    if (-not $agentStarts) {
+        # Hosted runners do not auto-logon to Customer; start the installed image with the same
+        # interactive Customer credential path used by the D1 executable probes.
+        Write-Host "No watchdog-owned Customer Cafe.Agent is present in the runner session; launching the Program Files image as Customer to verify its runtime dependencies."
+        $customerAgentProbe = AsCustomer "$app\Cafe.Agent.exe" "--server https://127.0.0.1:5443"
+        $agentStarts = WaitFor 20 $customerAgentQuery
+    }
     $agentProcesses = @(Get-Process Cafe.Agent -IncludeUserName -ErrorAction SilentlyContinue | Where-Object {
         $_.UserName -eq "$env:COMPUTERNAME\Customer" -and $_.Path -eq "$app\Cafe.Agent.exe"
     })
-    Check "D1.C9" "Cafe.Agent in Program Files is running as Customer after the watchdog starts the lock screen" ($agentStarts -and $agentProcesses.Count -gt 0) "Customer-owned Cafe.Agent processes $($agentProcesses.Count)"
+    Check "D1.C9" "Cafe.Agent from Program Files loads and runs under the Customer token" ($agentStarts -and $agentProcesses.Count -gt 0) "Customer-owned Cafe.Agent processes $($agentProcesses.Count); Program Files runtime sidecars $(@(Get-ChildItem -LiteralPath $app -Filter '*.dll' -File).Count)"
+    if ($customerAgentProbe -and -not $customerAgentProbe.HasExited) { Stop-Process -Id $customerAgentProbe.Id -Force -ErrorAction SilentlyContinue }
     # An unreachable counter server must also leave the request pending; reconnecting lets the next loop retry.
     Set-Content "$data\wipe\request" ""
     Stop-Process -Id $server.Id -Force
