@@ -500,6 +500,49 @@ function Install-CustomerPolicy {
     & "$env:WINDIR\System32\gpupdate.exe" /target:computer /force /wait:60 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Computer Group Policy refresh failed after applying AppLocker (gpupdate exit $LASTEXITCODE)." }
 
+    # Record every AppID scheduled task, then explicitly trigger policy conversion.
+    $appIdTaskPath = "\\Microsoft\\Windows\\AppID\\"
+    $appIdTasks = @(Get-ScheduledTask -TaskPath $appIdTaskPath -ErrorAction SilentlyContinue)
+    Write-Host "Scheduled tasks under $appIdTaskPath ($($appIdTasks.Count)):"
+    foreach ($task in $appIdTasks) {
+        $taskInfo = Get-ScheduledTaskInfo -TaskName $task.TaskName -TaskPath $task.TaskPath -ErrorAction SilentlyContinue
+        $lastRun = if ($taskInfo -and $taskInfo.LastRunTime -and $taskInfo.LastRunTime.Year -gt 1601) { $taskInfo.LastRunTime.ToString("o") } else { "never" }
+        $lastResult = if ($taskInfo) { $taskInfo.LastTaskResult } else { "unavailable" }
+        Write-Host ("  Name={0}; State={1}; LastRunTime={2}; LastTaskResult={3}" -f ($task.TaskPath + $task.TaskName), $task.State, $lastRun, $lastResult)
+    }
+    $converterTasks = @($appIdTasks | Where-Object {
+        $_.TaskName -match "(?i)PolicyConverter" -or
+        @($_.Actions | Where-Object { $_.Execute -and [IO.Path]::GetFileName($_.Execute) -ieq "appidpolicyconverter.exe" }).Count -gt 0
+    })
+    if ($converterTasks.Count -gt 0) {
+        foreach ($converterTask in $converterTasks) {
+            $fullTaskName = $converterTask.TaskPath + $converterTask.TaskName
+            Write-Host "Starting AppID policy-conversion scheduled task: $fullTaskName"
+            & "$env:WINDIR\\System32\\schtasks.exe" /run /tn $fullTaskName
+            if ($LASTEXITCODE -ne 0) { throw "Could not start AppID policy-conversion task '$fullTaskName' (schtasks exit $LASTEXITCODE)." }
+            $taskDeadline = (Get-Date).AddMinutes(2)
+            do {
+                Start-Sleep -Milliseconds 500
+                $currentTask = Get-ScheduledTask -TaskName $converterTask.TaskName -TaskPath $converterTask.TaskPath -ErrorAction Stop
+                if ($currentTask.State -ne "Running") { break }
+            } while ((Get-Date) -lt $taskDeadline)
+            if ($currentTask.State -eq "Running") { throw "AppID policy-conversion task '$fullTaskName' did not finish within 2 minutes." }
+            $finishedInfo = Get-ScheduledTaskInfo -TaskName $converterTask.TaskName -TaskPath $converterTask.TaskPath -ErrorAction SilentlyContinue
+            Write-Host ("Finished AppID policy-conversion task: {0}; State={1}; LastRunTime={2}; LastTaskResult={3}" -f $fullTaskName, $currentTask.State, $finishedInfo.LastRunTime, $finishedInfo.LastTaskResult)
+        }
+    } else {
+        Write-Host "No AppID policy-conversion scheduled task was found under $appIdTaskPath."
+        $converterPath = Join-Path $env:WINDIR "System32\\appidpolicyconverter.exe"
+        if (Test-Path -LiteralPath $converterPath -PathType Leaf) {
+            Write-Host "Running System32 appidpolicyconverter.exe directly because no conversion task exists."
+            $converterProcess = Start-Process -FilePath $converterPath -Wait -PassThru -NoNewWindow
+            Write-Host "appidpolicyconverter.exe exit code: $($converterProcess.ExitCode)"
+            if ($converterProcess.ExitCode -ne 0) { throw "appidpolicyconverter.exe failed (exit $($converterProcess.ExitCode))." }
+        } else {
+            Write-Host "System32 appidpolicyconverter.exe does not exist; no direct conversion fallback is available."
+        }
+    }
+
     Set-AppIdStartupMode "Auto"
     Start-Service -Name AppIDSvc
     $running = Wait-ForService
