@@ -1163,7 +1163,7 @@ try {
     $appIdServiceAfter = Get-CimInstance Win32_Service -Filter "Name='AppIDSvc'"
     $uninstallLogText = if (Test-Path -LiteralPath $uninstallLogPath) { Get-Content -LiteralPath $uninstallLogPath -Raw } else { "" }
     $appIdRestoreWarning = $uninstallLogText -match "Could not restore AppIDSvc startup mode"
-    $appLockerPolicyRemoved = -not $d1RulesRemain
+    $appLockerPolicyRemoved = $policyRestored -and -not $d1RulesRemain
     $appIdStartModeRestored = $appIdServiceAfter.StartMode -eq $appIdServiceBefore.StartMode
     Check "D1.I2" "PC uninstall removes the D1 AppLocker policy and restores AppIDSvc start mode or logs the protected-service refusal" ($appLockerPolicyRemoved -and ($appIdStartModeRestored -or $appIdRestoreWarning)) "D1 policy removed $appLockerPolicyRemoved; start mode before $($appIdServiceBefore.StartMode), after $($appIdServiceAfter.StartMode); protected-service warning logged $appIdRestoreWarning"
     $cRootAclAfterUninstall = (Get-Acl -LiteralPath "$env:SystemDrive\").Sddl
