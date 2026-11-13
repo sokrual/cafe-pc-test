@@ -5,7 +5,6 @@ param(
     [string]$CustomerSid,
     [string]$DataPath = "$env:ProgramData\GamingCafe",
     [AllowEmptyString()][string]$AllowFolders,
-    [switch]$DiagnosticContinueOnCompilationFailure
 )
 $ErrorActionPreference = "Stop"
 $allowFoldersWasSpecified = $PSBoundParameters.ContainsKey("AllowFolders")
@@ -463,7 +462,7 @@ function Install-CustomerPolicy {
     $cacheDirectory = Join-Path $env:WINDIR "System32\AppLocker"
     $cacheNames = @("Exe.AppLocker", "Dll.AppLocker", "Msi.AppLocker", "Script.AppLocker", "Appx.AppLocker")
     function Wait-ForCompiledPolicy([datetime]$ImportStarted) {
-        $deadline = (Get-Date).AddSeconds(30)
+        $deadline = (Get-Date).AddSeconds(180)
         do {
             $allFresh = $true
             foreach ($cacheName in $cacheNames) {
@@ -517,15 +516,6 @@ function Install-CustomerPolicy {
     $compiled = Wait-ForCompiledPolicy $policyInstallStarted
     Write-CompiledPolicyInventory $policyInstallStarted "first import"
     if (-not $compiled) {
-        Write-Warning "AppLocker did not compile all five policy collections within 30 seconds; reapplying the policy once."
-        $policyRetryStarted = Get-Date
-        Set-AppLockerPolicy -XmlPolicy $policyPath
-        & "$env:WINDIR\System32\gpupdate.exe" /target:computer /force /wait:60 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Computer Group Policy refresh failed after retrying AppLocker policy application (gpupdate exit $LASTEXITCODE)." }
-        $compiled = Wait-ForCompiledPolicy $policyRetryStarted
-        Write-CompiledPolicyInventory $policyRetryStarted "second import"
-    }
-    if (-not $compiled) {
         Write-Host "AppLocker compilation failure diagnostics; install started $($policyInstallStarted.ToString('o')); AppIDSvc start time $($appidServiceStartTime.ToString('o'))."
         $diagnosticChannels = @("Microsoft-Windows-AppID/Operational") + $channels
         foreach ($diagnosticChannel in $diagnosticChannels) {
@@ -540,39 +530,9 @@ function Install-CustomerPolicy {
                 Write-Host "  Could not read this event channel: $($_.Exception.Message)"
             }
         }
-        $failureMessage = "AppLocker policy compilation failed: one or more of $($cacheNames -join ', ') were missing or stale after policy import and AppIDSvc startup."
-        if (-not $DiagnosticContinueOnCompilationFailure) { throw "$failureMessage Installation is unsafe and has been stopped." }
-        Write-Warning "$failureMessage Diagnostic-only CI mode: continuing to observe cache files; policy enforcement is unchanged."
+        throw "AppLocker policy compilation failed: one or more of $($cacheNames -join ', ') were missing or stale 180 seconds after policy import and AppIDSvc startup. Installation is unsafe and has been stopped."
     }
-    if ($DiagnosticContinueOnCompilationFailure) {
-        $firstFreshAt = @{}
-        for ($checkNumber = 0; $checkNumber -le 20; $checkNumber++) {
-            $capturedUtc = [DateTime]::UtcNow
-            Write-Host ("AppLocker five-file diagnostic check {0}/21; capturedUtc={1:o}" -f $checkNumber, $capturedUtc)
-            foreach ($cacheName in $cacheNames) {
-                $cacheFile = Join-Path $cacheDirectory $cacheName
-                if (Test-Path -LiteralPath $cacheFile -PathType Leaf) {
-                    $cacheItem = Get-Item -LiteralPath $cacheFile
-                    $freshNow = $cacheItem.LastWriteTimeUtc -ge $policyInstallStarted.ToUniversalTime().AddSeconds(-2)
-                    Write-Host ("  {0}: exists=True; size={1}; modifiedUtc={2:o}; freshSinceInstall={3}" -f $cacheName, $cacheItem.Length, $cacheItem.LastWriteTimeUtc, $freshNow)
-                    if ($freshNow -and -not $firstFreshAt.ContainsKey($cacheName)) { $firstFreshAt[$cacheName] = $capturedUtc }
-                } else { Write-Host ("  {0}: exists=False; size=0; modifiedUtc=(missing); freshSinceInstall=False" -f $cacheName) }
-            }
-            if ($checkNumber -lt 20) { Start-Sleep -Seconds 15 }
-        }
-        foreach ($cacheName in $cacheNames) {
-            $first = if ($firstFreshAt.ContainsKey($cacheName)) { $firstFreshAt[$cacheName].ToString("o") } else { "never during five-minute window" }
-            Write-Host "First fresh observation: $cacheName = $first"
-        }
-        New-Item -ItemType File -Path (Join-Path $DataPath "applocker-diagnostic-first-install.done") -Force | Out-Null
-        if (-not $compiled) {
-            Write-Warning "AppLocker compiled-policy files were not fresh within the initial wait/retry; diagnostic five-minute observation completed and installation is continuing only for this CI diagnostic run."
-        } else {
-            Write-Host "AppLocker compiled-policy files passed the initial freshness wait; five-minute diagnostic observation completed."
-        }
-    } elseif ($compiled) {
-        Write-Host "All five AppLocker policy collections were compiled after policy import."
-    }
+    Write-Host "All five AppLocker policy collections were compiled after policy import."
     foreach ($channel in $channels) {
         $conversionEvents = @(Get-WinEvent -FilterHashtable @{ LogName = $channel; Id = @(8000, 8001, 8002, 8003); StartTime = $policyInstallStarted.AddSeconds(-2) } -ErrorAction SilentlyContinue)
         Write-Host "AppLocker policy-conversion/runtime events 8000-8003 in '$channel' since policy import: $($conversionEvents.Count)"
