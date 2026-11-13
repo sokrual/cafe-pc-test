@@ -1167,7 +1167,13 @@ try {
     $appIdStartModeRestored = $appIdServiceAfter.StartMode -eq $appIdServiceBefore.StartMode
     Check "D1.I2" "PC uninstall removes the D1 AppLocker policy and restores AppIDSvc start mode or logs the protected-service refusal" ($appLockerPolicyRemoved -and ($appIdStartModeRestored -or $appIdRestoreWarning)) "D1 policy removed $appLockerPolicyRemoved; start mode before $($appIdServiceBefore.StartMode), after $($appIdServiceAfter.StartMode); protected-service warning logged $appIdRestoreWarning"
     $cRootAclAfterUninstall = (Get-Acl -LiteralPath "$env:SystemDrive\").Sddl
-    Check "D1.I4" "PC uninstall restores the C drive root ACL exactly to its original SDDL" ($cRootAclAfterUninstall -eq $cRootAclBefore) "original SDDL restored $($cRootAclAfterUninstall -eq $cRootAclBefore)"
+    $cRootAclRestored = $cRootAclAfterUninstall -eq $cRootAclBefore
+    $cRootAclDetail = if ($cRootAclRestored) {
+        "original SDDL restored True"
+    } else {
+        "original SDDL: $cRootAclBefore; after-uninstall SDDL: $cRootAclAfterUninstall"
+    }
+    Check "D1.I4" "PC uninstall restores the C drive root ACL exactly to its original SDDL" $cRootAclRestored $cRootAclDetail
 
     $postUninstallRuns = $false
     $postUninstallDetail = "Customer test account was not recreated."
