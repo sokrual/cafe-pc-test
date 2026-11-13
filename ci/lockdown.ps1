@@ -348,12 +348,13 @@ try {
     Write-Host "===== D1 enforcement diagnostics (install started $($d1InstallStarted.ToString('o'))) ====="
     Write-Host "AsCustomer launch path: Start-Process -Credential (CreateProcessWithLogonW); LOGON32_LOGON_INTERACTIVE=2; LoadUserProfile=true."
     Write-Host "AsCustomer token evaluation: Test-AppLockerPolicy below evaluates the Customer SAM account; runtime block events are correlated against Customer SID $($u.SID.Value)."
-    $d1TokenIdentityPath = Join-Path "$prof\Downloads" "d1-customer-token-identity.txt"
-    Remove-Item -LiteralPath $d1TokenIdentityPath -Force -ErrorAction SilentlyContinue
-    $d1TokenIdentityExit = CustomerPs "whoami.exe /user /fo csv /nh | Set-Content -LiteralPath '$d1TokenIdentityPath'"
-    $d1TokenIdentityText = if (Test-Path -LiteralPath $d1TokenIdentityPath) { Get-Content -LiteralPath $d1TokenIdentityPath -Raw } else { "" }
-    $d1TokenIdentity = [regex]::Match($d1TokenIdentityText, 'S-1-\d+(?:-\d+)+').Value
-    Remove-Item -LiteralPath $d1TokenIdentityPath -Force -ErrorAction SilentlyContinue
+    # Query the token owner from the admin-side process table. Do not make the
+    # Customer PowerShell process write a helper file into a denied user folder.
+    $tokenProbe = AsCustomer "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" "-NoProfile -Command Start-Sleep -Seconds 8"
+    $tokenProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($tokenProbe.Id)" -ErrorAction SilentlyContinue
+    $tokenOwner = if ($tokenProcess) { Invoke-CimMethod -InputObject $tokenProcess -MethodName GetOwnerSid -ErrorAction SilentlyContinue } else { $null }
+    $d1TokenIdentity = if ($tokenOwner -and $tokenOwner.ReturnValue -eq 0) { $tokenOwner.Sid } else { "" }
+    $d1TokenIdentityExit = if ($tokenProbe.WaitForExit(12000)) { $tokenProbe.ExitCode } else { Stop-Process -Id $tokenProbe.Id -Force -ErrorAction SilentlyContinue; 1 }
     Write-Host "AsCustomer actual process token SID: $d1TokenIdentity; expected Customer SID: $($u.SID.Value)"
     Check "D1.C2c" "AsCustomer process token is the Customer SID evaluated by Test-AppLockerPolicy" ($d1TokenIdentityExit -eq 0 -and $d1TokenIdentity -eq $u.SID.Value) "token SID $d1TokenIdentity; Customer SID $($u.SID.Value); exit $d1TokenIdentityExit"
     $effectivePolicyPath = Join-Path $data "applocker-effective.xml"
@@ -451,14 +452,17 @@ try {
     Check "D1.C3a" "ACL inventory explicitly reports the Customer-writable ProgramData wipe folder" $wipeReported "Expected $data\wipe in customer-writable-folders.txt"
 
     function Get-D1BlockEvent([string]$LogName, [int]$EventId, [string]$FilePath, [string]$CustomerSid) {
-        # Filter the exact channel and event in UTC, and require the event's Security/UserID
-        # to be the Customer SID. Do not infer identity from localized event message text.
-        $startUtc = $d1Started.ToUniversalTime()
-        $startUtcText = $startUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", [Globalization.CultureInfo]::InvariantCulture)
-        $xpath = "*[System[(EventID=$EventId) and TimeCreated[@SystemTime >= '$startUtcText'] and Security[@UserID='$CustomerSid']]]"
-        $events = @(Get-WinEvent -LogName $LogName -FilterXPath $xpath -ErrorAction SilentlyContinue)
+        # Get-WinEvent's StartTime filter is local-time based; convert the UTC test
+        # boundary explicitly, then verify each event's UTC timestamp and UserId SID.
+        $startUtc = $d1StartedUtc
+        $events = @(Get-WinEvent -FilterHashtable @{
+            LogName = $LogName
+            Id = $EventId
+            StartTime = $startUtc.ToLocalTime()
+        } -ErrorAction SilentlyContinue)
         foreach ($event in $events) {
-            if ($event.TimeCreated.ToUniversalTime() -lt $startUtc) { continue }
+            $eventUtc = $event.TimeCreated.ToUniversalTime()
+            if ($eventUtc -lt $startUtc) { continue }
             $eventSid = if ($event.UserId -is [Security.Principal.SecurityIdentifier]) { $event.UserId.Value } else { "$($event.UserId)" }
             if ($eventSid -ne $CustomerSid) { continue }
             $message = "$($event.Message)"
@@ -467,7 +471,7 @@ try {
             $expandedMessage = $expandedMessage -replace "(?i)%SYSTEM32%", (Join-Path $env:WINDIR "System32")
             if ($message.IndexOf($FilePath, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
                 $expandedMessage.IndexOf($FilePath, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-                Write-Host ("Matched AppLocker block event {0} in '{1}'; event UTC={2:o}; UserId={3}; file={4}" -f $EventId, $LogName, $event.TimeCreated.ToUniversalTime(), $eventSid, $FilePath)
+                Write-Host ("Matched AppLocker block event {0} in '{1}'; event UTC={2:o}; UserId={3}; file={4}" -f $EventId, $LogName, $eventUtc, $eventSid, $FilePath)
                 return $true
             }
         }
@@ -532,7 +536,7 @@ try {
             }
         }
     }
-    $d1Started = Get-Date
+    $d1StartedUtc = [DateTime]::UtcNow
     $pingSource = "$env:WINDIR\System32\PING.EXE"
     $d1Suffix = [guid]::NewGuid().ToString("N")
     $d1ExeCases = @(
