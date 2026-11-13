@@ -195,22 +195,35 @@ function Install-CustomerPolicy {
     }
     $systemRootAcl = Get-Acl -LiteralPath $systemDriveRoot
     foreach ($principalSid in @("S-1-5-11", "S-1-5-32-545")) {
-        $alreadyDenied = @($systemRootAcl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]) |
+        # Remove only the CreateDirectories (directory AppendData) bit from this root's
+        # explicit allow ACEs, preserving every other right and its inheritance flags.
+        $principalRules = @($systemRootAcl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]) |
             Where-Object { $_.IdentityReference.Value -eq $principalSid -and
-                $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Deny -and
-                (([int64]$_.FileSystemRights -band [int64][int][Security.AccessControl.FileSystemRights]::CreateDirectories) -ne 0) -and
-                $_.InheritanceFlags -eq [Security.AccessControl.InheritanceFlags]::None }).Count -gt 0
-        if (-not $alreadyDenied) {
-            $denyCreateRootFolder = [Security.AccessControl.FileSystemAccessRule]::new(
-                [Security.Principal.SecurityIdentifier]::new($principalSid),
-                [Security.AccessControl.FileSystemRights]::CreateDirectories,
-                [Security.AccessControl.AccessControlType]::Deny,
-                [Security.AccessControl.InheritanceFlags]::None,
-                [Security.AccessControl.PropagationFlags]::None)
-            [void]$systemRootAcl.AddAccessRule($denyCreateRootFolder)
+                $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+                (([int64]$_.FileSystemRights -band [int64][int][Security.AccessControl.FileSystemRights]::CreateDirectories) -ne 0) })
+        foreach ($rule in $principalRules) {
+            $remainingRights = [int64]$rule.FileSystemRights -band (-bnot [int64][int][Security.AccessControl.FileSystemRights]::CreateDirectories)
+            [void]$systemRootAcl.RemoveAccessRuleSpecific($rule)
+            if ($remainingRights -ne 0) {
+                $updatedRule = [Security.AccessControl.FileSystemAccessRule]::new(
+                    $rule.IdentityReference,
+                    [Security.AccessControl.FileSystemRights]$remainingRights,
+                    $rule.InheritanceFlags,
+                    $rule.PropagationFlags,
+                    $rule.AccessControlType)
+                [void]$systemRootAcl.AddAccessRule($updatedRule)
+            }
         }
     }
     Set-Acl -LiteralPath $systemDriveRoot -AclObject $systemRootAcl
+    $remainingRootCreateRights = @($systemRootAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) |
+        Where-Object { @("S-1-5-11", "S-1-5-32-545") -contains $_.IdentityReference.Value -and
+            $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+            (([int64]$_.FileSystemRights -band [int64][int][Security.AccessControl.FileSystemRights]::CreateDirectories) -ne 0) })
+    if ($remainingRootCreateRights.Count -gt 0) {
+        throw "Could not remove the CreateDirectories right for Authenticated Users and BUILTIN\Users on $systemDriveRoot."
+    }
+    Write-Host "Removed the CreateDirectories (directory AppendData) right for Authenticated Users and BUILTIN\Users on $systemDriveRoot only; original ACL saved for uninstall."
     Write-Host "Removed effective CreateDirectories access for Authenticated Users and BUILTIN\\Users on $systemDriveRoot only; original ACL saved for uninstall."
 
     $programFiles = $env:ProgramFiles
