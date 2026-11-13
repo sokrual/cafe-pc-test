@@ -364,6 +364,7 @@ if (Test-Path $flag) {
     $appLockerArgs = @{ Mode = "Install"; CustomerSid = $sid; DataPath = $data }
     if ($Ci) { $appLockerArgs.AllowFolders = "" }
     elseif ($allowFoldersWasSpecified) { $appLockerArgs.AllowFolders = $AllowFolders }
+    if ($Ci -and -not (Test-Path (Join-Path $data "applocker-diagnostic-first-install.done"))) { $appLockerArgs.DiagnosticContinueOnCompilationFailure = $true }
     & "$app\applocker.ps1" @appLockerArgs
     # Level A watch-only: nothing is blocked; Windows notes every program it would block, for the owner to review
     if (-not (Test-Path "$data\levelA-id.txt")) { & "$app\levelA.ps1" -Mode Audit }
