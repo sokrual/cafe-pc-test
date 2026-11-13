@@ -662,13 +662,26 @@ try {
         }
         if ($mountedD1Hive -and (Test-Path -LiteralPath $customerHivePath)) {
             $customerProfileForHive = Get-CimInstance Win32_UserProfile | Where-Object SID -eq $u.SID.Value
-            if ($customerProfileForHive -and $customerProfileForHive.Loaded) {
-                Write-Host "Customer profile service owns the hive after AsCustomer tests; leaving it mounted for the profile-reset tests."
+            $customerProcessesForHive = @(Get-Process -IncludeUserName -ErrorAction SilentlyContinue |
+                Where-Object { $_.UserName -eq "$env:COMPUTERNAME\Customer" })
+            if (($customerProfileForHive -and $customerProfileForHive.Loaded) -or $customerProcessesForHive.Count -gt 0) {
+                Write-Host "Customer profile service/session owns HKU\$($u.SID.Value) after AsCustomer tests (profile Loaded=$($customerProfileForHive.Loaded); Customer processes=$($customerProcessesForHive.Count)); leaving it mounted for the profile-reset tests."
             } else {
                 [gc]::Collect()
                 [gc]::WaitForPendingFinalizers()
                 & reg.exe unload "HKU\$($u.SID.Value)" | Out-Null
-                if ($LASTEXITCODE -ne 0) { throw "Could not unload the Customer hive mounted for AppLocker batch-file tests." }
+                if ($LASTEXITCODE -ne 0) {
+                    # A profile can become active between the CIM query and reg unload. Re-check ownership
+                    # before treating a busy hive as a test cleanup failure.
+                    $customerProfileForHive = Get-CimInstance Win32_UserProfile | Where-Object SID -eq $u.SID.Value
+                    $customerProcessesForHive = @(Get-Process -IncludeUserName -ErrorAction SilentlyContinue |
+                        Where-Object { $_.UserName -eq "$env:COMPUTERNAME\Customer" })
+                    if (($customerProfileForHive -and $customerProfileForHive.Loaded) -or $customerProcessesForHive.Count -gt 0) {
+                        Write-Host "Customer profile session acquired the hive during cleanup; leaving HKU\$($u.SID.Value) mounted."
+                    } else {
+                        throw "Could not unload the Customer hive mounted by the D1 test (profile service does not report ownership)."
+                    }
+                }
             }
         }
     }
