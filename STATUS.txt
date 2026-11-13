@@ -55,6 +55,10 @@ B3  Lockdown and installers                                         BUILT - fina
          PC follow-ups: show PcState.Notice; offline "30/60/90 min" text when the block changes; reset erases
               the remembered lock setting (F4); pipe identity check is path-based (F14); check the lock screen
               takes focus back when another program's window appears (seen once in CI: Win+D left wsl.exe in front)
+         Before the Phase 0 build (decided 13 Nov): show the lock screen on its own Windows desktop (like the Windows
+              sign-in screen), so games in exclusive fullscreen and NVIDIA/AMD overlays cannot draw over it on any
+              hardware; switch off the Xbox Game Bar by policy. Today the lock screen is a TopMost window.
+              Open, owner to answer before the v0 build: record each PC's hardware at install and show it on the counter?
     After #9: a final review by two separate reviewers. Then B4.
     Level A switches to blocking after the cafe trial, with an "allow or not" prompt for the owner (part of B5.3).
 
