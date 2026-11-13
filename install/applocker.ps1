@@ -408,10 +408,33 @@ function Install-CustomerPolicy {
         & wevtutil.exe sl $channel /e:true | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Could not enable AppLocker event channel $channel." }
     }
+    $policyInstallStarted = Get-Date
     Set-AppLockerPolicy -XmlPolicy $policyPath
     & "$env:WINDIR\System32\gpupdate.exe" /target:computer /force /wait:60 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Computer Group Policy refresh failed after applying AppLocker (gpupdate exit $LASTEXITCODE)." }
     Write-Host "Computer Group Policy refreshed after applying the AppLocker policy."
+
+    # Capture the binary policy cache produced by the Windows Application Identity policy converter.
+    # These files are not XML inputs; AppIDSvc/AppID policy conversion materializes them from applied policy.
+    $cacheDirectory = Join-Path $env:WINDIR "System32\AppLocker"
+    Write-Host "AppLocker compiled-policy inventory (policy import started $($policyInstallStarted.ToString('o')); captured $((Get-Date).ToString('o'))):"
+    foreach ($cacheName in @("Exe.AppLocker", "Dll.AppLocker", "Msi.AppLocker", "Script.AppLocker", "Appx.AppLocker")) {
+        $cacheFile = Join-Path $cacheDirectory $cacheName
+        if (Test-Path -LiteralPath $cacheFile -PathType Leaf) {
+            $cacheItem = Get-Item -LiteralPath $cacheFile
+            $fresh = $cacheItem.LastWriteTime -ge $policyInstallStarted.AddSeconds(-2)
+            Write-Host ("  {0}: exists=True; bytes={1}; createdUtc={2:o}; modifiedUtc={3:o}; modifiedSincePolicyImport={4}" -f $cacheName, $cacheItem.Length, $cacheItem.CreationTimeUtc, $cacheItem.LastWriteTimeUtc, $fresh)
+        } else {
+            Write-Host "  $($cacheName): exists=False"
+        }
+    }
+    foreach ($channel in $channels) {
+        $conversionEvents = @(Get-WinEvent -FilterHashtable @{ LogName = $channel; Id = @(8000, 8001, 8002, 8003); StartTime = $policyInstallStarted.AddSeconds(-2) } -ErrorAction SilentlyContinue)
+        Write-Host "AppLocker policy-conversion/runtime events 8000-8003 in '$channel' since policy import: $($conversionEvents.Count)"
+        foreach ($entry in $conversionEvents | Sort-Object TimeCreated) {
+            Write-Host ("  EventId={0}; TimeCreated={1:o}; RecordId={2}; Level={3}; Message={4}" -f $entry.Id, $entry.TimeCreated, $entry.RecordId, $entry.LevelDisplayName, ($entry.Message -replace "[\r\n]+", " "))
+        }
+    }
     $applied = [xml](Get-AppLockerPolicy -Local -Xml)
     foreach ($type in @("Exe", "Msi", "Script", "Dll", "Appx")) {
         $collectionNode = @($applied.AppLockerPolicy.RuleCollection | Where-Object { $_.Type -eq $type })
