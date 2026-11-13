@@ -201,8 +201,8 @@ function Install-CustomerPolicy {
                 (([int64]$_.FileSystemRights -band [int64][int][Security.AccessControl.FileSystemRights]::CreateDirectories) -ne 0) -and
                 $_.InheritanceFlags -eq [Security.AccessControl.InheritanceFlags]::None }).Count -gt 0
         if (-not $alreadyDenied) {
-            $denyCreateRootFolder = New-Object Security.AccessControl.FileSystemAccessRule(
-                (New-Object Security.Principal.SecurityIdentifier($principalSid)),
+            $denyCreateRootFolder = [Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.SecurityIdentifier]::new($principalSid),
                 [Security.AccessControl.FileSystemRights]::CreateDirectories,
                 [Security.AccessControl.AccessControlType]::Deny,
                 [Security.AccessControl.InheritanceFlags]::None,
