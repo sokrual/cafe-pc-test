@@ -212,7 +212,10 @@ try {
     # ===== C. gaming PC, step 1 =====
     $ntpBefore = (Get-ItemProperty $ntpKey).NtpServer   # after the counter PC install, which sets the same clock settings
     $stage = Join-Path $env:TEMP "stage-pc"; New-Item $stage -ItemType Directory -Force | Out-Null
-    Copy-Item "$repo\install\*", "$out\agent\Cafe.Agent.exe", "$out\watchdog\Cafe.Watchdog.exe" $stage
+    Copy-Item "$repo\install\*", "$out\watchdog\Cafe.Watchdog.exe" $stage
+    $agentRuntimeStage = Join-Path $stage "agent-runtime"
+    New-Item -ItemType Directory -Path $agentRuntimeStage -Force | Out-Null
+    Copy-Item "$out\agent\*" $agentRuntimeStage -Force
     Copy-Item "$tdata\pc1.token" "$stage\pc.token"; Copy-Item "$tdata\server.pin" $stage
     $secureBootExpected = try { if (Confirm-SecureBootUEFI -ErrorAction Stop) { "On" } else { "Off" } } catch { "Unknown" }
     & "$stage\install-pc.ps1" -Server 127.0.0.1 -DnsServer $runnerDns -Ci -AllowFolders ""
@@ -459,9 +462,9 @@ try {
             $eventSid = if ($event.UserId -is [Security.Principal.SecurityIdentifier]) { $event.UserId.Value } else { "$($event.UserId)" }
             if ($eventSid -ne $CustomerSid) { continue }
             $message = "$($event.Message)"
-            $expandedMessage = $message -replace "(?i)%OSDRIVE%", [regex]::Escape($env:SystemDrive)
-            $expandedMessage = $expandedMessage -replace "(?i)%WINDIR%", [regex]::Escape($env:WINDIR)
-            $expandedMessage = $expandedMessage -replace "(?i)%SYSTEM32%", [regex]::Escape((Join-Path $env:WINDIR "System32"))
+            $expandedMessage = $message -replace "(?i)%OSDRIVE%", $env:SystemDrive
+            $expandedMessage = $expandedMessage -replace "(?i)%WINDIR%", $env:WINDIR
+            $expandedMessage = $expandedMessage -replace "(?i)%SYSTEM32%", (Join-Path $env:WINDIR "System32")
             if ($message.IndexOf($FilePath, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
                 $expandedMessage.IndexOf($FilePath, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
                 Write-Host ("Matched AppLocker block event {0} in '{1}'; event UTC={2:o}; UserId={3}; file={4}" -f $EventId, $LogName, $event.TimeCreated.ToUniversalTime(), $eventSid, $FilePath)
