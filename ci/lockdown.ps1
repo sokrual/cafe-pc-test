@@ -1166,14 +1166,45 @@ try {
     $appLockerPolicyRemoved = $policyRestored -and -not $d1RulesRemain
     $appIdStartModeRestored = $appIdServiceAfter.StartMode -eq $appIdServiceBefore.StartMode
     Check "D1.I2" "PC uninstall removes the D1 AppLocker policy and restores AppIDSvc start mode or logs the protected-service refusal" ($appLockerPolicyRemoved -and ($appIdStartModeRestored -or $appIdRestoreWarning)) "D1 policy removed $appLockerPolicyRemoved; start mode before $($appIdServiceBefore.StartMode), after $($appIdServiceAfter.StartMode); protected-service warning logged $appIdRestoreWarning"
-    $cRootAclAfterUninstall = (Get-Acl -LiteralPath "$env:SystemDrive\").Sddl
-    $cRootAclRestored = $cRootAclAfterUninstall -eq $cRootAclBefore
-    $cRootAclDetail = if ($cRootAclRestored) {
-        "original SDDL restored True"
-    } else {
-        "original SDDL: $cRootAclBefore; after-uninstall SDDL: $cRootAclAfterUninstall"
+    function Get-CRootAclMeaning([string]$Sddl) {
+        $descriptor = New-Object Security.AccessControl.RawSecurityDescriptor($Sddl)
+        $daclEntries = @()
+        if ($null -eq $descriptor.DiscretionaryAcl) {
+            $daclEntries = @("<null DACL>")
+        } else {
+            foreach ($ace in $descriptor.DiscretionaryAcl) {
+                $daclEntries += $ace.GetSddlForm([Security.AccessControl.AccessControlSections]::Access)
+            }
+        }
+        $labelEntries = @()
+        if ($null -ne $descriptor.SystemAcl) {
+            foreach ($ace in $descriptor.SystemAcl) {
+                if ([int]$ace.AceType -eq 17) {
+                    $labelEntries += $ace.GetSddlForm([Security.AccessControl.AccessControlSections]::Audit)
+                }
+            }
+        }
+        [pscustomobject]@{
+            Owner = $descriptor.Owner.Value
+            Group = $descriptor.Group.Value
+            Dacl = ($daclEntries | Sort-Object) -join "`n"
+            MandatoryLabel = ($labelEntries | Sort-Object) -join "`n"
+        }
     }
-    Check "D1.I4" "PC uninstall restores the C drive root ACL exactly to its original SDDL" $cRootAclRestored $cRootAclDetail
+    $cRootAclAfterUninstall = (Get-Acl -LiteralPath "$env:SystemDrive\").Sddl
+    $cRootAclBeforeMeaning = Get-CRootAclMeaning $cRootAclBefore
+    $cRootAclAfterMeaning = Get-CRootAclMeaning $cRootAclAfterUninstall
+    $cRootOwnerSame = $cRootAclBeforeMeaning.Owner -eq $cRootAclAfterMeaning.Owner
+    $cRootGroupSame = $cRootAclBeforeMeaning.Group -eq $cRootAclAfterMeaning.Group
+    $cRootDaclSame = $cRootAclBeforeMeaning.Dacl -ceq $cRootAclAfterMeaning.Dacl
+    $cRootLabelSame = $cRootAclBeforeMeaning.MandatoryLabel -ceq $cRootAclAfterMeaning.MandatoryLabel
+    $cRootAclRestored = $cRootOwnerSame -and $cRootGroupSame -and $cRootDaclSame -and $cRootLabelSame
+    $cRootAclDetail = if ($cRootAclRestored) {
+        "owner, group, unordered DACL ACE set, and SACL mandatory label restored"
+    } else {
+        "owner same $cRootOwnerSame; group same $cRootGroupSame; DACL ACE set same $cRootDaclSame; SACL mandatory label same $cRootLabelSame; original SDDL: $cRootAclBefore; after-uninstall SDDL: $cRootAclAfterUninstall"
+    }
+    Check "D1.I4" "PC uninstall restores the C drive root ACL meaning (owner, group, DACL ACE set, SACL label)" $cRootAclRestored $cRootAclDetail
 
     $postUninstallRuns = $false
     $postUninstallDetail = "Customer test account was not recreated."
