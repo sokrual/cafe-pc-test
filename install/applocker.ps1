@@ -34,7 +34,7 @@ function Restore-OriginalState {
     }
     $rootAclBackup = Join-Path $DataPath "c-root-acl-before.sddl"
     if (Test-Path -LiteralPath $rootAclBackup) {
-        $systemDriveRoot = "$env:SystemDrive\\"
+        $systemDriveRoot = "$env:SystemDrive\"
         $originalRootSddl = Get-Content -LiteralPath $rootAclBackup -Raw
         $rootAcl = Get-Acl -LiteralPath $systemDriveRoot
         $rootAcl.SetSecurityDescriptorSddlForm($originalRootSddl)
@@ -187,7 +187,7 @@ function Install-CustomerPolicy {
 
     # Prevent creation of new, previously-uninventoried folders directly under the system-drive root.
     # Preserve the exact original descriptor once so repeated installs and uninstall remain reversible.
-    $systemDriveRoot = "$env:SystemDrive\\"
+    $systemDriveRoot = "$env:SystemDrive\"
     $rootAclBackup = Join-Path $DataPath "c-root-acl-before.sddl"
     $systemRootAcl = Get-Acl -LiteralPath $systemDriveRoot
     if (-not (Test-Path -LiteralPath $rootAclBackup)) {
