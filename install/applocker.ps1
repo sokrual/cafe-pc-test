@@ -500,6 +500,11 @@ function Install-CustomerPolicy {
     & "$env:WINDIR\System32\gpupdate.exe" /target:computer /force /wait:60 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Computer Group Policy refresh failed after applying AppLocker (gpupdate exit $LASTEXITCODE)." }
 
+    Set-AppIdStartupMode "Auto"
+    Start-Service -Name AppIDSvc
+    $running = Wait-ForService
+    if (-not $running) { throw "Application Identity service did not start." }
+    Start-AppLockerFilter
     # Record every AppID scheduled task, then explicitly trigger policy conversion.
     $appIdTaskPath = "\\Microsoft\\Windows\\AppID\\"
     $appIdTasks = @(Get-ScheduledTask -TaskPath $appIdTaskPath -ErrorAction SilentlyContinue)
@@ -543,11 +548,6 @@ function Install-CustomerPolicy {
         }
     }
 
-    Set-AppIdStartupMode "Auto"
-    Start-Service -Name AppIDSvc
-    $running = Wait-ForService
-    if (-not $running) { throw "Application Identity service did not start." }
-    Start-AppLockerFilter
     $serviceStartEvent = Get-WinEvent -FilterHashtable @{ LogName = "System"; Id = 7036; StartTime = $policyInstallStarted.AddSeconds(-2) } -ErrorAction SilentlyContinue |
         Where-Object { $_.Message -match "(?i)Application Identity" -and $_.Message -match "(?i)running" } |
         Sort-Object TimeCreated -Descending | Select-Object -First 1
