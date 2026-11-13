@@ -461,10 +461,9 @@ function Install-CustomerPolicy {
     }
     $cacheDirectory = Join-Path $env:WINDIR "System32\AppLocker"
     $cacheNames = @("Exe.AppLocker", "Dll.AppLocker", "Msi.AppLocker", "Script.AppLocker", "Appx.AppLocker")
-    function Wait-ForCompiledPolicy([datetime]$ImportStarted, [datetime]$ServiceStarted) {
-        # The slow ARM runner can take nearly three minutes after AppIDSvc starts.
-        # Keep freshness anchored to the import, but measure the full deadline from service start.
-        $deadline = $ServiceStarted.AddSeconds(300)
+    function Wait-ForCompiledPolicy([datetime]$ImportStarted) {
+        # Allow up to five minutes for all collections to compile after this policy import.
+        $deadline = $ImportStarted.AddSeconds(300)
         do {
             $allFresh = $true
             foreach ($cacheName in $cacheNames) {
@@ -494,31 +493,24 @@ function Install-CustomerPolicy {
         }
     }
 
-    $policyInstallStarted = Get-Date
-    # Write and refresh the policy before starting Application Identity. On a first
-    # install, AppIDSvc compiles the policy when it starts; starting it beforehand
-    # can leave the initial policy write uncompiled until a later reapplication.
-    Set-AppLockerPolicy -XmlPolicy $policyPath
-    & "$env:WINDIR\System32\gpupdate.exe" /target:computer /force /wait:60 | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Computer Group Policy refresh failed after applying AppLocker (gpupdate exit $LASTEXITCODE)." }
-
+    # Start Application Identity and its filter before importing policy. AppIDSvc
+    # compiles the policy when it is written while the service is already running.
     Set-AppIdStartupMode "Auto"
     Start-Service -Name AppIDSvc
     $running = Wait-ForService
     if (-not $running) { throw "Application Identity service did not start." }
     Start-AppLockerFilter
-    # AppIDSvc compiles the imported policy after service startup; no scheduled-task or converter invocation is used.
 
-    $serviceStartEvent = Get-WinEvent -FilterHashtable @{ LogName = "System"; Id = 7036; StartTime = $policyInstallStarted.AddSeconds(-2) } -ErrorAction SilentlyContinue |
-        Where-Object { $_.Message -match "(?i)Application Identity" -and $_.Message -match "(?i)running" } |
-        Sort-Object TimeCreated -Descending | Select-Object -First 1
-    $appidServiceStartTime = if ($serviceStartEvent) { $serviceStartEvent.TimeCreated } else { (Get-Date) }
-    Write-Host "AppIDSvc start time: $($appidServiceStartTime.ToString('o')) (System service-state event when available)."
+    $policyInstallStarted = Get-Date
+    Set-AppLockerPolicy -XmlPolicy $policyPath
+    & "$env:WINDIR\System32\gpupdate.exe" /target:computer /force /wait:60 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Computer Group Policy refresh failed after applying AppLocker (gpupdate exit $LASTEXITCODE)." }
 
-    $compiled = Wait-ForCompiledPolicy $policyInstallStarted $appidServiceStartTime
+    # No scheduled-task or converter invocation is used.
+    $compiled = Wait-ForCompiledPolicy $policyInstallStarted
     Write-CompiledPolicyInventory $policyInstallStarted "first import"
     if (-not $compiled) {
-        Write-Host "AppLocker compilation failure diagnostics; install started $($policyInstallStarted.ToString('o')); AppIDSvc start time $($appidServiceStartTime.ToString('o'))."
+        Write-Host "AppLocker compilation failure diagnostics; policy import started $($policyInstallStarted.ToString('o'))."
         $diagnosticChannels = @("Microsoft-Windows-AppID/Operational") + $channels
         foreach ($diagnosticChannel in $diagnosticChannels) {
             Write-Host "Events from '$diagnosticChannel' since install:"
