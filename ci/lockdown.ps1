@@ -10,6 +10,20 @@ function Check($id, $test, $ok, $detail) {
     $results.Add([pscustomobject]@{ id = $id; result = $res; test = $test; detail = "$detail" })
     Write-Host "[$res] $id $test - $detail"
 }
+function Write-D1CompiledPolicySnapshot([string]$Moment) {
+    $names = @("Exe.AppLocker", "Dll.AppLocker", "Msi.AppLocker", "Script.AppLocker", "Appx.AppLocker")
+    $directory = Join-Path $env:WINDIR "System32\AppLocker"
+    Write-Host "===== D1 compiled-policy snapshot: $Moment; capturedUtc=$([DateTime]::UtcNow.ToString('o')) ====="
+    foreach ($name in $names) {
+        $path = Join-Path $directory $name
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $item = Get-Item -LiteralPath $path
+            Write-Host ("  {0}: exists=True; size={1}; modifiedUtc={2:o}" -f $name, $item.Length, $item.LastWriteTimeUtc)
+        } else {
+            Write-Host ("  {0}: exists=False; size=0; modifiedUtc=(missing)" -f $name)
+        }
+    }
+}
 function WaitFor($seconds, $test) { for ($i = 0; $i -lt $seconds * 2; $i++) { if (& $test) { return $true }; Start-Sleep -Milliseconds 500 }; $false }
 function Get-QueuedActionCount($path) {
     if (-not (Test-Path -LiteralPath $path)) { return 0 }
@@ -326,6 +340,17 @@ try {
     # ===== E. step 2 =====
     & "$stage\install-pc.ps1" -Ci -AllowFolders ""
 
+    # The installer has started the watchdog; wait for its first Customer-session Cafe.Agent.
+    $firstCustomerAgent = WaitFor 30 {
+        @(Get-Process Cafe.Agent -IncludeUserName -ErrorAction SilentlyContinue | Where-Object {
+            $_.UserName -eq "$env:COMPUTERNAME\Customer"
+        }).Count -gt 0
+    }
+    $firstAgent = Get-Process Cafe.Agent -IncludeUserName -ErrorAction SilentlyContinue |
+        Where-Object { $_.UserName -eq "$env:COMPUTERNAME\Customer" } | Select-Object -First 1
+    Write-Host "First Customer sign-in lock-screen agent: found=$firstCustomerAgent; sessionId=$($firstAgent.SessionId); processId=$($firstAgent.Id)"
+    Write-D1CompiledPolicySnapshot "immediately after first Customer sign-in / Cafe.Agent start"
+
     $compiledPolicyNames = @("Exe.AppLocker", "Dll.AppLocker", "Msi.AppLocker", "Script.AppLocker", "Appx.AppLocker")
     $compiledPolicyFresh = $true
     foreach ($compiledPolicyName in $compiledPolicyNames) {
@@ -540,6 +565,8 @@ try {
             else { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue; $ran = $true }
         } catch { $ran = $false }
         if ($case.Id -eq "D1.C4a") {
+            Write-D1CompiledPolicySnapshot "immediately before D1.C4 Customer execution test"
+            Write-Host "D1.C4 diagnostic Customer execution result: file=$($case.File); processRan=$ran; exitCode=$($process.ExitCode)"
             $interactiveProbe = Invoke-CustomerInteractiveTaskProbe $case.File $u.SID.Value
             Write-Host "D1 comparison (same probe image): Start-Process -Credential ran=$ran; InteractiveToken task started=$($interactiveProbe.Started); same Cafe.Agent session=$($interactiveProbe.SameSession); interactive 8004=$($interactiveProbe.BlockedEvent)"
         }
