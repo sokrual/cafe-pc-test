@@ -334,7 +334,7 @@ try {
     foreach ($compiledPolicyName in $compiledPolicyNames) {
         $compiledPolicyPath = Join-Path "$env:WINDIR\System32\AppLocker" $compiledPolicyName
         $compiledItem = Get-Item -LiteralPath $compiledPolicyPath -ErrorAction SilentlyContinue
-        $fresh = ($null -ne $compiledItem) -and ($compiledItem.LastWriteTimeUtc -ge $d1InstallStarted.ToUniversalTime().AddSeconds(-2))
+        $fresh = ($null -ne $compiledItem) -and ($compiledItem.LastWriteTimeUtc -gt $d1InstallStarted.ToUniversalTime())
         Write-Host "First-install compiled policy $compiledPolicyName fresh=$fresh"
         $compiledPolicyFresh = $compiledPolicyFresh -and $fresh
     }
