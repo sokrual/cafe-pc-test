@@ -32,17 +32,14 @@ function Restore-OriginalState {
     if (Test-Path -LiteralPath $policyBackup) {
         Set-AppLockerPolicy -XmlPolicy $policyBackup
     }
-    $rootAclBackup = Join-Path $DataPath "c-root-acl-before.icacls"
+    $rootAclBackup = Join-Path $DataPath "c-root-acl-before.sddl"
     if (Test-Path -LiteralPath $rootAclBackup) {
-        $systemDriveRoot = "$env:SystemDrive\"
-        Push-Location $systemDriveRoot
-        try {
-            & "$env:WINDIR\System32\icacls.exe" $systemDriveRoot /restore $rootAclBackup
-            if ($LASTEXITCODE -ne 0) { throw "icacls /restore failed for $systemDriveRoot (exit $LASTEXITCODE)." }
-        } finally {
-            Pop-Location
-        }
-        Write-Host "Restored original ACL on $systemDriveRoot from the install-time icacls backup."
+        $systemDriveRoot = "$env:SystemDrive\\"
+        $originalRootSddl = Get-Content -LiteralPath $rootAclBackup -Raw
+        $rootAcl = Get-Acl -LiteralPath $systemDriveRoot
+        $rootAcl.SetSecurityDescriptorSddlForm($originalRootSddl)
+        Set-Acl -LiteralPath $systemDriveRoot -AclObject $rootAcl
+        Write-Host "Restored original ACL on $systemDriveRoot from the install-time SDDL backup."
     }
     if (Test-Path -LiteralPath $logBackup) {
         foreach ($entry in (Get-Content -LiteralPath $logBackup -Raw | ConvertFrom-Json)) {
@@ -190,15 +187,12 @@ function Install-CustomerPolicy {
 
     # Prevent creation of new, previously-uninventoried folders directly under the system-drive root.
     # Preserve the exact original descriptor once so repeated installs and uninstall remain reversible.
-    $systemDriveRoot = "$env:SystemDrive\"
-    $rootAclBackup = Join-Path $DataPath "c-root-acl-before.icacls"
-    if (-not (Test-Path -LiteralPath $rootAclBackup)) {
-        & "$env:WINDIR\System32\icacls.exe" $systemDriveRoot /save $rootAclBackup
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $rootAclBackup -PathType Leaf)) {
-            throw "icacls /save failed for $systemDriveRoot (exit $LASTEXITCODE)."
-        }
-    }
+    $systemDriveRoot = "$env:SystemDrive\\"
+    $rootAclBackup = Join-Path $DataPath "c-root-acl-before.sddl"
     $systemRootAcl = Get-Acl -LiteralPath $systemDriveRoot
+    if (-not (Test-Path -LiteralPath $rootAclBackup)) {
+        [IO.File]::WriteAllText($rootAclBackup, $systemRootAcl.Sddl, (New-Object Text.UTF8Encoding($false)))
+    }
     foreach ($principalSid in @("S-1-5-11", "S-1-5-32-545")) {
         # Remove only the CreateDirectories (directory AppendData) bit from this root's
         # explicit allow ACEs, preserving every other right and its inheritance flags.
