@@ -461,8 +461,10 @@ function Install-CustomerPolicy {
     }
     $cacheDirectory = Join-Path $env:WINDIR "System32\AppLocker"
     $cacheNames = @("Exe.AppLocker", "Dll.AppLocker", "Msi.AppLocker", "Script.AppLocker", "Appx.AppLocker")
-    function Wait-ForCompiledPolicy([datetime]$ImportStarted) {
-        $deadline = $ImportStarted.AddSeconds(180)
+    function Wait-ForCompiledPolicy([datetime]$ImportStarted, [datetime]$ServiceStarted) {
+        # The slow ARM runner can take nearly three minutes after AppIDSvc starts.
+        # Keep freshness anchored to the import, but measure the full deadline from service start.
+        $deadline = $ServiceStarted.AddSeconds(300)
         do {
             $allFresh = $true
             foreach ($cacheName in $cacheNames) {
@@ -513,7 +515,7 @@ function Install-CustomerPolicy {
     $appidServiceStartTime = if ($serviceStartEvent) { $serviceStartEvent.TimeCreated } else { (Get-Date) }
     Write-Host "AppIDSvc start time: $($appidServiceStartTime.ToString('o')) (System service-state event when available)."
 
-    $compiled = Wait-ForCompiledPolicy $policyInstallStarted
+    $compiled = Wait-ForCompiledPolicy $policyInstallStarted $appidServiceStartTime
     Write-CompiledPolicyInventory $policyInstallStarted "first import"
     if (-not $compiled) {
         Write-Host "AppLocker compilation failure diagnostics; install started $($policyInstallStarted.ToString('o')); AppIDSvc start time $($appidServiceStartTime.ToString('o'))."
@@ -530,7 +532,7 @@ function Install-CustomerPolicy {
                 Write-Host "  Could not read this event channel: $($_.Exception.Message)"
             }
         }
-        throw "AppLocker policy compilation failed: one or more of $($cacheNames -join ', ') were missing or stale 180 seconds after policy import and AppIDSvc startup. Installation is unsafe and has been stopped."
+        throw "AppLocker policy compilation failed: one or more of $($cacheNames -join ', ') were missing or stale 300 seconds after AppIDSvc startup. Installation is unsafe and has been stopped."
     }
     Write-Host "All five AppLocker policy collections were compiled after policy import."
     foreach ($channel in $channels) {
