@@ -558,6 +558,9 @@ try {
         $parent = Split-Path -Parent $case.File
         New-Item -ItemType Directory -Path $parent -Force | Out-Null
         Copy-Item -LiteralPath $pingSource -Destination $case.File -Force
+        if ($case.Id -eq "D1.C4a") {
+            Write-D1CompiledPolicySnapshot "immediately before D1.C4 Customer execution test"
+        }
         $ran = $false
         try {
             $process = AsCustomer $case.File "-n 1 127.0.0.1"
@@ -565,7 +568,6 @@ try {
             else { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue; $ran = $true }
         } catch { $ran = $false }
         if ($case.Id -eq "D1.C4a") {
-            Write-D1CompiledPolicySnapshot "immediately before D1.C4 Customer execution test"
             Write-Host "D1.C4 diagnostic Customer execution result: file=$($case.File); processRan=$ran; exitCode=$($process.ExitCode)"
             $interactiveProbe = Invoke-CustomerInteractiveTaskProbe $case.File $u.SID.Value
             Write-Host "D1 comparison (same probe image): Start-Process -Credential ran=$ran; InteractiveToken task started=$($interactiveProbe.Started); same Cafe.Agent session=$($interactiveProbe.SameSession); interactive 8004=$($interactiveProbe.BlockedEvent)"
