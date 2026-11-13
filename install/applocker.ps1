@@ -4,7 +4,7 @@ param(
     [ValidateSet("Install", "Uninstall")][string]$Mode,
     [string]$CustomerSid,
     [string]$DataPath = "$env:ProgramData\GamingCafe",
-    [AllowEmptyString()][string]$AllowFolders,
+    [AllowEmptyString()][string]$AllowFolders
 )
 $ErrorActionPreference = "Stop"
 $allowFoldersWasSpecified = $PSBoundParameters.ContainsKey("AllowFolders")
