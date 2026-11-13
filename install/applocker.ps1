@@ -505,47 +505,70 @@ function Install-CustomerPolicy {
     $running = Wait-ForService
     if (-not $running) { throw "Application Identity service did not start." }
     Start-AppLockerFilter
-    # Record every AppID scheduled task, then explicitly trigger policy conversion.
-    $appIdTaskPath = "\\Microsoft\\Windows\\AppID\\"
+    # Enumerate AppID tasks using the exact Task Scheduler path (PowerShell does not escape backslashes).
+    $appIdTaskPath = "\Microsoft\Windows\AppID\"
     $appIdTasks = @(Get-ScheduledTask -TaskPath $appIdTaskPath -ErrorAction SilentlyContinue)
     Write-Host "Scheduled tasks under $appIdTaskPath ($($appIdTasks.Count)):"
     foreach ($task in $appIdTasks) {
         $taskInfo = Get-ScheduledTaskInfo -TaskName $task.TaskName -TaskPath $task.TaskPath -ErrorAction SilentlyContinue
         $lastRun = if ($taskInfo -and $taskInfo.LastRunTime -and $taskInfo.LastRunTime.Year -gt 1601) { $taskInfo.LastRunTime.ToString("o") } else { "never" }
         $lastResult = if ($taskInfo) { $taskInfo.LastTaskResult } else { "unavailable" }
-        Write-Host ("  Name={0}; State={1}; LastRunTime={2}; LastTaskResult={3}" -f ($task.TaskPath + $task.TaskName), $task.State, $lastRun, $lastResult)
+        $principal = if ($task.Principal.UserId) { $task.Principal.UserId } else { "(not specified)" }
+        $actions = @($task.Actions | ForEach-Object {
+            "Execute=$($_.Execute); Arguments=$($_.Arguments); WorkingDirectory=$($_.WorkingDirectory)"
+        }) -join " | "
+        if (-not $actions) { $actions = "(no actions reported)" }
+        Write-Host ("  Name={0}; State={1}; LastRunTime={2}; LastTaskResult={3}; User={4}; Actions={5}" -f ($task.TaskPath + $task.TaskName), $task.State, $lastRun, $lastResult, $principal, $actions)
     }
     $converterTasks = @($appIdTasks | Where-Object {
-        $_.TaskName -match "(?i)PolicyConverter" -or
-        @($_.Actions | Where-Object { $_.Execute -and [IO.Path]::GetFileName($_.Execute) -ieq "appidpolicyconverter.exe" }).Count -gt 0
+        @($_.Actions | Where-Object {
+            $_.Execute -and [IO.Path]::GetFileName($_.Execute) -ieq "appidpolicyconverter.exe"
+        }).Count -gt 0
     })
     if ($converterTasks.Count -gt 0) {
         foreach ($converterTask in $converterTasks) {
             $fullTaskName = $converterTask.TaskPath + $converterTask.TaskName
+            $runRequestedAt = Get-Date
             Write-Host "Starting AppID policy-conversion scheduled task: $fullTaskName"
-            & "$env:WINDIR\\System32\\schtasks.exe" /run /tn $fullTaskName
+            & "$env:WINDIR\System32\schtasks.exe" /run /tn $fullTaskName
             if ($LASTEXITCODE -ne 0) { throw "Could not start AppID policy-conversion task '$fullTaskName' (schtasks exit $LASTEXITCODE)." }
             $taskDeadline = (Get-Date).AddMinutes(2)
+            $taskStarted = $false
             do {
                 Start-Sleep -Milliseconds 500
                 $currentTask = Get-ScheduledTask -TaskName $converterTask.TaskName -TaskPath $converterTask.TaskPath -ErrorAction Stop
-                if ($currentTask.State -ne "Running") { break }
+                $currentInfo = Get-ScheduledTaskInfo -TaskName $converterTask.TaskName -TaskPath $converterTask.TaskPath -ErrorAction SilentlyContinue
+                if ($currentInfo -and $currentInfo.LastRunTime -ge $runRequestedAt.AddSeconds(-2)) { $taskStarted = $true }
+                if ($taskStarted -and $currentTask.State -ne "Running") { break }
             } while ((Get-Date) -lt $taskDeadline)
+            if (-not $taskStarted) { throw "AppID policy-conversion task '$fullTaskName' did not record a new run within 2 minutes." }
             if ($currentTask.State -eq "Running") { throw "AppID policy-conversion task '$fullTaskName' did not finish within 2 minutes." }
             $finishedInfo = Get-ScheduledTaskInfo -TaskName $converterTask.TaskName -TaskPath $converterTask.TaskPath -ErrorAction SilentlyContinue
             Write-Host ("Finished AppID policy-conversion task: {0}; State={1}; LastRunTime={2}; LastTaskResult={3}" -f $fullTaskName, $currentTask.State, $finishedInfo.LastRunTime, $finishedInfo.LastTaskResult)
         }
     } else {
-        Write-Host "No AppID policy-conversion scheduled task was found under $appIdTaskPath."
-        $converterPath = Join-Path $env:WINDIR "System32\\appidpolicyconverter.exe"
-        if (Test-Path -LiteralPath $converterPath -PathType Leaf) {
-            Write-Host "Running System32 appidpolicyconverter.exe directly because no conversion task exists."
-            $converterProcess = Start-Process -FilePath $converterPath -Wait -PassThru -NoNewWindow
-            Write-Host "appidpolicyconverter.exe exit code: $($converterProcess.ExitCode)"
-            if ($converterProcess.ExitCode -ne 0) { throw "appidpolicyconverter.exe failed (exit $($converterProcess.ExitCode))." }
-        } else {
-            Write-Host "System32 appidpolicyconverter.exe does not exist; no direct conversion fallback is available."
+        Write-Host "No appidpolicyconverter.exe task was found under $appIdTaskPath. Searching all tasks under \Microsoft\Windows\ for appidpolicyconverter.exe or appidtel.exe actions."
+        $windowsTaskPath = "\Microsoft\Windows\"
+        $allWindowsTasks = @(Get-ScheduledTask -TaskPath $windowsTaskPath -ErrorAction SilentlyContinue)
+        $relatedTasks = @($allWindowsTasks | Where-Object {
+            @($_.Actions | Where-Object {
+                $_.Execute -and [IO.Path]::GetFileName($_.Execute) -match "(?i)^appid(policyconverter|tel)\.exe$"
+            }).Count -gt 0
+        })
+        Write-Host "Related AppID executable tasks under $windowsTaskPath ($($relatedTasks.Count)):"
+        foreach ($task in $relatedTasks) {
+            $taskInfo = Get-ScheduledTaskInfo -TaskName $task.TaskName -TaskPath $task.TaskPath -ErrorAction SilentlyContinue
+            $lastRun = if ($taskInfo -and $taskInfo.LastRunTime -and $taskInfo.LastRunTime.Year -gt 1601) { $taskInfo.LastRunTime.ToString("o") } else { "never" }
+            $lastResult = if ($taskInfo) { $taskInfo.LastTaskResult } else { "unavailable" }
+            $principal = if ($task.Principal.UserId) { $task.Principal.UserId } else { "(not specified)" }
+            $actions = @($task.Actions | ForEach-Object {
+                "Execute=$($_.Execute); Arguments=$($_.Arguments); WorkingDirectory=$($_.WorkingDirectory)"
+            }) -join " | "
+            if (-not $actions) { $actions = "(no actions reported)" }
+            Write-Host ("  Name={0}; State={1}; LastRunTime={2}; LastTaskResult={3}; User={4}; Actions={5}" -f ($task.TaskPath + $task.TaskName), $task.State, $lastRun, $lastResult, $principal, $actions)
         }
+        if ($relatedTasks.Count -eq 0) { Write-Host "No tasks under $windowsTaskPath have appidpolicyconverter.exe or appidtel.exe actions." }
+        # Do not invoke appidpolicyconverter.exe directly: it requires its scheduled-task security context.
     }
 
     $serviceStartEvent = Get-WinEvent -FilterHashtable @{ LogName = "System"; Id = 7036; StartTime = $policyInstallStarted.AddSeconds(-2) } -ErrorAction SilentlyContinue |
