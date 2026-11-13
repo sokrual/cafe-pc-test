@@ -200,6 +200,8 @@ function Install-CustomerPolicy {
         $principalRules = @($systemRootAcl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]) |
             Where-Object { $_.IdentityReference.Value -eq $principalSid -and
                 $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+                $_.InheritanceFlags -eq [Security.AccessControl.InheritanceFlags]::None -and
+                $_.PropagationFlags -eq [Security.AccessControl.PropagationFlags]::None -and
                 (([int64]$_.FileSystemRights -band [int64][int][Security.AccessControl.FileSystemRights]::CreateDirectories) -ne 0) })
         foreach ($rule in $principalRules) {
             $remainingRights = [int64]$rule.FileSystemRights -band (-bnot [int64][int][Security.AccessControl.FileSystemRights]::CreateDirectories)
@@ -219,6 +221,8 @@ function Install-CustomerPolicy {
     $remainingRootCreateRights = @($systemRootAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) |
         Where-Object { @("S-1-5-11", "S-1-5-32-545") -contains $_.IdentityReference.Value -and
             $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+            $_.InheritanceFlags -eq [Security.AccessControl.InheritanceFlags]::None -and
+            $_.PropagationFlags -eq [Security.AccessControl.PropagationFlags]::None -and
             (([int64]$_.FileSystemRights -band [int64][int][Security.AccessControl.FileSystemRights]::CreateDirectories) -ne 0) })
     if ($remainingRootCreateRights.Count -gt 0) {
         throw "Could not remove the CreateDirectories right for Authenticated Users and BUILTIN\Users on $systemDriveRoot."
