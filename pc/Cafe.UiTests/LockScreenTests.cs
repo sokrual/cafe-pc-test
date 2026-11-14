@@ -23,6 +23,29 @@ public sealed class LockScreenTests : IDisposable
 
     public void Dispose() { Rig.Kill(_agent); _rig.Dispose(); }
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr OpenProcess(uint desiredAccess, bool inheritHandle, uint processId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool CloseHandle(IntPtr handle);
+
+    [Fact]
+    public void Same_user_cannot_write_agent_memory_create_threads_or_duplicate_handles()
+    {
+        _agent = _rig.StartAgent();
+        try
+        {
+            foreach (var access in new uint[] { 0x0020, 0x0002, 0x0040 })
+            {
+                var handle = OpenProcess(access, false, (uint)_agent.Id);
+                if (handle != IntPtr.Zero) CloseHandle(handle);
+                Assert.True(handle == IntPtr.Zero, $"OpenProcess unexpectedly granted access 0x{access:X}");
+                Assert.Equal(5, Marshal.GetLastWin32Error());
+            }
+        }
+        finally { Rig.Kill(_agent); }
+    }
+
     [Fact]
     public async Task Pending_cleanup_keeps_the_lock_screen_blocked_with_counter_message()
     {
