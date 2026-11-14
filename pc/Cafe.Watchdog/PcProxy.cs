@@ -19,6 +19,7 @@ static class PcProxy
     static int _refusalLogged;
     static OfflineUnlockStore? _offline;
     static string? _actionQueuePath;
+    static string? _timeLockSettingPath;
     static readonly object ActionQueueGate = new();
     static int _syncingActions;
     static DateTime _lastOfflineRefresh = DateTime.MinValue;
@@ -131,6 +132,8 @@ static class PcProxy
             var keysDirectory = Path.GetDirectoryName(Path.GetFullPath(tokenFile))!;
             _offline = new OfflineUnlockStore(Path.Combine(keysDirectory, "offline-unlock.bin"));
             _actionQueuePath = Path.Combine(keysDirectory, "pending-actions.json");
+            _timeLockSettingPath = Path.Combine(keysDirectory, "time-lock-setting.json");
+            if (!File.Exists(_timeLockSettingPath)) WriteTimeLockSetting(false);
             firstPipe = NewPipe(clientSid); // proves the protected listener can actually be created
             _agentPath = resolvedAgentPath;
             _log = log;
@@ -173,6 +176,34 @@ static class PcProxy
             client?.Dispose();
             throw;
         }
+    }
+
+    static void WriteTimeLockSetting(bool enabled)
+    {
+        var path = _timeLockSettingPath ?? throw new InvalidOperationException("time-lock setting is not initialized");
+        var temp = path + ".new";
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(new { lockWhenTimeRunsOut = enabled });
+        using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            stream.Write(bytes);
+            stream.Flush(true);
+        }
+        ReplaceDurably(temp, path);
+    }
+
+    static string ReadTimeLockSetting() => File.ReadAllText(
+        _timeLockSettingPath ?? throw new InvalidOperationException("time-lock setting is not initialized"));
+
+    static void RememberTimeLockSetting(string content)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(content);
+            if (document.RootElement.TryGetProperty("lockWhenTimeRunsOut", out var value)
+                && value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                WriteTimeLockSetting(value.GetBoolean());
+        }
+        catch (JsonException) { }
     }
 
     public static void RefreshOfflineUnlockData()
@@ -410,6 +441,11 @@ static class PcProxy
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(200, "{}"))).WaitAsync(TimeSpan.FromSeconds(2));
                     return;
                 }
+                if (request is not null && request.Method == "GET" && request.Path == "/local/time-lock-setting" && request.Body is null)
+                {
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(200, ReadTimeLockSetting()))).WaitAsync(TimeSpan.FromSeconds(2));
+                    return;
+                }
                 if (request is not null && request.Method == "GET" && request.Path == "/local/offline-unlock-info" && request.Body is null)
                 {
                     var info = _offline?.InfoJson() ?? "{}";
@@ -435,6 +471,9 @@ static class PcProxy
                 requestTimeout.CancelAfter(TimeSpan.FromSeconds(3));
                 using var response = await (_http ?? throw new InvalidOperationException("PC proxy is not initialized")).SendAsync(message, requestTimeout.Token);
                 var content = await response.Content.ReadAsStringAsync(stop);
+                if (response.IsSuccessStatusCode && ((request.Method == "GET" && request.Path == "/pc/state")
+                    || (request.Method == "POST" && request.Path == "/pc/login")))
+                    RememberTimeLockSetting(content);
                 if (request.Method == "GET" && request.Path == "/pc/state" && DateTime.UtcNow - _lastOfflineRefresh > TimeSpan.FromSeconds(5))
                 {
                     _lastOfflineRefresh = DateTime.UtcNow;
