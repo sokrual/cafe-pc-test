@@ -15,6 +15,14 @@ static class Program
     static void Main(string[] args)
     {
         ProcessSecurity.ProtectCustomerAccess();
+        if (args.Contains("--test-read-time-lock-setting", StringComparer.OrdinalIgnoreCase))
+        {
+            if (Environment.GetEnvironmentVariable("CAFE_TEST_MODE") != "1")
+                throw new InvalidOperationException("time-lock setting test mode is not enabled");
+            var setting = new WatchdogPipeClient().GetFromJsonAsync<TimeLockSettingReply>("/local/time-lock-setting").GetAwaiter().GetResult();
+            Console.WriteLine(setting?.Enabled?.ToString().ToLowerInvariant() ?? "unset");
+            return;
+        }
         string? Arg(string n) => Array.IndexOf(args, n) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
         var testQueuePath = args.Contains("--test-queue-selflock", StringComparer.OrdinalIgnoreCase) ? "/pc/selflock"
             : args.Contains("--test-queue-logout", StringComparer.OrdinalIgnoreCase) ? "/pc/logout" : null;
