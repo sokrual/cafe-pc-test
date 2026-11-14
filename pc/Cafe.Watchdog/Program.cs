@@ -11,6 +11,17 @@ using System.Security.Principal;
 // (that file must sit in a folder only admins can change, or anyone could make SYSTEM start their program).
 if (args.Contains("--test-pipe-probe", StringComparer.OrdinalIgnoreCase))
     Environment.ExitCode = PcProxy.TestPipeProbe();
+else if (args.Contains("--test-agent-process-access", StringComparer.OrdinalIgnoreCase))
+{
+    var index = Array.FindIndex(args, x => x.Equals("--test-agent-process-access", StringComparison.OrdinalIgnoreCase));
+    Environment.ExitCode = index + 1 < args.Length && int.TryParse(args[index + 1], out var pid)
+        ? Native.TestAgentProcessAccess(pid) : 2;
+}
+else if (args.Contains("--test-read-lock-setting", StringComparer.OrdinalIgnoreCase))
+{
+    var keys = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "keys");
+    Console.WriteLine(new OfflineUnlockStore(Path.Combine(keys, "offline-unlock.bin")).ReadLockWhenTimeRunsOut());
+}
 else if (args.Contains("--test-set-offline-refresh", StringComparer.OrdinalIgnoreCase))
 {
     if (!args.Contains("--test-mode", StringComparer.OrdinalIgnoreCase)
@@ -256,6 +267,17 @@ static class Native
         if (h == IntPtr.Zero) return null;
         try { var sb = new StringBuilder(1024); var n = sb.Capacity; return QueryFullProcessImageName(h, 0, sb, ref n) ? Path.GetFullPath(sb.ToString()) : null; }
         finally { CloseHandle(h); }
+    }
+
+    public static int TestAgentProcessAccess(int pid)
+    {
+        foreach (var access in new[] { 0x0020, 0x0008, 0x0002, 0x0040, 0x00040000 })
+        {
+            var process = OpenProcess(access, false, pid);
+            if (process != IntPtr.Zero) { CloseHandle(process); return access; }
+            if (Marshal.GetLastWin32Error() != 5) return 10 + Marshal.GetLastWin32Error();
+        }
+        return 0;
     }
 
     [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr OpenProcess(int access, bool inherit, int pid);
