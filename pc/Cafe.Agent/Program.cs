@@ -1,8 +1,6 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Runtime.InteropServices;
-using System.Security.Principal;
-using System.ComponentModel;
 
 namespace Cafe.Agent;
 
@@ -13,34 +11,13 @@ static class Program
 {
     static string _logDir = "";
 
-    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string sddl, uint revision, out IntPtr descriptor, out uint size);
-    [DllImport("advapi32.dll", SetLastError = true)]
-    static extern bool SetKernelObjectSecurity(IntPtr handle, uint securityInformation, IntPtr descriptor);
-    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
-    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
-
-    static void HardenProcess()
-    {
-        var sid = WindowsIdentity.GetCurrent().User?.Value
-            ?? throw new InvalidOperationException("current account SID is unavailable");
-        var sddl = $"D:P(D;;0x0062;;;{sid})(D;;WD;;;OW)(A;;GA;;;SY)(A;;0x00121410;;;{sid})";
-        if (!ConvertStringSecurityDescriptorToSecurityDescriptor(sddl, 1, out var descriptor, out _))
-            throw new Win32Exception(Marshal.GetLastWin32Error());
-        try
-        {
-            const uint DaclSecurityInformation = 0x00000004, ProtectedDaclSecurityInformation = 0x80000000;
-            if (!SetKernelObjectSecurity(GetCurrentProcess(), DaclSecurityInformation | ProtectedDaclSecurityInformation, descriptor))
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-        }
-        finally { LocalFree(descriptor); }
-    }
-
     [STAThread]
     static void Main(string[] args)
     {
-        HardenProcess();
+        ProcessSecurity.ProtectCustomerAccess();
         string? Arg(string n) => Array.IndexOf(args, n) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+        var testOfflineSession = args.Contains("--test-offline-session", StringComparer.OrdinalIgnoreCase)
+            && File.Exists(Path.Combine(AppContext.BaseDirectory, "test-offline-session.flag"));
         var testQueuePath = args.Contains("--test-queue-selflock", StringComparer.OrdinalIgnoreCase) ? "/pc/selflock"
             : args.Contains("--test-queue-logout", StringComparer.OrdinalIgnoreCase) ? "/pc/logout" : null;
         if (testQueuePath is not null)
@@ -52,7 +29,7 @@ static class Program
         _logDir = Arg("--logs") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Cafe", "logs");
         Log($"started v{typeof(Program).Assembly.GetName().Version}");
         ApplicationConfiguration.Initialize();
-        Application.Run(new Agent(Arg("--name") ?? "Gaming Cafe"));
+        Application.Run(new Agent(Arg("--name") ?? "Gaming Cafe", testOfflineSession));
     }
 
     // never logs PINs or tokens; a log that can't be written must not stop the PC program
@@ -66,7 +43,6 @@ static class Program
 }
 
 public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec, bool SelfLocked = false, bool LockWhenTimeRunsOut = false);
-record LockSettingReply(bool Enabled);
 record ErrorBody(string Error);
 record OfflineUnlockReply(bool Success, string? Error, long? Step);
 record OfflineUnlockInfo(OfflineUnlockRate? Rate, int EnabledAccounts, DateTime? LockedUntil, int PendingSales,
@@ -88,8 +64,9 @@ sealed class Agent : ApplicationContext
     // installed cafe PCs only: the SYSTEM watchdog cleans the Customer account when this note appears, then deletes it
     static readonly string WipeNote = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "wipe", "request");
 
-    public Agent(string name)
+    public Agent(string name, bool testOfflineSession = false)
     {
+        if (testOfflineSession) _state = new PcState(false, null, -1, "prepaid", 0, 60);
         _lock = new LockScreen(name, Login, OfflineUnlock);
         _timer = new TimerWidget(Now, () => Send("/pc/logout", lockNow: true), () => Send("/pc/selflock", lockNow: true), () => Apply(_state with { Locked = true, Message = "Time is up. Please ask at the counter." }));
         KeyBlocker.Install(() => _lock.Visible);
@@ -119,8 +96,7 @@ sealed class Agent : ApplicationContext
         try
         {
             await ReplayUnacceptedActions();
-            var savedSetting = await _watchdog.GetFromJsonAsync<LockSettingReply>("/local/lock-setting");
-            if (savedSetting is not null) _state = _state with { LockWhenTimeRunsOut = savedSetting.Enabled };
+            _state = _state with { LockWhenTimeRunsOut = await _watchdog.GetFromJsonAsync<bool>("/local/lock-setting") };
             var serverState = await _watchdog.GetFromJsonAsync<PcState>("/pc/state");
             var offlineInfo = await _watchdog.GetFromJsonAsync<OfflineUnlockInfo>("/local/offline-unlock-info");
             if (offlineInfo?.PendingSales > 0)
