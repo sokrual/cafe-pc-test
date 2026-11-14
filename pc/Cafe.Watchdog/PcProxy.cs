@@ -20,6 +20,7 @@ static class PcProxy
     static OfflineUnlockStore? _offline;
     static string? _actionQueuePath;
     static string? _timeLockSettingPath;
+    static readonly object TimeLockSettingGate = new();
     static readonly object ActionQueueGate = new();
     static int _syncingActions;
     static DateTime _lastOfflineRefresh = DateTime.MinValue;
@@ -471,15 +472,20 @@ static class PcProxy
         var property = document.RootElement.EnumerateObject()
             .FirstOrDefault(p => p.Name.Equals("lockWhenTimeRunsOut", StringComparison.OrdinalIgnoreCase));
         if (property.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return;
-        var path = _timeLockSettingPath ?? throw new InvalidOperationException("time-lock setting path is not initialized");
-        var temp = path + ".new";
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(new TimeLockSettingReply(property.Value.GetBoolean()));
-        using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+        lock (TimeLockSettingGate)
         {
-            stream.Write(bytes);
-            stream.Flush(true);
+            var path = _timeLockSettingPath ?? throw new InvalidOperationException("time-lock setting path is not initialized");
+            var enabled = property.Value.GetBoolean();
+            if (File.Exists(path) && JsonSerializer.Deserialize<TimeLockSettingReply>(File.ReadAllText(path))?.Enabled == enabled) return;
+            var temp = path + ".new";
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(new TimeLockSettingReply(enabled));
+            using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                stream.Write(bytes);
+                stream.Flush(true);
+            }
+            ReplaceDurably(temp, path);
         }
-        ReplaceDurably(temp, path);
     }
 
     static async Task<string?> ReadBoundedLine(Stream stream, TimeSpan timeout, CancellationToken stop)
