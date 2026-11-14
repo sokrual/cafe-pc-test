@@ -253,7 +253,14 @@ if (-not $DnsServer) { $DnsServer = $Server }
 $dnsOk = $false
 if ($DnsServer -as [ipaddress]) { try { Resolve-DnsName "example.com" -Server $DnsServer -DnsOnly -QuickTimeout -ErrorAction Stop | Out-Null; $dnsOk = $true } catch { } }
 if ($dnsOk) {
-    $nics = @(Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq "Up" })
+    # Enumerate adapters individually; Get-NetIPConfiguration can fail to construct its NetAdapter CIM property
+    # when a Windows runner exposes multiple adapters.
+    $nics = @(Get-NetAdapter | Where-Object { $_.Status -eq "Up" } | ForEach-Object {
+        $adapter = $_
+        if (Get-NetRoute -InterfaceIndex $adapter.ifIndex -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue) {
+            [pscustomobject]@{ InterfaceIndex = $adapter.ifIndex; NetAdapter = $adapter }
+        }
+    })
     if (-not (Test-Path "$data\dns-before.json")) {
         @($nics | ForEach-Object { # "servers" empty = the address came automatically from the router
             $static = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($_.NetAdapter.InterfaceGuid)").NameServer

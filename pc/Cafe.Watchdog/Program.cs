@@ -11,6 +11,8 @@ using System.Security.Principal;
 // (that file must sit in a folder only admins can change, or anyone could make SYSTEM start their program).
 if (args.Contains("--test-pipe-probe", StringComparer.OrdinalIgnoreCase))
     Environment.ExitCode = PcProxy.TestPipeProbe();
+else if (args.Contains("--test-process-access", StringComparer.OrdinalIgnoreCase))
+    Environment.ExitCode = ProcessAccessProbe.Run(args);
 else if (args.Contains("--test-set-offline-refresh", StringComparer.OrdinalIgnoreCase))
 {
     if (!args.Contains("--test-mode", StringComparer.OrdinalIgnoreCase)
@@ -43,6 +45,31 @@ else if (args.Contains("--test-proxy", StringComparer.OrdinalIgnoreCase))
     Thread.Sleep(Timeout.Infinite);
 }
 else ServiceBase.Run(new WatchdogService());
+
+static class ProcessAccessProbe
+{
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr OpenProcess(uint desiredAccess, bool inheritHandle, uint processId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool CloseHandle(IntPtr handle);
+
+    public static int Run(string[] args)
+    {
+        var index = Array.FindIndex(args, value => value.Equals("--test-process-access", StringComparison.OrdinalIgnoreCase));
+        if (index < 0 || index + 1 >= args.Length || !uint.TryParse(args[index + 1], out var processId)) return 2;
+        // exit 11 VM_WRITE, 12 CREATE_THREAD, 13 DUP_HANDLE, 14 WRITE_DAC granted; 2 unexpected error; 0 all refused
+        var rights = new uint[] { 0x0020, 0x0002, 0x0040, 0x00040000 };
+        for (var i = 0; i < rights.Length; i++)
+        {
+            var handle = OpenProcess(rights[i], false, processId);
+            var error = Marshal.GetLastWin32Error();
+            if (handle != IntPtr.Zero) { CloseHandle(handle); return 11 + i; }
+            if (error != 5) return 2;
+        }
+        return 0;
+    }
+}
 
 sealed class WatchdogService : ServiceBase
 {
