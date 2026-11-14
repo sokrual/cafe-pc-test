@@ -22,7 +22,7 @@ public sealed class ProcessSecurityTests
             if (existing.ExitCode == 0) Assert.Skip("Customer already exists on this machine; refusing to change its credentials.");
         }
 
-        var password = Convert.ToBase64String(RandomNumberGenerator.GetBytes(24)) + "Aa9!";
+        var password = Convert.ToHexString(RandomNumberGenerator.GetBytes(5)) + "Aa9!";
         RunNet("user", "Customer", password, "/add", "/passwordchg:no", "/expires:never");
         var testDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
             "CafeProcessAccessTest-" + Guid.NewGuid().ToString("N"));
