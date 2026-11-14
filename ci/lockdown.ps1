@@ -1007,7 +1007,7 @@ try {
         # Hosted runners do not auto-logon to Customer; start the installed image with the same
         # interactive Customer credential path used by the D1 executable probes.
         Write-Host "No watchdog-owned Customer Cafe.Agent is present in the runner session; launching the Program Files image as Customer to verify its runtime dependencies."
-        $customerAgentProbe = AsCustomer "$app\Cafe.Agent.exe" "--server https://127.0.0.1:5443"
+        $customerAgentProbe = AsCustomer "$app\Cafe.Agent.exe" "--server https://127.0.0.1:5443 --logs $data\logs"
         $agentStarts = WaitFor 20 $customerAgentQuery
     }
     $agentProcesses = @(Get-Process Cafe.Agent -IncludeUserName -ErrorAction SilentlyContinue | Where-Object {

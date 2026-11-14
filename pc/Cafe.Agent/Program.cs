@@ -24,12 +24,16 @@ static class ProcessSecurity
 
     public static void Harden()
     {
-        string customerSid;
-        try { customerSid = new NTAccount("Customer").Translate(typeof(SecurityIdentifier)).Value; }
-        catch (IdentityNotMappedException) { return; }
         using var identity = WindowsIdentity.GetCurrent();
-        if (!string.Equals(identity.User?.Value, customerSid, StringComparison.OrdinalIgnoreCase)) return;
-
+        var identityName = identity.Name ?? "";
+        if (!identityName.Equals("Customer", StringComparison.OrdinalIgnoreCase)
+            && !identityName.EndsWith("\\Customer", StringComparison.OrdinalIgnoreCase))
+        {
+            Program.Log($"process DACL skipped for non-Customer identity {identityName}");
+            return;
+        }
+        var customerSid = identity.User?.Value
+            ?? throw new InvalidOperationException("Customer process token has no user SID.");
         var sddl = $"D:P(A;;GA;;;SY)(D;;0x00040062;;;{customerSid})(A;;GA;;;BA)(A;;0x00121411;;;{customerSid})";
         if (!ConvertStringSecurityDescriptorToSecurityDescriptor(sddl, 1, out var descriptor, out _))
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
@@ -39,6 +43,7 @@ static class ProcessSecurity
                 throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
         }
         finally { LocalFree(descriptor); }
+        Program.Log($"process DACL applied for Customer SID {customerSid}");
     }
 }
 
@@ -49,8 +54,9 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
-        ProcessSecurity.Harden();
         string? Arg(string n) => Array.IndexOf(args, n) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+        _logDir = Arg("--logs") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Cafe", "logs");
+        ProcessSecurity.Harden();
         var testQueuePath = args.Contains("--test-queue-selflock", StringComparer.OrdinalIgnoreCase) ? "/pc/selflock"
             : args.Contains("--test-queue-logout", StringComparer.OrdinalIgnoreCase) ? "/pc/logout" : null;
         if (testQueuePath is not null)
@@ -59,7 +65,6 @@ static class Program
             Environment.ExitCode = response.IsSuccessStatusCode ? 0 : 1;
             return;
         }
-        _logDir = Arg("--logs") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Cafe", "logs");
         Log($"started v{typeof(Program).Assembly.GetName().Version}");
         ApplicationConfiguration.Initialize();
         Application.Run(new Agent(Arg("--name") ?? "Gaming Cafe"));
