@@ -110,7 +110,7 @@ public sealed class ProcessSecurityTests
 
     static int RunAsCustomer(string password, string executable, string[] arguments, string workingDirectory)
     {
-        var command = new StringBuilder($"\"{executable}\" {pid}");
+        var command = new StringBuilder($"\"{executable}\" " + string.Join(" ", arguments.Select(Quote)));
         var startup = new StartupInfo { Cb = Marshal.SizeOf<StartupInfo>(), Desktop = @"winsta0\default", Flags = 1, ShowWindow = 0 };
         if (!CreateProcessWithLogonW("Customer", ".", password, 1, executable, command, 0x00000400,
             IntPtr.Zero, workingDirectory, ref startup, out var process))
