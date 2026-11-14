@@ -1,13 +1,52 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Runtime.InteropServices;
-using Microsoft.Win32;
+using System.Security.Principal;
 
 namespace Cafe.Agent;
 
 // The gaming PC program: a lock screen until a customer logs in, then a small timer that hides during games.
 // It asks the admin PC every 2 s what to show; the admin PC is always right about time and money.
 // Usage: Cafe.Agent --server https://ADMIN-PC:5443 [--token-file pc.token] [--pin-file server.pin] [--name "Gaming Cafe"] [--logs dir]
+static class ProcessSecurity
+{
+    [DllImport("kernel32.dll")]
+    static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string sddl, uint revision, out IntPtr descriptor, out uint size);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    static extern bool SetKernelObjectSecurity(IntPtr handle, uint securityInformation, IntPtr securityDescriptor);
+
+    [DllImport("kernel32.dll")]
+    static extern IntPtr LocalFree(IntPtr memory);
+
+    public static void Harden()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        var identityName = identity.Name ?? "";
+        if (!identityName.Equals("Customer", StringComparison.OrdinalIgnoreCase)
+            && !identityName.EndsWith("\\Customer", StringComparison.OrdinalIgnoreCase))
+        {
+            Program.Log($"process DACL skipped for non-Customer identity {identityName}");
+            return;
+        }
+        var customerSid = identity.User?.Value
+            ?? throw new InvalidOperationException("Customer process token has no user SID.");
+        var sddl = $"D:P(A;;GA;;;SY)(D;;0x00040062;;;{customerSid})(A;;GA;;;BA)(A;;0x00121411;;;{customerSid})";
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptor(sddl, 1, out var descriptor, out _))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        try
+        {
+            if (!SetKernelObjectSecurity(GetCurrentProcess(), 0x00000004, descriptor))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        }
+        finally { LocalFree(descriptor); }
+        Program.Log($"process DACL applied for Customer SID {customerSid}");
+    }
+}
+
 static class Program
 {
     static string _logDir = "";
@@ -16,6 +55,8 @@ static class Program
     static void Main(string[] args)
     {
         string? Arg(string n) => Array.IndexOf(args, n) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+        _logDir = Arg("--logs") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Cafe", "logs");
+        ProcessSecurity.Harden();
         var testQueuePath = args.Contains("--test-queue-selflock", StringComparer.OrdinalIgnoreCase) ? "/pc/selflock"
             : args.Contains("--test-queue-logout", StringComparer.OrdinalIgnoreCase) ? "/pc/logout" : null;
         if (testQueuePath is not null)
@@ -24,7 +65,6 @@ static class Program
             Environment.ExitCode = response.IsSuccessStatusCode ? 0 : 1;
             return;
         }
-        _logDir = Arg("--logs") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Cafe", "logs");
         Log($"started v{typeof(Program).Assembly.GetName().Version}");
         ApplicationConfiguration.Initialize();
         Application.Run(new Agent(Arg("--name") ?? "Gaming Cafe"));
@@ -42,31 +82,11 @@ static class Program
 
 public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec, bool SelfLocked = false, bool LockWhenTimeRunsOut = false);
 record ErrorBody(string Error);
+record TimeLockSetting(bool LockWhenTimeRunsOut);
 record OfflineUnlockReply(bool Success, string? Error, long? Step);
 record OfflineUnlockInfo(OfflineUnlockRate? Rate, int EnabledAccounts, DateTime? LockedUntil, int PendingSales,
     int MaxOfflineUnlockMinutes, DateTime? LastRefreshServerUtc);
 record OfflineUnlockRate(long Paise30, long Paise60, long Paise90, long ExtraBlockPaise, int MinimumMin, int BlockMin);
-
-static class LockSetting
-{
-    const string KeyPath = @"Software\GamingCafe\Agent";
-    public static bool Read()
-    {
-        try { using var key = Registry.CurrentUser.OpenSubKey(KeyPath); return key?.GetValue("LockWhenTimeRunsOut") is int value && value == 1; }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException) { return false; }
-    }
-    public static void Save(bool enabled)
-    {
-        try
-        {
-            if (Read() == enabled) return;
-            using var key = Registry.CurrentUser.CreateSubKey(KeyPath);
-            key?.SetValue("LockWhenTimeRunsOut", enabled ? 1 : 0, RegistryValueKind.DWord);
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException)
-        { Program.Log($"could not remember the time-lock setting (error code {e.HResult & 0xffff})"); }
-    }
-}
 
 sealed class Agent : ApplicationContext
 {
@@ -76,7 +96,7 @@ sealed class Agent : ApplicationContext
     readonly SemaphoreSlim _sendGate = new(1, 1);
     readonly LockScreen _lock;
     readonly TimerWidget _timer;
-    PcState _state = new(true, null, null, null, 0, null, LockWhenTimeRunsOut: LockSetting.Read()); // locked until the admin PC says otherwise
+    PcState _state = new(true, null, null, null, 0, null); // locked until the admin PC says otherwise
     DateTime _stateAt = DateTime.UtcNow;
     bool _online = true;
     // installed cafe PCs only: the SYSTEM watchdog cleans the Customer account when this note appears, then deletes it
@@ -113,6 +133,8 @@ sealed class Agent : ApplicationContext
         try
         {
             await ReplayUnacceptedActions();
+            if (await _watchdog.GetFromJsonAsync<TimeLockSetting>("/local/time-lock-setting") is { } remembered)
+                _state = _state with { LockWhenTimeRunsOut = remembered.LockWhenTimeRunsOut };
             var serverState = await _watchdog.GetFromJsonAsync<PcState>("/pc/state");
             var offlineInfo = await _watchdog.GetFromJsonAsync<OfflineUnlockInfo>("/local/offline-unlock-info");
             if (offlineInfo?.PendingSales > 0)
@@ -125,7 +147,6 @@ sealed class Agent : ApplicationContext
                 Apply(serverState); // the server decides whether the offline walk-in was accepted
             if (await _watchdog.GetFromJsonAsync<PcState>("/pc/state") is { } s)
             {
-                LockSetting.Save(s.LockWhenTimeRunsOut);
                 Apply(s);
             }
             if (!_online) Program.Log("admin PC reachable again");
@@ -159,7 +180,6 @@ sealed class Agent : ApplicationContext
             using var r = await _watchdog.PostAsJsonAsync("/pc/login", new { phone, pin });
             if (!r.IsSuccessStatusCode) return (await r.Content.ReadFromJsonAsync<ErrorBody>())?.Error ?? "Could not log in. Please try again.";
             var state = (await r.Content.ReadFromJsonAsync<PcState>())!;
-            LockSetting.Save(state.LockWhenTimeRunsOut);
             Apply(state);
             return null;
         }

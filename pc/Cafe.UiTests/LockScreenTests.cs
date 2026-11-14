@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Principal;
+using Microsoft.Win32;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Input;
@@ -331,6 +332,8 @@ public sealed class OfflineLockTests
     public async Task Offline_time_limit_locks_only_when_the_last_owner_setting_is_on(bool enabled)
     {
         using var rig = new Rig(offlineLockTest: true);
+        const string oldProfileSetting = @"Software\GamingCafe\Agent";
+        Registry.CurrentUser.DeleteSubKeyTree(oldProfileSetting, false);
         var agent = rig.StartAgent();
         try
         {
@@ -356,6 +359,11 @@ public sealed class OfflineLockTests
             var staff = await rig.StaffToken();
             Rig.WaitFor(() => rig.State(staff)["session"] is not null, 10, "customer session did not start");
             Rig.WaitFor(() => Find() is null or { IsOffscreen: true }, 10, "login did not unlock the PC");
+            Rig.WaitFor(() => File.Exists(rig.TimeLockSettingFile)
+                && System.Text.Json.JsonDocument.Parse(File.ReadAllText(rig.TimeLockSettingFile)).RootElement.GetProperty("lockWhenTimeRunsOut").GetBoolean() == enabled,
+                10, "watchdog did not retain the last server-supplied time-lock setting");
+            using (var restoredHive = Registry.CurrentUser.CreateSubKey(oldProfileSetting))
+                restoredHive!.SetValue("LockWhenTimeRunsOut", enabled ? 0 : 1, RegistryValueKind.DWord); // stale install-time hive value
             rig.StopServer();
 
             Thread.Sleep(TimeSpan.FromSeconds(70));
@@ -363,7 +371,11 @@ public sealed class OfflineLockTests
             if (enabled)
                 Assert.Equal("Time is up. Please ask at the counter.", Part(Find()!, "Message").Name);
         }
-        finally { Rig.Kill(agent); }
+        finally
+        {
+            Rig.Kill(agent);
+            Registry.CurrentUser.DeleteSubKeyTree(oldProfileSetting, false);
+        }
     }
 }
 
@@ -642,6 +654,7 @@ sealed class Rig : IDisposable
     public Rig(bool offlineLockTest = false) => StartServer(offlineLockTest);
     public string TokenFile => Path.Combine(_pcDir, "pc.token");
     public string OfflineCacheFile => Path.Combine(_pcDir, "offline-unlock.bin");
+    public string TimeLockSettingFile => Path.Combine(_pcDir, "time-lock-setting.json");
     public string AgentArgs => $"--server {Url} --token-file \"{TokenFile}\" --pin-file \"{Path.Combine(_pcDir, "server.pin")}\" --name \"Test Cafe\" --logs \"{Path.Combine(_pcDir, "logs")}\"";
 
     public void StartServer(bool offlineLockTest = false)
