@@ -48,7 +48,7 @@ B3  Lockdown and installers                                         BUILT - fina
               Guide: SECURITY-GUIDE.txt. Inbound blocks only (SMB, NetBIOS, RDP, WinRM); general outbound
               limits not done (remaining F11 risk is written in the guide).
          PR D (F1), split in two:                                                                       NEXT
-              D1 programs cannot run from customer-writable folders or removable drives
+              D1 programs cannot run from customer-writable folders or removable drives      DONE (PR #22, 14 Nov)
               D2 pen drives blocked unless owner or staff approve (decided 12 Nov), scanned with Defender,
                  never run, access ends at logout; every approval logged
          Rule (decided 12 Nov): every action by staff and owner is logged, the owner's included.
