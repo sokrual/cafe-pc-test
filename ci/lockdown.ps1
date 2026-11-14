@@ -798,7 +798,8 @@ try {
     $pipeRefused = $probe.ExitCode
     $refusalLogged = (Test-Path $watchdogLog) -and [bool](Select-String -Path $watchdogLog -Pattern "refused named-pipe client process" -SimpleMatch)
     Check "B3.E4b" "A non-Cafe.Agent.exe process running as Customer is refused by the pipe" ($pipeRefused -eq 0 -and $refusalLogged) "probe exit $pipeRefused, refusal logged $refusalLogged"
-    $ownerLogin = Invoke-RestMethod "https://127.0.0.1:5443/staff/login" -Method Post -ContentType "application/json" -Body (@{ phone = "9000000001"; pin = "432100" } | ConvertTo-Json)
+    $ownerCode = [CafeTotpProbe]::Current($fixture.ownerCounter)
+    $ownerLogin = Invoke-RestMethod "https://127.0.0.1:5443/staff/login" -Method Post -ContentType "application/json" -Body (@{ phone = "9000000001"; pin = "432100"; code = $ownerCode } | ConvertTo-Json)
     $ownerHeaders = @{ Authorization = "Bearer $($ownerLogin.token)" }
     Invoke-RestMethod "https://127.0.0.1:5443/staff/settings/time-lock" -Method Post -Headers $ownerHeaders -ContentType "application/json" -Body (@{ enabled = $true } | ConvertTo-Json) | Out-Null
     $timeLockSettingPath = "$data\keys\time-lock-setting.json"
