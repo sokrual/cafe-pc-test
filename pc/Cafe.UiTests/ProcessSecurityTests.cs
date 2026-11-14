@@ -38,7 +38,10 @@ public sealed class ProcessSecurityTests
             var probeDirectory = Path.Combine(AppContext.BaseDirectory, "ProcessAccessProbe");
             foreach (var file in Directory.GetFiles(probeDirectory))
                 File.Copy(file, Path.Combine(testDirectory, Path.GetFileName(file)), true);
-            var probeExe = Path.Combine(testDirectory, "Cafe.ProcessAccessProbe.exe");
+            var probeDll = Path.Combine(testDirectory, "Cafe.ProcessAccessProbe.dll");
+            var dotnetExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet", "dotnet.exe");
+            Assert.True(File.Exists(probeDll), "process-access probe DLL was not copied to Program Files");
+            Assert.True(File.Exists(dotnetExe), "dotnet.exe was not found under Program Files");
             var agentExe = Path.Combine(testDirectory, "Cafe.Agent.exe");
             var customerSid = new NTAccount("Customer").Translate(typeof(SecurityIdentifier)).Value;
 
@@ -61,7 +64,7 @@ public sealed class ProcessSecurityTests
             var until = DateTime.UtcNow.AddSeconds(20);
             while (DateTime.UtcNow < until)
             {
-                result = RunAsCustomer(password, probeExe, agent.Id, testDirectory);
+                result = RunAsCustomer(password, dotnetExe, [probeDll, agent.Id.ToString()], testDirectory);
                 if (result == 0) break;
                 Thread.Sleep(500); // wait for Cafe.Agent to apply its process DACL at startup
             }
@@ -105,7 +108,7 @@ public sealed class ProcessSecurityTests
         finally { CloseHandle(process.Thread); CloseHandle(process.Process); }
     }
 
-    static int RunAsCustomer(string password, string executable, int pid, string workingDirectory)
+    static int RunAsCustomer(string password, string executable, string[] arguments, string workingDirectory)
     {
         var command = new StringBuilder($"\"{executable}\" {pid}");
         var startup = new StartupInfo { Cb = Marshal.SizeOf<StartupInfo>(), Desktop = @"winsta0\default", Flags = 1, ShowWindow = 0 };
