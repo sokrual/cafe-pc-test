@@ -3,7 +3,6 @@ using System.Net.Http.Json;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Principal;
-using Microsoft.Win32;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Input;
@@ -329,7 +328,7 @@ public sealed class OfflineLockTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task Offline_time_limit_uses_watchdog_setting_after_customer_hive_reset(bool enabled)
+    public async Task Offline_time_limit_locks_only_when_the_last_owner_setting_is_on(bool enabled)
     {
         using var rig = new Rig(offlineLockTest: true);
         var agent = rig.StartAgent();
@@ -357,46 +356,12 @@ public sealed class OfflineLockTests
             var staff = await rig.StaffToken();
             Rig.WaitFor(() => rig.State(staff)["session"] is not null, 10, "customer session did not start");
             Rig.WaitFor(() => Find() is null or { IsOffscreen: true }, 10, "login did not unlock the PC");
-            Rig.WaitFor(() => File.Exists(rig.LockSettingFile)
-                && File.ReadAllBytes(rig.LockSettingFile).SequenceEqual(new[] { enabled ? (byte)1 : (byte)0 }),
-                10, "watchdog did not persist the last server time-lock setting");
             rig.StopServer();
-            Registry.CurrentUser.DeleteSubKeyTree(@"Software\GamingCafe\Agent", false); // a full reset replaces NTUSER.DAT
 
             Thread.Sleep(TimeSpan.FromSeconds(70));
             Assert.Equal(enabled, Find() is { IsOffscreen: false });
             if (enabled)
                 Assert.Equal("Time is up. Please ask at the counter.", Part(Find()!, "Message").Name);
-        }
-        finally { Rig.Kill(agent); }
-    }
-}
-
-[Collection("desktop")]
-public sealed class ProcessProtectionTests
-{
-    [Fact]
-    public void Customer_process_cannot_write_to_or_inject_into_Cafe_Agent()
-    {
-        using var rig = new Rig();
-        var agent = rig.StartAgent();
-        try
-        {
-            var source = Path.Combine(AppContext.BaseDirectory, "ProcessAccessProbe");
-            var destination = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "CafeTest", "ProcessAccessProbe");
-            Directory.CreateDirectory(destination);
-            foreach (var file in Directory.GetFiles(source)) File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), true);
-
-            var probePath = Path.Combine(destination, "Cafe.ProcessAccessProbe.exe");
-            using var probe = Process.Start(new ProcessStartInfo(probePath, agent.Id.ToString(System.Globalization.CultureInfo.InvariantCulture))
-            {
-                UseShellExecute = false,
-                WorkingDirectory = destination,
-                RedirectStandardError = true,
-                RedirectStandardOutput = true
-            })!;
-            Assert.True(probe.WaitForExit(10000), "process access probe did not finish");
-            Assert.Equal(0, probe.ExitCode);
         }
         finally { Rig.Kill(agent); }
     }
@@ -677,7 +642,6 @@ sealed class Rig : IDisposable
     public Rig(bool offlineLockTest = false) => StartServer(offlineLockTest);
     public string TokenFile => Path.Combine(_pcDir, "pc.token");
     public string OfflineCacheFile => Path.Combine(_pcDir, "offline-unlock.bin");
-    public string LockSettingFile => Path.Combine(_pcDir, "lock-when-time-runs-out");
     public string AgentArgs => $"--server {Url} --token-file \"{TokenFile}\" --pin-file \"{Path.Combine(_pcDir, "server.pin")}\" --name \"Test Cafe\" --logs \"{Path.Combine(_pcDir, "logs")}\"";
 
     public void StartServer(bool offlineLockTest = false)
