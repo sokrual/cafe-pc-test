@@ -62,8 +62,13 @@ B3  Lockdown and installers                                         BUILT - fina
     B5.13 PC hardware list and PC groups (decided 14 Nov): each PC reports its processor, graphics card, memory,
           Windows version and monitors at install; the counter lists them. The owner puts PCs into groups (e.g.
           Standard, High-end) and gives each group its own rate card, so better PCs can cost more. Groups are set by
-          the owner, not worked out from the hardware. Open: how prepaid time, packages and memberships work across
-          groups. Placed after B5.10 (which changes money and currency handling).
+          the owner, not worked out from the hardware. Placed after B5.10 (which changes money and currency handling).
+          Setup questions (decided 14 Nov), asked only when the owner sets different rates for different groups;
+          one rate for all PCs = no questions:
+          - packages and prepaid time across groups: owner picks "not allowed", "allowed, difference charged" or
+            "tied to the group they were bought for"; changeable later
+          - memberships: owner picks "valid on all groups" or "each group has its own memberships", and can create
+            membership levels (e.g. Silver, Gold) that say which groups they cover; changeable later
     After #9: a final review by two separate reviewers. Then B4.
     Level A switches to blocking after the cafe trial, with an "allow or not" prompt for the owner (part of B5.3).
 
