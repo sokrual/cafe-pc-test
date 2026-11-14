@@ -112,8 +112,8 @@ public sealed class ProcessSecurityTests
 
     static int RunAsCustomer(string password, string executable, string script, int pid, string workingDirectory)
     {
-        var command = new StringBuilder($"\\\"{executable}\\\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {Quote(script)} {pid}");
-        var startup = new StartupInfo { Cb = Marshal.SizeOf<StartupInfo>(), Desktop = @"winsta0\\default", Flags = 1, ShowWindow = 0 };
+        var command = new StringBuilder($"\"{executable}\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {Quote(script)} {pid}");
+        var startup = new StartupInfo { Cb = Marshal.SizeOf<StartupInfo>(), Desktop = @"winsta0\default", Flags = 1, ShowWindow = 0 };
         if (!CreateProcessWithLogonW("Customer", ".", password, 1, executable, command, 0x00000400,
             IntPtr.Zero, workingDirectory, ref startup, out var process))
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
@@ -155,7 +155,7 @@ public sealed class ProcessSecurityTests
         string currentDirectory, ref StartupInfo startupInfo, out ProcessInformation processInformation);
 
     [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool WaitForSingleObject(IntPtr handle, uint milliseconds);
+    static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
