@@ -8,6 +8,7 @@ using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Input;
 using FlaUI.Core.WindowsAPI;
 using FlaUI.UIA3;
+using Microsoft.Win32;
 using Xunit;
 
 
@@ -328,15 +329,26 @@ public sealed class OfflineLockTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task Offline_time_limit_locks_only_when_the_last_owner_setting_is_on(bool enabled)
+    public async Task Offline_time_limit_setting_survives_customer_profile_reset(bool enabled)
     {
         using var rig = new Rig(offlineLockTest: true);
         var agent = rig.StartAgent();
         try
         {
-            using var app = Application.Attach(agent.Id);
             var owner = await rig.OwnerToken();
             await rig.Post("/staff/settings/time-lock", new { enabled }, owner);
+            var settingFile = Path.Combine(Path.GetDirectoryName(rig.TokenFile)!, "time-lock-setting.json");
+            Rig.WaitFor(() => File.Exists(settingFile)
+                && File.ReadAllText(settingFile).Contains(enabled ? "\\\"enabled\\\":true" : "\\\"enabled\\\":false",
+                    StringComparison.OrdinalIgnoreCase), 15, "watchdog did not persist the latest server time-lock setting");
+
+            // Model the install-time HKCU hive restored by a full logout reset. It deliberately
+            // contains the opposite value; the Agent must use the watchdog's SYSTEM-owned copy.
+            Rig.Kill(agent);
+            using (var stale = Registry.CurrentUser.CreateSubKey(@"Software\\GamingCafe\\Agent"))
+                stale!.SetValue("LockWhenTimeRunsOut", enabled ? 0 : 1, RegistryValueKind.DWord);
+            agent = rig.StartAgent();
+            using var app = Application.Attach(agent.Id);
 
             Window? Find() => app.GetAllTopLevelWindows(rig.Ui).FirstOrDefault(w => w.Properties.AutomationId.ValueOrDefault == "LockScreen");
             Window LockWindow()
