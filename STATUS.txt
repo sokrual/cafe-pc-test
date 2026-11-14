@@ -50,7 +50,8 @@ B3  Lockdown and installers                                         BUILT - fina
          PR D (F1), split in two:                                                                       NEXT
               D1 programs cannot run from customer-writable folders or removable drives      DONE (PR #22, 14 Nov)
               D2 pen drives blocked unless owner or staff approve (decided 12 Nov), scanned with Defender,
-                 never run, access ends at logout; every approval logged
+                 never run, access ends at logout; every approval logged. The prompt offers Block, Allow read-only,
+                 Allow read and write (decided 14 Nov).
          Rule (decided 12 Nov): every action by staff and owner is logged, the owner's included.
          PC follow-ups: show PcState.Notice; offline "30/60/90 min" text when the block changes; reset erases
               the remembered lock setting (F4); pipe identity check is path-based (F14); check the lock screen
