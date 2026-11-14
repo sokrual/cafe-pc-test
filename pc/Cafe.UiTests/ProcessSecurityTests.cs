@@ -35,13 +35,33 @@ public sealed class ProcessSecurityTests
             var sourceDirectory = Path.GetDirectoryName(Rig.Env("CAFE_AGENT_EXE"))!;
             foreach (var file in Directory.GetFiles(sourceDirectory))
                 File.Copy(file, Path.Combine(testDirectory, Path.GetFileName(file)), true);
-            var probeDirectory = Path.Combine(AppContext.BaseDirectory, "ProcessAccessProbe");
-            foreach (var file in Directory.GetFiles(probeDirectory))
-                File.Copy(file, Path.Combine(testDirectory, Path.GetFileName(file)), true);
-            var probeDll = Path.Combine(testDirectory, "Cafe.ProcessAccessProbe.dll");
-            var dotnetExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet", "dotnet.exe");
-            Assert.True(File.Exists(probeDll), "process-access probe DLL was not copied to Program Files");
-            Assert.True(File.Exists(dotnetExe), "dotnet.exe was not found under Program Files");
+            var probeScript = Path.Combine(testDirectory, "process-access-probe.ps1");
+            File.WriteAllText(probeScript, """
+                $source = @'
+                using System;
+                using System.Runtime.InteropServices;
+                public static class CafeProcessAccessProbe {
+                    [DllImport("kernel32.dll", SetLastError = true)]
+                    static extern IntPtr OpenProcess(uint access, bool inherit, int processId);
+                    [DllImport("kernel32.dll")]
+                    static extern bool CloseHandle(IntPtr handle);
+                    public static int Check(int processId) {
+                        foreach (uint access in new uint[] { 0x20, 0x8, 0x2, 0x40, 0x40000 }) {
+                            var handle = OpenProcess(access, false, processId);
+                            if (handle != IntPtr.Zero) { CloseHandle(handle); return 1; }
+                            if (Marshal.GetLastWin32Error() != 5) return 2;
+                        }
+                        return 0;
+                    }
+                }
+                '@
+                Add-Type -TypeDefinition $source
+                exit [CafeProcessAccessProbe]::Check([int]$args[0])
+                """, new UTF8Encoding(false));
+            var powershellExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
+                @"WindowsPowerShell\v1.0\powershell.exe");
+            Assert.True(File.Exists(probeScript), "process-access probe was not written to Program Files");
+            Assert.True(File.Exists(powershellExe), "Windows PowerShell was not found");
             var agentExe = Path.Combine(testDirectory, "Cafe.Agent.exe");
             var customerSid = new NTAccount("Customer").Translate(typeof(SecurityIdentifier)).Value;
 
@@ -64,7 +84,9 @@ public sealed class ProcessSecurityTests
             var until = DateTime.UtcNow.AddSeconds(20);
             while (DateTime.UtcNow < until)
             {
-                result = RunAsCustomer(password, dotnetExe, [probeDll, agent.Id.ToString()], testDirectory);
+                result = RunAsCustomer(password, powershellExe,
+                    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", probeScript, agent.Id.ToString()],
+                    testDirectory);
                 if (result == 0) break;
                 Thread.Sleep(500); // wait for Cafe.Agent to apply its process DACL at startup
             }
