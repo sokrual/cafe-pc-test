@@ -29,7 +29,7 @@ static class ProcessSecurity
 
         // Customer can inspect and wait for the lock screen, but cannot inject, write memory,
         // create threads, duplicate handles, or change the process DACL as its owner.
-        var sddl = $"D:P(D;;0x006A;;;{customer.Value})(D;;WDAC;;;OW)(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00101000;;;{customer.Value})";
+        var sddl = $"D:P(D;;0x006A;;;{customer.Value})(D;;WD;;;OW)(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00101000;;;{customer.Value})";
         if (!ConvertStringSecurityDescriptorToSecurityDescriptor(sddl, 1, out var descriptor, out _))
             throw new Win32Exception(Marshal.GetLastWin32Error());
         try
