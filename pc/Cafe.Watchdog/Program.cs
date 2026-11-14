@@ -271,7 +271,7 @@ static class Native
 
     public static int TestAgentProcessAccess(int pid)
     {
-        foreach (var access in new[] { 0x0020, 0x0008, 0x0002, 0x0040, 0x00040000 })
+        foreach (var access in new[] { 0x0020, 0x0008, 0x0002, 0x0040, 0x00040000, 0x00080000 })
         {
             var process = OpenProcess(access, false, pid);
             if (process != IntPtr.Zero) { CloseHandle(process); return access; }
