@@ -6,5 +6,6 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <OutputPath>$(MSBuildProjectDirectory)\..\Cafe.UiTests\bin\$(Configuration)\$(TargetFramework)\ProcessAccessProbe\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
   </PropertyGroup>
 </Project>
