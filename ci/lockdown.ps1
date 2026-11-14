@@ -798,6 +798,15 @@ try {
     $pipeRefused = $probe.ExitCode
     $refusalLogged = (Test-Path $watchdogLog) -and [bool](Select-String -Path $watchdogLog -Pattern "refused named-pipe client process" -SimpleMatch)
     Check "B3.E4b" "A non-Cafe.Agent.exe process running as Customer is refused by the pipe" ($pipeRefused -eq 0 -and $refusalLogged) "probe exit $pipeRefused, refusal logged $refusalLogged"
+    $ownerLogin = Invoke-RestMethod "https://127.0.0.1:5443/staff/login" -Method Post -ContentType "application/json" -Body (@{ phone = "9000000001"; pin = "432100" } | ConvertTo-Json)
+    $ownerHeaders = @{ Authorization = "Bearer $($ownerLogin.token)" }
+    Invoke-RestMethod "https://127.0.0.1:5443/staff/settings/time-lock" -Method Post -Headers $ownerHeaders -ContentType "application/json" -Body (@{ enabled = $true } | ConvertTo-Json) | Out-Null
+    $timeLockSettingPath = "$data\keys\time-lock-setting.json"
+    $timeLockRemembered = WaitFor 15 {
+        if (-not (Test-Path -LiteralPath $timeLockSettingPath)) { return $false }
+        try { (Get-Content -LiteralPath $timeLockSettingPath -Raw | ConvertFrom-Json).lockWhenTimeRunsOut -eq $true } catch { $false }
+    }
+    Check "F4.1" "Watchdog remembers the owner's latest server time-lock setting outside Customer HKCU" $timeLockRemembered "protected file $timeLockSettingPath; expected lockWhenTimeRunsOut=true"
     $la = Get-Content "$data\levelA-id.txt" -ErrorAction SilentlyContinue
     Check "B3.E5" "Level A watch-only on (nothing blocked)" ($la -and ((CiTool.exe --list-policies) -match [regex]::Escape("$la".Trim('{}')))) "policy $la"
 
@@ -898,6 +907,9 @@ try {
     $usrClassMatch = -not (Test-Path $usrClassSnapshot) -or ((Test-Path $usrClassPath) -and ((Get-FileHash $usrClassPath).Hash -eq (Get-FileHash $usrClassSnapshot).Hash))
     $hiveMatch = $ntUserMatch -and $usrClassMatch
     Check "B3.M2" "Customer profile folder and registry hives are restored from the owner's clean baseline" ((Test-Path $prof) -and (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$($u.SID.Value)") -and $hiveMatch) "profile $prof; NTUSER.DAT $ntUserMatch; UsrClass.dat $usrClassMatch"
+    $timeLockAfterReset = $false
+    try { $timeLockAfterReset = (Get-Content -LiteralPath $timeLockSettingPath -Raw | ConvertFrom-Json).lockWhenTimeRunsOut -eq $true } catch { }
+    Check "F4.2" "Last server time-lock setting survives a full Customer profile and hive reset" $timeLockAfterReset "protected watchdog setting after reset: $timeLockAfterReset"
     $passwordProbe = AsCustomer "$env:WINDIR\System32\cmd.exe" "/c exit"
     $passwordOk = $passwordProbe.WaitForExit(15000) -and $passwordProbe.ExitCode -eq 0
     Check "B3.M3" "Customer password still works after a full profile reset" $passwordOk "AsCustomer exit success: $passwordOk"
@@ -987,6 +999,18 @@ try {
         $_.UserName -eq "$env:COMPUTERNAME\Customer" -and $_.Path -eq "$app\Cafe.Agent.exe"
     })
     Check "D1.C9" "Cafe.Agent from Program Files loads and runs under the Customer token" ($agentStarts -and $agentProcesses.Count -gt 0) "Customer-owned Cafe.Agent processes $($agentProcesses.Count); Program Files runtime sidecars $(@(Get-ChildItem -LiteralPath $app -Filter '*.dll' -File).Count)"
+    $processAccessDenied = $false
+    $processAccessDetail = "No Customer-owned Cafe.Agent process was found"
+    if ($agentProcesses.Count -gt 0) {
+        try {
+            $processProbe = AsCustomer "$app\Cafe.Watchdog.exe" "--test-process-access $($agentProcesses[0].Id)"
+            $processProbeExited = $processProbe.WaitForExit(15000)
+            if (-not $processProbeExited) { Stop-Process -Id $processProbe.Id -Force -ErrorAction SilentlyContinue }
+            $processAccessDenied = $processProbeExited -and $processProbe.ExitCode -eq 0
+            $processAccessDetail = "Program Files Cafe.Watchdog.exe as Customer; exit $($processProbe.ExitCode)"
+        } catch { $processAccessDetail = $_.Exception.Message }
+    }
+    Check "F14.1" "Customer program from Program Files cannot open Cafe.Agent for VM_WRITE, CREATE_THREAD or DUP_HANDLE" $processAccessDenied $processAccessDetail
     if ($customerAgentProbe -and -not $customerAgentProbe.HasExited) { Stop-Process -Id $customerAgentProbe.Id -Force -ErrorAction SilentlyContinue }
     # An unreachable counter server must also leave the request pending; reconnecting lets the next loop retry.
     Set-Content "$data\wipe\request" ""
