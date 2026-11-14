@@ -8,6 +8,7 @@ using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Input;
 using FlaUI.Core.WindowsAPI;
 using FlaUI.UIA3;
+using Microsoft.Win32;
 using Xunit;
 
 
@@ -328,15 +329,44 @@ public sealed class OfflineLockTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task Offline_time_limit_locks_only_when_the_last_owner_setting_is_on(bool enabled)
+    public async Task Offline_time_limit_setting_survives_customer_profile_reset(bool enabled)
     {
         using var rig = new Rig(offlineLockTest: true);
         var agent = rig.StartAgent();
         try
         {
-            using var app = Application.Attach(agent.Id);
             var owner = await rig.OwnerToken();
             await rig.Post("/staff/settings/time-lock", new { enabled }, owner);
+            var settingFile = Path.Combine(Path.GetDirectoryName(rig.TokenFile)!, "time-lock-setting.json");
+            Rig.WaitFor(() => File.Exists(settingFile)
+                && File.ReadAllText(settingFile).Contains(enabled ? "\"enabled\":true" : "\"enabled\":false",
+                    StringComparison.OrdinalIgnoreCase), 15, "watchdog did not persist the latest server time-lock setting");
+
+            // Model the install-time HKCU hive restored by a full logout reset. It deliberately
+            // contains the opposite value; the Agent must use the watchdog's SYSTEM-owned copy.
+            Rig.Kill(agent);
+            using (var stale = Registry.CurrentUser.CreateSubKey(@"Software\GamingCafe\Agent"))
+                stale!.SetValue("LockWhenTimeRunsOut", enabled ? 0 : 1, RegistryValueKind.DWord);
+            rig.StopServer();
+            var probeStart = new ProcessStartInfo(Rig.Env("CAFE_AGENT_EXE"))
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            probeStart.ArgumentList.Add("--test-read-time-lock-setting");
+            probeStart.Environment["CAFE_TEST_MODE"] = "1";
+            using (var probe = Process.Start(probeStart)!)
+            {
+                var output = probe.StandardOutput.ReadToEnd().Trim();
+                var error = probe.StandardError.ReadToEnd();
+                probe.WaitForExit();
+                Assert.True(probe.ExitCode == 0, "Agent could not read the watchdog setting while offline: " + error);
+                Assert.Equal(enabled ? "true" : "false", output);
+            }
+            rig.StartServer();
+            agent = rig.StartAgent();
+            using var app = Application.Attach(agent.Id);
 
             Window? Find() => app.GetAllTopLevelWindows(rig.Ui).FirstOrDefault(w => w.Properties.AutomationId.ValueOrDefault == "LockScreen");
             Window LockWindow()
@@ -674,20 +704,23 @@ sealed class Rig : IDisposable
     }
     public Process StartAgent()
     {
-        var sid = WindowsIdentity.GetCurrent().User!.Value;
-        var proxy = new ProcessStartInfo(Env("CAFE_WATCHDOG_EXE")) { UseShellExecute = false };
-        foreach (var a in new[] { "--test-proxy", "--server", Url, "--token-file", Path.Combine(_pcDir, "pc.token"),
-            "--pin-file", Path.Combine(_pcDir, "server.pin"), "--pipe-sid", sid,
-            "--agent-path", Env("CAFE_AGENT_EXE") }) proxy.ArgumentList.Add(a);
-        proxy.RedirectStandardError = true;
-        proxy.RedirectStandardOutput = true;
-        _watchdogProxy = Process.Start(proxy)!;
-        _watchdogProxy.ErrorDataReceived += (_, e) => { if (e.Data is not null) Console.WriteLine("watchdog proxy: " + e.Data); };
-        _watchdogProxy.OutputDataReceived += (_, e) => { if (e.Data is not null) Console.WriteLine("watchdog proxy: " + e.Data); };
-        _watchdogProxy.BeginErrorReadLine();
-        _watchdogProxy.BeginOutputReadLine();
-        Thread.Sleep(500);
-        if (_watchdogProxy.HasExited) throw new InvalidOperationException("watchdog proxy exited with code " + _watchdogProxy.ExitCode);
+        if (_watchdogProxy is null || _watchdogProxy.HasExited)
+        {
+            var sid = WindowsIdentity.GetCurrent().User!.Value;
+            var proxy = new ProcessStartInfo(Env("CAFE_WATCHDOG_EXE")) { UseShellExecute = false };
+            foreach (var a in new[] { "--test-proxy", "--server", Url, "--token-file", Path.Combine(_pcDir, "pc.token"),
+                "--pin-file", Path.Combine(_pcDir, "server.pin"), "--pipe-sid", sid,
+                "--agent-path", Env("CAFE_AGENT_EXE") }) proxy.ArgumentList.Add(a);
+            proxy.RedirectStandardError = true;
+            proxy.RedirectStandardOutput = true;
+            _watchdogProxy = Process.Start(proxy)!;
+            _watchdogProxy.ErrorDataReceived += (_, e) => { if (e.Data is not null) Console.WriteLine("watchdog proxy: " + e.Data); };
+            _watchdogProxy.OutputDataReceived += (_, e) => { if (e.Data is not null) Console.WriteLine("watchdog proxy: " + e.Data); };
+            _watchdogProxy.BeginErrorReadLine();
+            _watchdogProxy.BeginOutputReadLine();
+            Thread.Sleep(500);
+            if (_watchdogProxy.HasExited) throw new InvalidOperationException("watchdog proxy exited with code " + _watchdogProxy.ExitCode);
+        }
         var agent = new ProcessStartInfo(Env("CAFE_AGENT_EXE")) { UseShellExecute = false };
         foreach (var a in new[] { "--name", "Test Cafe", "--logs", Path.Combine(_pcDir, "logs") }) agent.ArgumentList.Add(a);
         return Process.Start(agent)!;

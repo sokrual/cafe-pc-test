@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Runtime.InteropServices;
-using Microsoft.Win32;
 
 namespace Cafe.Agent;
 
@@ -15,6 +14,15 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        ProcessSecurity.ProtectCustomerAccess();
+        if (args.Contains("--test-read-time-lock-setting", StringComparer.OrdinalIgnoreCase))
+        {
+            if (Environment.GetEnvironmentVariable("CAFE_TEST_MODE") != "1")
+                throw new InvalidOperationException("time-lock setting test mode is not enabled");
+            var setting = new WatchdogPipeClient().GetFromJsonAsync<TimeLockSettingReply>("/local/time-lock-setting").GetAwaiter().GetResult();
+            Console.WriteLine(setting?.Enabled?.ToString().ToLowerInvariant() ?? "unset");
+            return;
+        }
         string? Arg(string n) => Array.IndexOf(args, n) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
         var testQueuePath = args.Contains("--test-queue-selflock", StringComparer.OrdinalIgnoreCase) ? "/pc/selflock"
             : args.Contains("--test-queue-logout", StringComparer.OrdinalIgnoreCase) ? "/pc/logout" : null;
@@ -41,32 +49,13 @@ static class Program
 }
 
 public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec, bool SelfLocked = false, bool LockWhenTimeRunsOut = false);
+record TimeLockSettingReply(bool? Enabled);
 record ErrorBody(string Error);
 record OfflineUnlockReply(bool Success, string? Error, long? Step);
 record OfflineUnlockInfo(OfflineUnlockRate? Rate, int EnabledAccounts, DateTime? LockedUntil, int PendingSales,
     int MaxOfflineUnlockMinutes, DateTime? LastRefreshServerUtc);
 record OfflineUnlockRate(long Paise30, long Paise60, long Paise90, long ExtraBlockPaise, int MinimumMin, int BlockMin);
 
-static class LockSetting
-{
-    const string KeyPath = @"Software\GamingCafe\Agent";
-    public static bool Read()
-    {
-        try { using var key = Registry.CurrentUser.OpenSubKey(KeyPath); return key?.GetValue("LockWhenTimeRunsOut") is int value && value == 1; }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException) { return false; }
-    }
-    public static void Save(bool enabled)
-    {
-        try
-        {
-            if (Read() == enabled) return;
-            using var key = Registry.CurrentUser.CreateSubKey(KeyPath);
-            key?.SetValue("LockWhenTimeRunsOut", enabled ? 1 : 0, RegistryValueKind.DWord);
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException)
-        { Program.Log($"could not remember the time-lock setting (error code {e.HResult & 0xffff})"); }
-    }
-}
 
 sealed class Agent : ApplicationContext
 {
@@ -76,7 +65,7 @@ sealed class Agent : ApplicationContext
     readonly SemaphoreSlim _sendGate = new(1, 1);
     readonly LockScreen _lock;
     readonly TimerWidget _timer;
-    PcState _state = new(true, null, null, null, 0, null, LockWhenTimeRunsOut: LockSetting.Read()); // locked until the admin PC says otherwise
+    PcState _state = new(true, null, null, null, 0, null); // locked until the admin PC says otherwise
     DateTime _stateAt = DateTime.UtcNow;
     bool _online = true;
     // installed cafe PCs only: the SYSTEM watchdog cleans the Customer account when this note appears, then deletes it
@@ -112,6 +101,9 @@ sealed class Agent : ApplicationContext
     {
         try
         {
+            var rememberedSetting = await _watchdog.GetFromJsonAsync<TimeLockSettingReply>("/local/time-lock-setting");
+            if (rememberedSetting?.Enabled is bool enabled)
+                _state = _state with { LockWhenTimeRunsOut = enabled };
             await ReplayUnacceptedActions();
             var serverState = await _watchdog.GetFromJsonAsync<PcState>("/pc/state");
             var offlineInfo = await _watchdog.GetFromJsonAsync<OfflineUnlockInfo>("/local/offline-unlock-info");
@@ -125,7 +117,6 @@ sealed class Agent : ApplicationContext
                 Apply(serverState); // the server decides whether the offline walk-in was accepted
             if (await _watchdog.GetFromJsonAsync<PcState>("/pc/state") is { } s)
             {
-                LockSetting.Save(s.LockWhenTimeRunsOut);
                 Apply(s);
             }
             if (!_online) Program.Log("admin PC reachable again");
@@ -159,7 +150,6 @@ sealed class Agent : ApplicationContext
             using var r = await _watchdog.PostAsJsonAsync("/pc/login", new { phone, pin });
             if (!r.IsSuccessStatusCode) return (await r.Content.ReadFromJsonAsync<ErrorBody>())?.Error ?? "Could not log in. Please try again.";
             var state = (await r.Content.ReadFromJsonAsync<PcState>())!;
-            LockSetting.Save(state.LockWhenTimeRunsOut);
             Apply(state);
             return null;
         }

@@ -19,12 +19,15 @@ static class PcProxy
     static int _refusalLogged;
     static OfflineUnlockStore? _offline;
     static string? _actionQueuePath;
+    static string? _timeLockSettingPath;
+    static readonly object TimeLockSettingGate = new();
     static readonly object ActionQueueGate = new();
     static int _syncingActions;
     static DateTime _lastOfflineRefresh = DateTime.MinValue;
     sealed record Request(string Method, string Path, string? Body);
     sealed record Response(int Status, string Content);
     sealed record ActionRequest(string Path);
+    sealed record TimeLockSettingReply(bool? Enabled);
     sealed record QueuedAction(string Id, string Path, DateTime CreatedUtc);
     [StructLayout(LayoutKind.Sequential)]
     struct DataBlob { public int Length; public IntPtr Data; }
@@ -131,6 +134,7 @@ static class PcProxy
             var keysDirectory = Path.GetDirectoryName(Path.GetFullPath(tokenFile))!;
             _offline = new OfflineUnlockStore(Path.Combine(keysDirectory, "offline-unlock.bin"));
             _actionQueuePath = Path.Combine(keysDirectory, "pending-actions.json");
+            _timeLockSettingPath = Path.Combine(keysDirectory, "time-lock-setting.json");
             firstPipe = NewPipe(clientSid); // proves the protected listener can actually be created
             _agentPath = resolvedAgentPath;
             _log = log;
@@ -410,6 +414,14 @@ static class PcProxy
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(200, "{}"))).WaitAsync(TimeSpan.FromSeconds(2));
                     return;
                 }
+                if (request is not null && request.Method == "GET" && request.Path == "/local/time-lock-setting" && request.Body is null)
+                {
+                    var remembered = File.Exists(_timeLockSettingPath)
+                        ? JsonSerializer.Deserialize<TimeLockSettingReply>(File.ReadAllText(_timeLockSettingPath))
+                        : new TimeLockSettingReply(null);
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(200, JsonSerializer.Serialize(remembered)))).WaitAsync(TimeSpan.FromSeconds(2));
+                    return;
+                }
                 if (request is not null && request.Method == "GET" && request.Path == "/local/offline-unlock-info" && request.Body is null)
                 {
                     var info = _offline?.InfoJson() ?? "{}";
@@ -435,6 +447,8 @@ static class PcProxy
                 requestTimeout.CancelAfter(TimeSpan.FromSeconds(3));
                 using var response = await (_http ?? throw new InvalidOperationException("PC proxy is not initialized")).SendAsync(message, requestTimeout.Token);
                 var content = await response.Content.ReadAsStringAsync(stop);
+                if (response.IsSuccessStatusCode && request.Path is "/pc/state" or "/pc/login")
+                    RememberTimeLockSetting(content);
                 if (request.Method == "GET" && request.Path == "/pc/state" && DateTime.UtcNow - _lastOfflineRefresh > TimeSpan.FromSeconds(5))
                 {
                     _lastOfflineRefresh = DateTime.UtcNow;
@@ -449,6 +463,28 @@ static class PcProxy
                 _log("PC pipe request ended: " + e.Message);
             }
             catch (Exception e) { _log("PC pipe request failed: " + e.Message); }
+        }
+    }
+
+    static void RememberTimeLockSetting(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var property = document.RootElement.EnumerateObject()
+            .FirstOrDefault(p => p.Name.Equals("lockWhenTimeRunsOut", StringComparison.OrdinalIgnoreCase));
+        if (property.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return;
+        lock (TimeLockSettingGate)
+        {
+            var path = _timeLockSettingPath ?? throw new InvalidOperationException("time-lock setting path is not initialized");
+            var enabled = property.Value.GetBoolean();
+            if (File.Exists(path) && JsonSerializer.Deserialize<TimeLockSettingReply>(File.ReadAllText(path))?.Enabled == enabled) return;
+            var temp = path + ".new";
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(new TimeLockSettingReply(enabled));
+            using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                stream.Write(bytes);
+                stream.Flush(true);
+            }
+            ReplaceDurably(temp, path);
         }
     }
 
