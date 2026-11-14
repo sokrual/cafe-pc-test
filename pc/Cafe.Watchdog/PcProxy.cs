@@ -21,6 +21,8 @@ static class PcProxy
     static string? _actionQueuePath;
     static string? _timeLockSettingPath;
     static readonly object ActionQueueGate = new();
+    static readonly object TimeLockSettingGate = new();
+    static string? _lastTimeLockRefreshError;
     static int _syncingActions;
     static DateTime _lastOfflineRefresh = DateTime.MinValue;
     sealed record Request(string Method, string Path, string? Body);
@@ -156,6 +158,7 @@ static class PcProxy
                 {
                     try
                     {
+                        RefreshTimeLockSetting();
                         if (DateTime.UtcNow >= nextOfflineRefresh)
                         {
                             RefreshOfflineUnlockData();
@@ -199,11 +202,44 @@ static class PcProxy
         try
         {
             using var document = JsonDocument.Parse(content);
-            if (document.RootElement.TryGetProperty("lockWhenTimeRunsOut", out var value)
-                && value.ValueKind is JsonValueKind.True or JsonValueKind.False)
-                WriteTimeLockSetting(value.GetBoolean());
+            if (!document.RootElement.TryGetProperty("lockWhenTimeRunsOut", out var value)
+                || value.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return;
+            var enabled = value.GetBoolean();
+            lock (TimeLockSettingGate)
+            {
+                try
+                {
+                    using var current = JsonDocument.Parse(ReadTimeLockSetting());
+                    if (current.RootElement.TryGetProperty("lockWhenTimeRunsOut", out var saved)
+                        && saved.ValueKind is JsonValueKind.True or JsonValueKind.False
+                        && saved.GetBoolean() == enabled) return;
+                }
+                catch (Exception e) when (e is IOException or JsonException) { }
+                WriteTimeLockSetting(enabled);
+                _log($"time-lock setting saved: {enabled} at {DateTimeOffset.UtcNow:O}");
+            }
         }
         catch (JsonException) { }
+    }
+
+    static void RefreshTimeLockSetting()
+    {
+        try
+        {
+            var client = _http ?? throw new InvalidOperationException("PC proxy is not initialized");
+            using var response = client.GetAsync("/pc/state").GetAwaiter().GetResult();
+            response.EnsureSuccessStatusCode();
+            RememberTimeLockSetting(response.Content.ReadAsStringAsync().GetAwaiter().GetResult());
+            _lastTimeLockRefreshError = null;
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException or InvalidOperationException)
+        {
+            if (_lastTimeLockRefreshError != e.Message)
+            {
+                _lastTimeLockRefreshError = e.Message;
+                _log("time-lock setting refresh deferred: " + e.Message);
+            }
+        }
     }
 
     public static void RefreshOfflineUnlockData()

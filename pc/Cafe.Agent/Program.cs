@@ -42,7 +42,10 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
-        ProcessSecurity.Harden();
+#if DEBUG
+        if (!args.Contains("--test-disable-process-hardening", StringComparer.OrdinalIgnoreCase))
+#endif
+            ProcessSecurity.Harden();
         string? Arg(string n) => Array.IndexOf(args, n) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
         var testQueuePath = args.Contains("--test-queue-selflock", StringComparer.OrdinalIgnoreCase) ? "/pc/selflock"
             : args.Contains("--test-queue-logout", StringComparer.OrdinalIgnoreCase) ? "/pc/logout" : null;

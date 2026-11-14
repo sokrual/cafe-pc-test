@@ -801,13 +801,27 @@ try {
     $ownerCode = [CafeTotpProbe]::Current($fixture.ownerCounter)
     $ownerLogin = Invoke-RestMethod "https://127.0.0.1:5443/staff/login" -Method Post -ContentType "application/json" -Body (@{ phone = "9000000001"; pin = "432100"; code = $ownerCode } | ConvertTo-Json)
     $ownerHeaders = @{ Authorization = "Bearer $($ownerLogin.token)" }
+    $timeLockLogStart = if (Test-Path -LiteralPath $watchdogLog) { @(Get-Content -LiteralPath $watchdogLog).Count } else { 0 }
     Invoke-RestMethod "https://127.0.0.1:5443/staff/settings/time-lock" -Method Post -Headers $ownerHeaders -ContentType "application/json" -Body (@{ enabled = $true } | ConvertTo-Json) | Out-Null
     $timeLockSettingPath = "$data\keys\time-lock-setting.json"
     $timeLockRemembered = WaitFor 15 {
         if (-not (Test-Path -LiteralPath $timeLockSettingPath)) { return $false }
         try { (Get-Content -LiteralPath $timeLockSettingPath -Raw | ConvertFrom-Json).lockWhenTimeRunsOut -eq $true } catch { $false }
     }
-    Check "F4.1" "Watchdog remembers the owner's latest server time-lock setting outside Customer HKCU" $timeLockRemembered "protected file $timeLockSettingPath; expected lockWhenTimeRunsOut=true"
+    $timeLockCustomerAgents = @(Get-Process -IncludeUserName -ErrorAction SilentlyContinue | Where-Object {
+        $_.ProcessName -eq "Cafe.Agent" -and $_.UserName -eq "$env:COMPUTERNAME\Customer"
+    })
+    $timeLockWindowLog = @()
+    if (Test-Path -LiteralPath $watchdogLog) {
+        $timeLockWindowLog = @(Get-Content -LiteralPath $watchdogLog | Select-Object -Skip $timeLockLogStart)
+    }
+    Write-Host "F4.1 Customer-owned Cafe.Agent running: $($timeLockCustomerAgents.Count -gt 0) (count $($timeLockCustomerAgents.Count))"
+    if ($timeLockWindowLog.Count -eq 0) {
+        Write-Host "F4.1 watchdog log in 15-second window: <no new lines>"
+    } else {
+        foreach ($line in $timeLockWindowLog) { Write-Host "F4.1 watchdog log in 15-second window: $line" }
+    }
+    Check "F4.1" "Watchdog remembers the owner's latest server time-lock setting outside Customer HKCU" $timeLockRemembered "protected file $timeLockSettingPath; expected lockWhenTimeRunsOut=true; Customer-owned Cafe.Agent running: $($timeLockCustomerAgents.Count -gt 0) (count $($timeLockCustomerAgents.Count)); watchdog log lines in 15-second window: $($timeLockWindowLog.Count)"
     $la = Get-Content "$data\levelA-id.txt" -ErrorAction SilentlyContinue
     Check "B3.E5" "Level A watch-only on (nothing blocked)" ($la -and ((CiTool.exe --list-policies) -match [regex]::Escape("$la".Trim('{}')))) "policy $la"
 
