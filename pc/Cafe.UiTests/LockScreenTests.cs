@@ -179,7 +179,7 @@ public sealed class OfflineLockTests
     public async Task Staff_authenticator_unlocks_offline_and_the_sale_reaches_the_server_ledger()
     {
         using var rig = new Rig();
-        var agent = rig.StartAgent(disableProcessHardening: true);
+        var agent = rig.StartAgent();
         try
         {
             using var app = Application.Attach(agent.Id);
@@ -685,7 +685,7 @@ sealed class Rig : IDisposable
             throw;
         }
     }
-    public Process StartAgent(bool disableProcessHardening = false)
+    public Process StartAgent()
     {
         var sid = WindowsIdentity.GetCurrent().User!.Value;
         var proxy = new ProcessStartInfo(Env("CAFE_WATCHDOG_EXE")) { UseShellExecute = false };
@@ -703,7 +703,6 @@ sealed class Rig : IDisposable
         if (_watchdogProxy.HasExited) throw new InvalidOperationException("watchdog proxy exited with code " + _watchdogProxy.ExitCode);
         var agent = new ProcessStartInfo(Env("CAFE_AGENT_EXE")) { UseShellExecute = false };
         foreach (var a in new[] { "--name", "Test Cafe", "--logs", Path.Combine(_pcDir, "logs") }) agent.ArgumentList.Add(a);
-        if (disableProcessHardening) agent.ArgumentList.Add("--test-disable-process-hardening");
         return Process.Start(agent)!;
     }
 

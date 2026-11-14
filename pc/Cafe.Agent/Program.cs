@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 
 namespace Cafe.Agent;
 
@@ -23,7 +24,13 @@ static class ProcessSecurity
 
     public static void Harden()
     {
-        const string sddl = "D:P(A;;GA;;;SY)(D;;0x00040062;;;OW)(A;;GA;;;BA)(A;;0x00121411;;;OW)";
+        string customerSid;
+        try { customerSid = new NTAccount("Customer").Translate(typeof(SecurityIdentifier)).Value; }
+        catch (IdentityNotMappedException) { return; }
+        using var identity = WindowsIdentity.GetCurrent();
+        if (!string.Equals(identity.User?.Value, customerSid, StringComparison.OrdinalIgnoreCase)) return;
+
+        var sddl = $"D:P(A;;GA;;;SY)(D;;0x00040062;;;{customerSid})(A;;GA;;;BA)(A;;0x00121411;;;{customerSid})";
         if (!ConvertStringSecurityDescriptorToSecurityDescriptor(sddl, 1, out var descriptor, out _))
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
         try
@@ -42,10 +49,7 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
-#if DEBUG
-        if (!args.Contains("--test-disable-process-hardening", StringComparer.OrdinalIgnoreCase))
-#endif
-            ProcessSecurity.Harden();
+        ProcessSecurity.Harden();
         string? Arg(string n) => Array.IndexOf(args, n) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
         var testQueuePath = args.Contains("--test-queue-selflock", StringComparer.OrdinalIgnoreCase) ? "/pc/selflock"
             : args.Contains("--test-queue-logout", StringComparer.OrdinalIgnoreCase) ? "/pc/logout" : null;
