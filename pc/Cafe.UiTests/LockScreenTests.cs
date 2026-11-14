@@ -347,6 +347,24 @@ public sealed class OfflineLockTests
             Rig.Kill(agent);
             using (var stale = Registry.CurrentUser.CreateSubKey(@"Software\GamingCafe\Agent"))
                 stale!.SetValue("LockWhenTimeRunsOut", enabled ? 0 : 1, RegistryValueKind.DWord);
+            rig.StopServer();
+            var probeStart = new ProcessStartInfo(Rig.Env("CAFE_AGENT_EXE"))
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            probeStart.ArgumentList.Add("--test-read-time-lock-setting");
+            probeStart.Environment["CAFE_TEST_MODE"] = "1";
+            using (var probe = Process.Start(probeStart)!)
+            {
+                var output = probe.StandardOutput.ReadToEnd().Trim();
+                var error = probe.StandardError.ReadToEnd();
+                probe.WaitForExit();
+                Assert.True(probe.ExitCode == 0, "Agent could not read the watchdog setting while offline: " + error);
+                Assert.Equal(enabled ? "true" : "false", output);
+            }
+            rig.StartServer();
             agent = rig.StartAgent();
             using var app = Application.Attach(agent.Id);
 
@@ -686,20 +704,23 @@ sealed class Rig : IDisposable
     }
     public Process StartAgent()
     {
-        var sid = WindowsIdentity.GetCurrent().User!.Value;
-        var proxy = new ProcessStartInfo(Env("CAFE_WATCHDOG_EXE")) { UseShellExecute = false };
-        foreach (var a in new[] { "--test-proxy", "--server", Url, "--token-file", Path.Combine(_pcDir, "pc.token"),
-            "--pin-file", Path.Combine(_pcDir, "server.pin"), "--pipe-sid", sid,
-            "--agent-path", Env("CAFE_AGENT_EXE") }) proxy.ArgumentList.Add(a);
-        proxy.RedirectStandardError = true;
-        proxy.RedirectStandardOutput = true;
-        _watchdogProxy = Process.Start(proxy)!;
-        _watchdogProxy.ErrorDataReceived += (_, e) => { if (e.Data is not null) Console.WriteLine("watchdog proxy: " + e.Data); };
-        _watchdogProxy.OutputDataReceived += (_, e) => { if (e.Data is not null) Console.WriteLine("watchdog proxy: " + e.Data); };
-        _watchdogProxy.BeginErrorReadLine();
-        _watchdogProxy.BeginOutputReadLine();
-        Thread.Sleep(500);
-        if (_watchdogProxy.HasExited) throw new InvalidOperationException("watchdog proxy exited with code " + _watchdogProxy.ExitCode);
+        if (_watchdogProxy is null || _watchdogProxy.HasExited)
+        {
+            var sid = WindowsIdentity.GetCurrent().User!.Value;
+            var proxy = new ProcessStartInfo(Env("CAFE_WATCHDOG_EXE")) { UseShellExecute = false };
+            foreach (var a in new[] { "--test-proxy", "--server", Url, "--token-file", Path.Combine(_pcDir, "pc.token"),
+                "--pin-file", Path.Combine(_pcDir, "server.pin"), "--pipe-sid", sid,
+                "--agent-path", Env("CAFE_AGENT_EXE") }) proxy.ArgumentList.Add(a);
+            proxy.RedirectStandardError = true;
+            proxy.RedirectStandardOutput = true;
+            _watchdogProxy = Process.Start(proxy)!;
+            _watchdogProxy.ErrorDataReceived += (_, e) => { if (e.Data is not null) Console.WriteLine("watchdog proxy: " + e.Data); };
+            _watchdogProxy.OutputDataReceived += (_, e) => { if (e.Data is not null) Console.WriteLine("watchdog proxy: " + e.Data); };
+            _watchdogProxy.BeginErrorReadLine();
+            _watchdogProxy.BeginOutputReadLine();
+            Thread.Sleep(500);
+            if (_watchdogProxy.HasExited) throw new InvalidOperationException("watchdog proxy exited with code " + _watchdogProxy.ExitCode);
+        }
         var agent = new ProcessStartInfo(Env("CAFE_AGENT_EXE")) { UseShellExecute = false };
         foreach (var a in new[] { "--name", "Test Cafe", "--logs", Path.Combine(_pcDir, "logs") }) agent.ArgumentList.Add(a);
         return Process.Start(agent)!;
