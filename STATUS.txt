@@ -1,5 +1,5 @@
 PROJECT STATUS - what is built, what is left
-Last updated: 10 Nov 2026. Version 0.3.0. Latest green test run: 42775255486 (all 8 jobs pass, pull request #3).
+Last updated: 14 Nov 2026. Version 0.3.0. Latest green test run: 43615677170 (all 8 jobs pass, lockdown 113/113, pull request #27).
 
 Read README.txt for the layout, CHECKS.txt for the backend and security checks every phase must pass, and CLAUDE.md for the rules (commit as "Turyos Ventures" with an empty email,
 no AI signature anywhere, simple English in everything people see, smallest change that fully works).
@@ -53,8 +53,9 @@ B3  Lockdown and installers                                         BUILT - fina
                  never run, access ends at logout; every approval logged. The prompt offers Block, Allow read-only,
                  Allow read and write (decided 14 Nov).
          Rule (decided 12 Nov): every action by staff and owner is logged, the owner's included.
-         PC follow-ups: show PcState.Notice; offline "30/60/90 min" text when the block changes; reset erases
-              the remembered lock setting (F4); pipe identity check is path-based (F14); check the lock screen
+         E1 the remembered lock setting survives a reset (F4); Customer programs cannot open or rewrite
+              the lock screen process (F14)                                                 DONE (PR #27, 14 Nov)
+         E2 show PcState.Notice; offline "30/60/90 min" text when the block changes; check the lock screen
               takes focus back when another program's window appears (seen once in CI: Win+D left wsl.exe in front)
          Before the Phase 0 build (decided 13 Nov): show the lock screen on its own Windows desktop (like the Windows
               sign-in screen), so games in exclusive fullscreen and NVIDIA/AMD overlays cannot draw over it on any
