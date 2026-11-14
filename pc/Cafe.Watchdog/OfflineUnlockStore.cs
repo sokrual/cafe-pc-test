@@ -28,6 +28,7 @@ sealed class OfflineUnlockStore
         public int WrongTries { get; set; }
         public DateTime? LockedUntil { get; set; }
         public DateTime? LastRefreshServerUtc { get; set; }
+        public bool LockWhenTimeRunsOut { get; set; }
         public int MaxOfflineUnlockMinutes { get; set; } = 180;
         public List<OfflineUnlockSale> Pending { get; set; } = [];
     }
@@ -99,6 +100,21 @@ sealed class OfflineUnlockStore
             return JsonSerializer.Serialize(new OfflineUnlockInfo(state.Rate, state.Accounts.Count, state.LockedUntil,
                 state.Pending.Count, state.MaxOfflineUnlockMinutes, state.LastRefreshServerUtc));
         }
+    }
+
+    public void RememberLockWhenTimeRunsOut(bool enabled)
+    {
+        lock (_gate)
+        {
+            var state = Read();
+            state.LockWhenTimeRunsOut = enabled;
+            Write(state);
+        }
+    }
+
+    public bool ReadLockWhenTimeRunsOut()
+    {
+        lock (_gate) return Read().LockWhenTimeRunsOut;
     }
 
     public void SetLastRefreshServerUtcForTest(DateTime serverTimeUtc)
