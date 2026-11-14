@@ -5,7 +5,7 @@ internal static class Program
     static int Main(string[] args)
     {
         if (args.Length != 1 || !int.TryParse(args[0], out var pid)) return 2;
-        foreach (uint access in new uint[] { 0x20, 0x2, 0x40, 0x40000 })
+        foreach (uint access in new uint[] { 0x20, 0x8, 0x2, 0x40, 0x40000 })
         {
             var handle = OpenProcess(access, false, pid);
             if (handle != IntPtr.Zero)
