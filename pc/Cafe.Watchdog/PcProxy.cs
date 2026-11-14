@@ -19,6 +19,8 @@ static class PcProxy
     static int _refusalLogged;
     static OfflineUnlockStore? _offline;
     static string? _actionQueuePath;
+    static string? _lockSettingPath;
+    static readonly object LockSettingGate = new();
     static readonly object ActionQueueGate = new();
     static int _syncingActions;
     static DateTime _lastOfflineRefresh = DateTime.MinValue;
@@ -131,6 +133,7 @@ static class PcProxy
             var keysDirectory = Path.GetDirectoryName(Path.GetFullPath(tokenFile))!;
             _offline = new OfflineUnlockStore(Path.Combine(keysDirectory, "offline-unlock.bin"));
             _actionQueuePath = Path.Combine(keysDirectory, "pending-actions.json");
+            _lockSettingPath = Path.Combine(keysDirectory, "lock-when-time-runs-out");
             firstPipe = NewPipe(clientSid); // proves the protected listener can actually be created
             _agentPath = resolvedAgentPath;
             _log = log;
@@ -233,6 +236,41 @@ static class PcProxy
             finally { LocalFree(output.Data); }
         }
         finally { handle.Free(); }
+    }
+
+    sealed record LockSettingReply(bool Enabled);
+
+    static void RememberLockSetting(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (!document.RootElement.TryGetProperty("lockWhenTimeRunsOut", out var value)
+                || value.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return;
+            var path = _lockSettingPath ?? throw new InvalidOperationException("lock setting store is not initialized");
+            lock (LockSettingGate)
+            {
+                var temp = path + ".new";
+                using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+                {
+                    stream.WriteByte(value.GetBoolean() ? (byte)1 : (byte)0);
+                    stream.Flush(true);
+                }
+                ReplaceDurably(temp, path);
+            }
+        }
+        catch (JsonException) { }
+    }
+
+    static bool ReadLockSetting()
+    {
+        var path = _lockSettingPath ?? throw new InvalidOperationException("lock setting store is not initialized");
+        lock (LockSettingGate)
+        {
+            if (!File.Exists(path)) return false;
+            var value = File.ReadAllBytes(path);
+            return value.Length == 1 && value[0] == 1;
+        }
     }
 
     static void EnqueueAction(string path)
@@ -410,6 +448,12 @@ static class PcProxy
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(200, "{}"))).WaitAsync(TimeSpan.FromSeconds(2));
                     return;
                 }
+                if (request is not null && request.Method == "GET" && request.Path == "/local/lock-setting" && request.Body is null)
+                {
+                    var setting = JsonSerializer.Serialize(new LockSettingReply(ReadLockSetting()));
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(200, setting))).WaitAsync(TimeSpan.FromSeconds(2));
+                    return;
+                }
                 if (request is not null && request.Method == "GET" && request.Path == "/local/offline-unlock-info" && request.Body is null)
                 {
                     var info = _offline?.InfoJson() ?? "{}";
@@ -435,6 +479,10 @@ static class PcProxy
                 requestTimeout.CancelAfter(TimeSpan.FromSeconds(3));
                 using var response = await (_http ?? throw new InvalidOperationException("PC proxy is not initialized")).SendAsync(message, requestTimeout.Token);
                 var content = await response.Content.ReadAsStringAsync(stop);
+                if (response.IsSuccessStatusCode && request.Method == "GET" && request.Path == "/pc/state")
+                    RememberLockSetting(content);
+                else if (response.IsSuccessStatusCode && request.Method == "POST" && request.Path == "/pc/login")
+                    RememberLockSetting(content);
                 if (request.Method == "GET" && request.Path == "/pc/state" && DateTime.UtcNow - _lastOfflineRefresh > TimeSpan.FromSeconds(5))
                 {
                     _lastOfflineRefresh = DateTime.UtcNow;
