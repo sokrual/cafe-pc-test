@@ -29,27 +29,7 @@ public sealed class ProcessSecurityTests
         Directory.CreateDirectory(testDirectory);
         var script = Path.Combine(testDirectory, "probe.ps1");
         File.WriteAllText(script, """
-            $source = @'
-            using System;
-            using System.Runtime.InteropServices;
-            public static class CafeProcessAccessProbe
-            {
-                [DllImport("kernel32.dll", SetLastError = true)]
-                static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
-                [DllImport("kernel32.dll")]
-                static extern bool CloseHandle(IntPtr handle);
-                public static int Check(int pid)
-                {
-                    foreach (uint access in new uint[] { 0x20, 0x2, 0x40, 0x40000 })
-                    {
-                        var handle = OpenProcess(access, false, pid);
-                        if (handle != IntPtr.Zero) { CloseHandle(handle); return 1; }
-                        if (Marshal.GetLastWin32Error() != 5) return 2;
-                    }
-                    return 0;
-                }
-            }
-            '@
+            $source = 'using System; using System.Runtime.InteropServices; public static class CafeProcessAccessProbe { [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid); [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle); public static int Check(int pid) { foreach (uint access in new uint[] { 0x20, 0x2, 0x40, 0x40000 }) { var handle = OpenProcess(access, false, pid); if (handle != IntPtr.Zero) { CloseHandle(handle); return 1; } if (Marshal.GetLastWin32Error() != 5) return 2; } return 0; } }'
             Add-Type -TypeDefinition $source
             exit [CafeProcessAccessProbe]::Check([int]$args[0])
             """);
