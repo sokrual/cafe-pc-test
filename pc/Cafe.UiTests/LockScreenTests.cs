@@ -339,13 +339,13 @@ public sealed class OfflineLockTests
             await rig.Post("/staff/settings/time-lock", new { enabled }, owner);
             var settingFile = Path.Combine(Path.GetDirectoryName(rig.TokenFile)!, "time-lock-setting.json");
             Rig.WaitFor(() => File.Exists(settingFile)
-                && File.ReadAllText(settingFile).Contains(enabled ? "\\\"enabled\\\":true" : "\\\"enabled\\\":false",
+                && File.ReadAllText(settingFile).Contains(enabled ? "\"enabled\":true" : "\"enabled\":false",
                     StringComparison.OrdinalIgnoreCase), 15, "watchdog did not persist the latest server time-lock setting");
 
             // Model the install-time HKCU hive restored by a full logout reset. It deliberately
             // contains the opposite value; the Agent must use the watchdog's SYSTEM-owned copy.
             Rig.Kill(agent);
-            using (var stale = Registry.CurrentUser.CreateSubKey(@"Software\\GamingCafe\\Agent"))
+            using (var stale = Registry.CurrentUser.CreateSubKey(@"Software\GamingCafe\Agent"))
                 stale!.SetValue("LockWhenTimeRunsOut", enabled ? 0 : 1, RegistryValueKind.DWord);
             agent = rig.StartAgent();
             using var app = Application.Attach(agent.Id);
