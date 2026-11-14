@@ -2,13 +2,14 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Security.Principal;
 using Xunit;
 
 [Collection("desktop")]
 public sealed class ProcessSecurityTests
 {
     [Fact]
-    public void Customer_cannot_write_memory_create_threads_or_duplicate_agent_handles()
+    public void Customer_cannot_inject_into_its_own_lock_screen_process()
     {
         using (var existing = Process.Start(new ProcessStartInfo("net.exe", "user Customer")
         {
@@ -39,7 +40,7 @@ public sealed class ProcessSecurityTests
                 static extern bool CloseHandle(IntPtr handle);
                 public static int Check(int pid)
                 {
-                    foreach (uint access in new uint[] { 0x20, 0x2, 0x40 })
+                    foreach (uint access in new uint[] { 0x20, 0x2, 0x40, 0x40000 })
                     {
                         var handle = OpenProcess(access, false, pid);
                         if (handle != IntPtr.Zero) { CloseHandle(handle); return 1; }
@@ -54,17 +55,39 @@ public sealed class ProcessSecurityTests
             """);
 
         using var rig = new Rig();
+        Process? proxy = null;
         Process? agent = null;
         try
         {
-            agent = rig.StartAgent();
+            var sourceDirectory = Path.GetDirectoryName(Rig.Env("CAFE_AGENT_EXE"))!;
+            foreach (var file in Directory.GetFiles(sourceDirectory))
+                File.Copy(file, Path.Combine(testDirectory, Path.GetFileName(file)), true);
+            var agentExe = Path.Combine(testDirectory, "Cafe.Agent.exe");
+            var customerSid = new NTAccount("Customer").Translate(typeof(SecurityIdentifier)).Value;
+
+            var proxyStart = new ProcessStartInfo(Rig.Env("CAFE_WATCHDOG_EXE")) { UseShellExecute = false };
+            foreach (var arg in new[]
+            {
+                "--test-proxy", "--server", "https://127.0.0.1:5443",
+                "--token-file", rig.TokenFile,
+                "--pin-file", Path.Combine(Path.GetDirectoryName(rig.TokenFile)!, "server.pin"),
+                "--pipe-sid", customerSid, "--agent-path", agentExe
+            }) proxyStart.ArgumentList.Add(arg);
+            proxy = Process.Start(proxyStart)!;
+            Thread.Sleep(500);
+            Assert.False(proxy.HasExited, "watchdog test proxy exited before Agent startup");
+
+            // Start the Agent as Customer too: OWNER RIGHTS must stop the process owner
+            // from restoring write access to its own process.
+            agent = StartAsCustomer(password, agentExe, ["--name", "Test Cafe"], testDirectory);
             var powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
                 "WindowsPowerShell", "v1.0", "powershell.exe");
             var result = -1;
             var until = DateTime.UtcNow.AddSeconds(20);
             while (DateTime.UtcNow < until)
             {
-                result = RunAsCustomer(password, powershell, script, agent.Id, testDirectory);
+                result = RunAsCustomer(password, powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                    "-File", script, agent.Id.ToString()], testDirectory);
                 if (result == 0) break;
                 Thread.Sleep(500); // wait for Cafe.Agent to apply its process DACL at startup
             }
@@ -73,6 +96,7 @@ public sealed class ProcessSecurityTests
         finally
         {
             Rig.Kill(agent);
+            Rig.Kill(proxy);
             try { RunNet("user", "Customer", "/delete"); } catch { }
             try { Directory.Delete(testDirectory, true); } catch (IOException) { }
         }
@@ -96,27 +120,25 @@ public sealed class ProcessSecurityTests
         Assert.True(process.ExitCode == 0, "net.exe failed: " + output);
     }
 
-    static int RunAsCustomer(string password, string executable, string script, int pid, string workingDirectory)
+    static Process StartAsCustomer(string password, string executable, string[] arguments, string workingDirectory)
     {
-        var command = new StringBuilder($"\"{executable}\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{script}\" {pid}");
-        var startup = new StartupInfo { Cb = Marshal.SizeOf<StartupInfo>() };
+        var command = new StringBuilder($"\"{executable}\" " + string.Join(" ", arguments.Select(Quote)));
+        var startup = new StartupInfo { Cb = Marshal.SizeOf<StartupInfo>(), Desktop = @"winsta0\default", Flags = 1, ShowWindow = 0 };
         if (!CreateProcessWithLogonW("Customer", ".", password, 1, executable, command, 0x00000400,
             IntPtr.Zero, workingDirectory, ref startup, out var process))
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
-        try
-        {
-            if (WaitForSingleObject(process.Process, 30000) != 0)
-                throw new TimeoutException("Customer process-access probe did not finish.");
-            if (!GetExitCodeProcess(process.Process, out var exitCode))
-                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
-            return unchecked((int)exitCode);
-        }
-        finally
-        {
-            CloseHandle(process.Thread);
-            CloseHandle(process.Process);
-        }
+        try { return Process.GetProcessById((int)process.ProcessId); }
+        finally { CloseHandle(process.Thread); CloseHandle(process.Process); }
     }
+
+    static int RunAsCustomer(string password, string executable, string[] arguments, string workingDirectory)
+    {
+        using var process = StartAsCustomer(password, executable, arguments, workingDirectory);
+        if (!process.WaitForExit(30000)) throw new TimeoutException("Customer process-access probe did not finish.");
+        return process.ExitCode;
+    }
+
+    static string Quote(string value) => "\"" + value.Replace("\"", "\\\"") + "\"";
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     struct StartupInfo
@@ -141,12 +163,6 @@ public sealed class ProcessSecurityTests
     static extern bool CreateProcessWithLogonW(string user, string domain, string password, uint logonFlags,
         string applicationName, StringBuilder commandLine, uint creationFlags, IntPtr environment,
         string currentDirectory, ref StartupInfo startupInfo, out ProcessInformation processInformation);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool CloseHandle(IntPtr handle);
