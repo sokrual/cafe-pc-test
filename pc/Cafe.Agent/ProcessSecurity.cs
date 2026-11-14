@@ -6,7 +6,7 @@ namespace Cafe.Agent;
 
 static class ProcessSecurity
 {
-    const int DaclSecurityInformation = 0x00000004;
+    const int DaclSecurityInformation = unchecked((int)0x80000004);
 
     [DllImport("kernel32.dll")]
     static extern IntPtr GetCurrentProcess();
@@ -28,7 +28,7 @@ static class ProcessSecurity
         catch (IdentityNotMappedException) { return; }
 
         // Customer can query and wait for the lock screen, but cannot inject or change its process DACL.
-        var sddl = $"D:P(D;;0x006A;;;{customer.Value})(D;;WD;;;OW)(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00101000;;;{customer.Value})";
+        var sddl = $"D:P(D;;0x006A;;;{customer.Value})(D;;WD;;;OW)(D;;WO;;;OW)(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00101000;;;{customer.Value})";
         if (!ConvertStringSecurityDescriptorToSecurityDescriptor(sddl, 1, out var descriptor, out _))
             throw new Win32Exception(Marshal.GetLastWin32Error());
         try
