@@ -11,6 +11,8 @@ using System.Security.Principal;
 // (that file must sit in a folder only admins can change, or anyone could make SYSTEM start their program).
 if (args.Contains("--test-pipe-probe", StringComparer.OrdinalIgnoreCase))
     Environment.ExitCode = PcProxy.TestPipeProbe();
+else if (args.Contains("--test-process-access", StringComparer.OrdinalIgnoreCase))
+    Environment.ExitCode = ProcessAccessProbe.Run(args);
 else if (args.Contains("--test-set-offline-refresh", StringComparer.OrdinalIgnoreCase))
 {
     if (!args.Contains("--test-mode", StringComparer.OrdinalIgnoreCase)
@@ -43,6 +45,29 @@ else if (args.Contains("--test-proxy", StringComparer.OrdinalIgnoreCase))
     Thread.Sleep(Timeout.Infinite);
 }
 else ServiceBase.Run(new WatchdogService());
+
+static class ProcessAccessProbe
+{
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr OpenProcess(uint desiredAccess, bool inheritHandle, uint processId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool CloseHandle(IntPtr handle);
+
+    public static int Run(string[] args)
+    {
+        var index = Array.FindIndex(args, value => value.Equals("--test-process-access", StringComparison.OrdinalIgnoreCase));
+        if (index < 0 || index + 1 >= args.Length || !uint.TryParse(args[index + 1], out var processId)) return 2;
+        foreach (var access in new uint[] { 0x0020, 0x0002, 0x0040 })
+        {
+            var handle = OpenProcess(access, false, processId);
+            var error = Marshal.GetLastWin32Error();
+            if (handle != IntPtr.Zero) { CloseHandle(handle); return 1; }
+            if (error != 5) return 2;
+        }
+        return 0;
+    }
+}
 
 sealed class WatchdogService : ServiceBase
 {
