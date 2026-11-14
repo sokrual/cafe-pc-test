@@ -6,7 +6,7 @@ namespace Cafe.Agent;
 
 static class ProcessSecurity
 {
-    const int DaclSecurityInformation = unchecked((int)0x80000004);
+    const int DaclSecurityInformation = 0x00000004;
 
     [DllImport("kernel32.dll")]
     static extern IntPtr GetCurrentProcess();
