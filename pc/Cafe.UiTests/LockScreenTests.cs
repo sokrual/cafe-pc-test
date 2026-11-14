@@ -38,9 +38,10 @@ public sealed class LockScreenTests : IDisposable
             foreach (var access in new uint[] { 0x0020, 0x0002, 0x0040 })
             {
                 var handle = OpenProcess(access, false, (uint)_agent.Id);
+                var error = Marshal.GetLastWin32Error();
                 if (handle != IntPtr.Zero) CloseHandle(handle);
                 Assert.True(handle == IntPtr.Zero, $"OpenProcess unexpectedly granted access 0x{access:X}");
-                Assert.Equal(5, Marshal.GetLastWin32Error());
+                Assert.Equal(5, error);
             }
         }
         finally { Rig.Kill(_agent); }
