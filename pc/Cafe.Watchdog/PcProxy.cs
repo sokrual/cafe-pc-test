@@ -235,6 +235,7 @@ static class PcProxy
         finally { handle.Free(); }
     }
 
+
     static void EnqueueAction(string path)
     {
         lock (ActionQueueGate)
@@ -410,6 +411,12 @@ static class PcProxy
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(200, "{}"))).WaitAsync(TimeSpan.FromSeconds(2));
                     return;
                 }
+                if (request is not null && request.Method == "GET" && request.Path == "/local/lock-setting" && request.Body is null)
+                {
+                    var enabled = _offline?.ReadLockWhenTimeRunsOut() ?? false;
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(200, JsonSerializer.Serialize(enabled)))).WaitAsync(TimeSpan.FromSeconds(2));
+                    return;
+                }
                 if (request is not null && request.Method == "GET" && request.Path == "/local/offline-unlock-info" && request.Body is null)
                 {
                     var info = _offline?.InfoJson() ?? "{}";
@@ -435,6 +442,17 @@ static class PcProxy
                 requestTimeout.CancelAfter(TimeSpan.FromSeconds(3));
                 using var response = await (_http ?? throw new InvalidOperationException("PC proxy is not initialized")).SendAsync(message, requestTimeout.Token);
                 var content = await response.Content.ReadAsStringAsync(stop);
+                if (response.IsSuccessStatusCode && request.Path is "/pc/state" or "/pc/login")
+                {
+                    try
+                    {
+                        using var state = JsonDocument.Parse(content);
+                        if (state.RootElement.TryGetProperty("lockWhenTimeRunsOut", out var setting)
+                            && setting.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                            _offline?.RememberLockWhenTimeRunsOut(setting.GetBoolean());
+                    }
+                    catch (JsonException) { }
+                }
                 if (request.Method == "GET" && request.Path == "/pc/state" && DateTime.UtcNow - _lastOfflineRefresh > TimeSpan.FromSeconds(5))
                 {
                     _lastOfflineRefresh = DateTime.UtcNow;

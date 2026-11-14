@@ -28,6 +28,7 @@ sealed class OfflineUnlockStore
         public int WrongTries { get; set; }
         public DateTime? LockedUntil { get; set; }
         public DateTime? LastRefreshServerUtc { get; set; }
+        public bool LockWhenTimeRunsOut { get; set; }
         public int MaxOfflineUnlockMinutes { get; set; } = 180;
         public List<OfflineUnlockSale> Pending { get; set; } = [];
     }
@@ -89,6 +90,21 @@ sealed class OfflineUnlockStore
                 state.UsedSteps[sale.Phone] = Math.Max(state.UsedSteps.GetValueOrDefault(sale.Phone, -1), sale.Step);
             Write(state);
         }
+    }
+
+    public void RememberLockWhenTimeRunsOut(bool enabled)
+    {
+        lock (_gate)
+        {
+            var state = Read();
+            state.LockWhenTimeRunsOut = enabled;
+            Write(state);
+        }
+    }
+
+    public bool ReadLockWhenTimeRunsOut()
+    {
+        lock (_gate) return Read().LockWhenTimeRunsOut;
     }
 
     public string InfoJson()
