@@ -138,6 +138,10 @@ $idleKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
 $idleOriginal = Get-ItemProperty $idleKey -ErrorAction SilentlyContinue
 $enableLUAOriginal = $idleOriginal.EnableLUA
 $dohOriginal = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -ErrorAction SilentlyContinue).DnsOverHttpsMode
+Import-Module AppLocker -ErrorAction Stop
+$appLockerPolicyBefore = [xml](Get-AppLockerPolicy -Local -Xml)
+$appIdServiceBefore = Get-CimInstance Win32_Service -Filter "Name='AppIDSvc'"
+if (-not $appIdServiceBefore) { throw "Application Identity service is missing from the Windows runner." }
 # control for C6: other DNS servers must answer BEFORE the install, or "blocked" afterwards proves nothing
 $googleBefore = try { Resolve-DnsName example.com -Server 8.8.8.8 -DnsOnly -QuickTimeout -ErrorAction Stop | Out-Null; "answered" } catch { "blocked" }
 $defaultIfIndexes = @(Get-NetRoute -DestinationPrefix "0.0.0.0/0" | Sort-Object RouteMetric | Select-Object -ExpandProperty InterfaceIndex -Unique)
@@ -208,10 +212,13 @@ try {
     # ===== C. gaming PC, step 1 =====
     $ntpBefore = (Get-ItemProperty $ntpKey).NtpServer   # after the counter PC install, which sets the same clock settings
     $stage = Join-Path $env:TEMP "stage-pc"; New-Item $stage -ItemType Directory -Force | Out-Null
-    Copy-Item "$repo\install\*", "$out\agent\Cafe.Agent.exe", "$out\watchdog\Cafe.Watchdog.exe" $stage
+    Copy-Item "$repo\install\*", "$out\watchdog\Cafe.Watchdog.exe" $stage
+    $agentRuntimeStage = Join-Path $stage "agent-runtime"
+    New-Item -ItemType Directory -Path $agentRuntimeStage -Force | Out-Null
+    Copy-Item "$out\agent\*" $agentRuntimeStage -Force
     Copy-Item "$tdata\pc1.token" "$stage\pc.token"; Copy-Item "$tdata\server.pin" $stage
     $secureBootExpected = try { if (Confirm-SecureBootUEFI -ErrorAction Stop) { "On" } else { "Off" } } catch { "Unknown" }
-    & "$stage\install-pc.ps1" -Server 127.0.0.1 -DnsServer $runnerDns -Ci
+    & "$stage\install-pc.ps1" -Server 127.0.0.1 -DnsServer $runnerDns -Ci -AllowFolders ""
     $pcInstallLog = Get-Content "$stage\install-log.txt" -Raw
     $offSecureBootWarning = "Secure Boot is off on this gaming PC. Turn it on: see SECURITY-GUIDE.txt, part 2."
     $unknownSecureBootWarning = "Secure Boot could not be checked on this gaming PC. Check it: see SECURITY-GUIDE.txt, part 2."
@@ -313,8 +320,68 @@ try {
     $ownerRun = CustomerPs "if (-not (Test-Path HKCU:\$runKey)) { New-Item HKCU:\$runKey | Out-Null }; Set-ItemProperty HKCU:\$runKey OwnerApp 'C:\owner.exe'"
     Start-Sleep -Seconds 5
 
+    # D1 diagnostics: preserve a representative Customer executable before installing AppLocker.
+    $d1DiagnosticExe = "$prof\Downloads\d1-policy-diagnostic.exe"
+    Copy-Item -LiteralPath "$env:WINDIR\System32\PING.EXE" -Destination $d1DiagnosticExe -Force
+    $cRootAclBefore = (Get-Acl -LiteralPath "$env:SystemDrive\").Sddl
+    $d1InstallStarted = Get-Date
+
     # ===== E. step 2 =====
-    & "$stage\install-pc.ps1" -Ci
+    & "$stage\install-pc.ps1" -Ci -AllowFolders ""
+
+    $compiledPolicyNames = @("Exe.AppLocker", "Dll.AppLocker", "Msi.AppLocker", "Script.AppLocker", "Appx.AppLocker")
+    $compiledPolicyFresh = $true
+    foreach ($compiledPolicyName in $compiledPolicyNames) {
+        $compiledPolicyPath = Join-Path "$env:WINDIR\System32\AppLocker" $compiledPolicyName
+        $compiledItem = Get-Item -LiteralPath $compiledPolicyPath -ErrorAction SilentlyContinue
+        $fresh = ($null -ne $compiledItem) -and ($compiledItem.LastWriteTimeUtc -gt $d1InstallStarted.ToUniversalTime())
+        Write-Host "First-install compiled policy $compiledPolicyName fresh=$fresh"
+        $compiledPolicyFresh = $compiledPolicyFresh -and $fresh
+    }
+    Check "D1.C1c" "All five compiled AppLocker policy files are newer than the first install" $compiledPolicyFresh "First install UTC $($d1InstallStarted.ToUniversalTime().ToString('o')); files $($compiledPolicyNames -join ', ')"
+
+    $rootCreateProbe = "C:\CafeD1RootCreate-$([guid]::NewGuid().ToString('N'))"
+    $rootCreateExit = CustomerPs "try { New-Item -Path '$rootCreateProbe' -ItemType Directory -ErrorAction Stop | Out-Null; exit 0 } catch { exit 1 }"
+    Check "D1.C3b" "Customer cannot create a new folder directly under the C drive root" ($rootCreateExit -ne 0 -and -not (Test-Path -LiteralPath $rootCreateProbe)) "CustomerPs exit $rootCreateExit; folder exists $(Test-Path -LiteralPath $rootCreateProbe)"
+
+    # Capture the effective policy decision, kernel/service state, and every AppLocker event since install.
+    Write-Host "===== D1 enforcement diagnostics (install started $($d1InstallStarted.ToString('o'))) ====="
+    Write-Host "AsCustomer launch path: Start-Process -Credential (CreateProcessWithLogonW); LOGON32_LOGON_INTERACTIVE=2; LoadUserProfile=true."
+    Write-Host "AsCustomer token evaluation: Test-AppLockerPolicy below evaluates the Customer SAM account; runtime block events are correlated against Customer SID $($u.SID.Value)."
+    # Query the token owner from the admin-side process table. Do not make the
+    # Customer PowerShell process write a helper file into a denied user folder.
+    $tokenProbe = AsCustomer "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" "-NoProfile -Command Start-Sleep -Seconds 8"
+    $tokenProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($tokenProbe.Id)" -ErrorAction SilentlyContinue
+    $tokenOwner = if ($tokenProcess) { Invoke-CimMethod -InputObject $tokenProcess -MethodName GetOwnerSid -ErrorAction SilentlyContinue } else { $null }
+    $d1TokenIdentity = if ($tokenOwner -and $tokenOwner.ReturnValue -eq 0) { $tokenOwner.Sid } else { "" }
+    $d1TokenIdentityExit = if ($tokenProbe.WaitForExit(12000)) { $tokenProbe.ExitCode } else { Stop-Process -Id $tokenProbe.Id -Force -ErrorAction SilentlyContinue; 1 }
+    Write-Host "AsCustomer actual process token SID: $d1TokenIdentity; expected Customer SID: $($u.SID.Value)"
+    Check "D1.C2c" "AsCustomer process token is the Customer SID evaluated by Test-AppLockerPolicy" ($d1TokenIdentityExit -eq 0 -and $d1TokenIdentity -eq $u.SID.Value) "token SID $d1TokenIdentity; Customer SID $($u.SID.Value); exit $d1TokenIdentityExit"
+    $effectivePolicyPath = Join-Path $data "applocker-effective.xml"
+    try {
+        $effectivePolicyXml = Get-AppLockerPolicy -Effective -Xml
+        [IO.File]::WriteAllText($effectivePolicyPath, [string]$effectivePolicyXml, (New-Object Text.UTF8Encoding($false)))
+        Write-Host "Effective policy saved to $effectivePolicyPath"
+        $policyDecision = Test-AppLockerPolicy -XmlPolicy $effectivePolicyPath -Path $d1DiagnosticExe -User Customer
+        Write-Host "Test-AppLockerPolicy effective-policy result for Customer / ${d1DiagnosticExe}:"
+        $policyDecision | Format-List * | Out-String | Write-Host
+    } catch { Write-Warning "Effective-policy test failed: $($_.Exception.Message)" }
+    foreach ($serviceName in @("appid", "applockerfltr", "appidsvc")) {
+        Write-Host "===== sc.exe query $serviceName ====="
+        & "$env:WINDIR\System32\sc.exe" query $serviceName 2>&1 | Out-String | Write-Host
+    }
+    foreach ($channel in @("Microsoft-Windows-AppLocker/EXE and DLL", "Microsoft-Windows-AppLocker/MSI and Script")) {
+        Write-Host "===== AppLocker events in $channel since install ====="
+        try {
+            $channelEvents = @(Get-WinEvent -FilterHashtable @{ LogName = $channel; StartTime = $d1InstallStarted } -ErrorAction Stop | Sort-Object TimeCreated)
+            if ($channelEvents.Count -eq 0) { Write-Host "No events since install." }
+            foreach ($event in $channelEvents) {
+                Write-Host ("{0:o} ID={1} Provider={2}" -f $event.TimeCreated, $event.Id, $event.ProviderName)
+                Write-Host $event.Message
+            }
+        } catch { Write-Warning "Could not read $channel since install: $($_.Exception.Message)" }
+    }
+    Write-Host "===== End D1 enforcement diagnostics ====="
     # CI runs without a Customer interactive session; this admin-only marker exercises the profile reset after
     # the test Customer processes exit. Installed cafe PCs never contain this file and log off the real Customer session.
     New-Item "$app\test-wipe-mode.flag" -ItemType File -Force | Out-Null
@@ -323,7 +390,7 @@ try {
     # letting the first customer logout fail forever because the reset snapshot is missing.
     $heldHive = "$data\clean-profile-hive.migration-test"
     Move-Item "$data\clean-profile-hive" $heldHive
-    & "$stage\install-pc.ps1" -Ci
+    & "$stage\install-pc.ps1" -Ci -AllowFolders ""
     $migrationSetup = (Test-Path "$app\setup.flag") -and -not (Get-Process Cafe.Agent -ErrorAction SilentlyContinue)
     Move-Item $heldHive "$data\clean-profile-hive"
     Remove-Item "$app\setup.flag" -Force -ErrorAction SilentlyContinue
@@ -339,6 +406,366 @@ try {
     Check "B3.E2" "Customer: no Task Manager, no Lock, no password change, no registry editor, no command prompt" ($sys.DisableTaskMgr -eq 1 -and $sys.DisableLockWorkstation -eq 1 -and $sys.DisableChangePassword -eq 1 -and $sys.DisableRegistryTools -eq 1 -and $cmd -eq 2) "DisableCMD $cmd"
     Remove-Variable sys; [gc]::Collect(); cmd.exe /c "reg unload HKU\T >nul 2>&1"
     Check "B3.E3" "Switch user hidden" ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System").HideFastUserSwitching -eq 1) ""
+
+    # ===== D1. AppLocker blocks execution from Customer-writable locations =====
+    $d1Policy = [xml](Get-AppLockerPolicy -Local -Xml)
+    $d1Types = @("Exe", "Msi", "Script", "Dll")
+    $d1CollectionsOk = $true
+    $d1RuleDetails = New-Object System.Collections.Generic.List[string]
+    foreach ($type in $d1Types) {
+        $collection = @($d1Policy.AppLockerPolicy.RuleCollection | Where-Object { $_.Type -eq $type })
+        $ok = $collection.Count -eq 1 -and $collection[0].EnforcementMode -eq "Enabled"
+        if ($ok) {
+            $rules = @($collection[0].FilePathRule)
+            $allowAll = @($rules | Where-Object { $_.Action -eq "Allow" -and $_.UserOrGroupSid -eq "S-1-1-0" -and $_.Conditions.FilePathCondition.Path -eq "*" }).Count -gt 0
+            $denyPaths = @($rules | Where-Object { $_.Action -eq "Deny" -and $_.UserOrGroupSid -eq $u.SID.Value } | ForEach-Object { $_.Conditions.FilePathCondition.Path })
+            $required = @("%OSDRIVE%\Users\*", "$env:WINDIR\Temp\*", "%REMOVABLE%\*", "%HOT%\*")
+            $ok = $allowAll -and @($required | Where-Object { $_ -notin $denyPaths }).Count -eq 0
+            $programDataDenyPaths = @($denyPaths | Where-Object { $_ -like "$env:ProgramData\*" })
+            $ok = $ok -and $programDataDenyPaths.Count -gt 0
+            if ($type -eq "Exe") { $d1RuleDetails.Add("ProgramData deny paths: $($programDataDenyPaths -join '; ')") }
+            $d1RuleDetails.Add("$type enabled=$($collection[0].EnforcementMode), allow-all=$allowAll, customer-denies=$($denyPaths.Count)")
+        }
+        $d1CollectionsOk = $d1CollectionsOk -and $ok
+    }
+    Check "D1.C1" "AppLocker enforces Exe, Msi, Script and Dll collections with Everyone allow and Customer-only path denies" $d1CollectionsOk ($d1RuleDetails -join " | ")
+    $appxCollection = @($d1Policy.AppLockerPolicy.RuleCollection | Where-Object { $_.Type -eq "Appx" })
+    $appxAllow = $false
+    if ($appxCollection.Count -eq 1 -and $appxCollection[0].EnforcementMode -eq "Enabled") {
+        $appxAllow = @($appxCollection[0].FilePublisherRule | Where-Object { $_.Action -eq "Allow" -and $_.UserOrGroupSid -eq "S-1-1-0" -and $_.Conditions.FilePublisherCondition.PublisherName -eq "*" -and $_.Conditions.FilePublisherCondition.ProductName -eq "*" -and $_.Conditions.FilePublisherCondition.BinaryName -eq "*" }).Count -gt 0
+        $appxAllow = $appxAllow -and @($appxCollection[0].FilePublisherRule | Where-Object { $_.Action -eq "Deny" }).Count -eq 0
+    }
+    Check "D1.C1b" "Required Appx collection allows signed packaged apps without any deny rules" $appxAllow "Appx collection count $($appxCollection.Count)"
+    $appIdNow = Get-CimInstance Win32_Service -Filter "Name='AppIDSvc'"
+    Check "D1.C2" "Application Identity is automatic and running" ($appIdNow.StartMode -eq "Auto" -and $appIdNow.State -eq "Running") "start $($appIdNow.StartMode); state $($appIdNow.State)"
+    $appLockerFilter = Get-CimInstance Win32_SystemDriver -Filter "Name='applockerfltr'" -ErrorAction SilentlyContinue
+    $appLockerFilterRunning = $appLockerFilter -and $appLockerFilter.State -eq "Running"
+    Check "D1.C2b" "AppLocker filter driver is running" $appLockerFilterRunning "AppLockerFltr state $($appLockerFilter.State)"
+    $aclReport = "$data\customer-writable-folders.txt"
+    $aclReportPresent = Test-Path -LiteralPath $aclReport
+    if ($aclReportPresent) { New-Item -ItemType Directory -Path $wd -Force | Out-Null; Copy-Item -LiteralPath $aclReport -Destination $wd -Force }
+    $aclReportText = if ($aclReportPresent) { Get-Content -LiteralPath $aclReport -Raw } else { "" }
+    $aclRootsRecorded = $aclReportText.Contains("ACL ROOT: $env:ProgramFiles") -and $aclReportText.Contains("ACL ROOT: $($env:ProgramFiles) (x86)") -and $aclReportText.Contains("ACL ROOT: $env:ProgramData")
+    $aclDetailsRecorded = $aclReportText.Contains("CUSTOMER-WRITABLE+EXECUTABLE:") -and $aclReportText.Contains("STEAM/LIBRARY FOLDERS") -and ($aclReportText.Contains("PROGRAMDATA WRITABLE:") -or $aclReportText.Contains("PROGRAMDATA CUSTOMER-WRITABLE FOLDERS: none"))
+    Check "D1.C3" "Fresh-install ACL inventory records Program Files, Program Files (x86), ProgramData and every writable/executable folder before policy creation" ($aclReportPresent -and $aclRootsRecorded -and $aclDetailsRecorded) "report $aclReport; roots recorded $aclRootsRecorded; details recorded $aclDetailsRecorded"
+    $wipeReported = $aclReportText.Contains("PROGRAMDATA WRITABLE: $data\wipe")
+    Check "D1.C3a" "ACL inventory explicitly reports the Customer-writable ProgramData wipe folder" $wipeReported "Expected $data\wipe in customer-writable-folders.txt"
+
+    function Get-D1BlockEvent([string]$LogName, [int]$EventId, [string]$FilePath, [string]$CustomerSid) {
+        # Get-WinEvent's StartTime filter is local-time based; convert the UTC test
+        # boundary explicitly, then verify each event's UTC timestamp and UserId SID.
+        $startUtc = $d1StartedUtc
+        $events = @(Get-WinEvent -FilterHashtable @{
+            LogName = $LogName
+            Id = $EventId
+            StartTime = $startUtc.ToLocalTime()
+        } -ErrorAction SilentlyContinue)
+        foreach ($event in $events) {
+            $eventUtc = $event.TimeCreated.ToUniversalTime()
+            if ($eventUtc -lt $startUtc) { continue }
+            $eventSid = if ($event.UserId -is [Security.Principal.SecurityIdentifier]) { $event.UserId.Value } else { "$($event.UserId)" }
+            if ($eventSid -ne $CustomerSid) { continue }
+            $message = "$($event.Message)"
+            $expandedMessage = $message -replace "(?i)%OSDRIVE%", $env:SystemDrive
+            $expandedMessage = $expandedMessage -replace "(?i)%WINDIR%", $env:WINDIR
+            $expandedMessage = $expandedMessage -replace "(?i)%SYSTEM32%", (Join-Path $env:WINDIR "System32")
+            if ($message.IndexOf($FilePath, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                $expandedMessage.IndexOf($FilePath, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                Write-Host ("Matched AppLocker block event {0} in '{1}'; event UTC={2:o}; UserId={3}; file={4}" -f $EventId, $LogName, $eventUtc, $eventSid, $FilePath)
+                return $true
+            }
+        }
+        return $false
+    }
+    function Invoke-CustomerInteractiveTaskProbe([string]$FilePath, [string]$CustomerSid) {
+        $taskName = "CafeD1InteractiveProbe-" + [guid]::NewGuid().ToString("N")
+        $taskFolder = $null
+        $registeredTask = $null
+        $agentSession = $null
+        $agent = Get-Process Cafe.Agent -IncludeUserName -ErrorAction SilentlyContinue |
+            Where-Object { $_.UserName -eq "$env:COMPUTERNAME\Customer" } | Select-Object -First 1
+        if ($agent) { $agentSession = $agent.SessionId }
+        Write-Host "Interactive Customer-session probe: Cafe.Agent session ID=$agentSession; target=$FilePath"
+        try {
+            $taskService = New-Object -ComObject "Schedule.Service"
+            $taskService.Connect()
+            $definition = $taskService.NewTask(0)
+            $definition.RegistrationInfo.Description = "Temporary Cafe D1 AppLocker interactive-session diagnostic"
+            $definition.Principal.UserId = "$env:COMPUTERNAME\Customer"
+            $definition.Principal.LogonType = 3 # TASK_LOGON_INTERACTIVE_TOKEN: use an already logged-on Customer session
+            $definition.Principal.RunLevel = 0
+            $definition.Settings.Enabled = $true
+            $definition.Settings.Hidden = $true
+            $definition.Settings.ExecutionTimeLimit = "PT30S"
+            $action = $definition.Actions.Create(0)
+            $action.Path = $FilePath
+            $action.Arguments = "-t 127.0.0.1"
+            $taskFolder = $taskService.GetFolder("\")
+            $registeredTask = $taskFolder.RegisterTaskDefinition($taskName, $definition, 6,
+                "$env:COMPUTERNAME\Customer", $null, 3, $null)
+            $null = $registeredTask.Run($null)
+
+            $probe = $null
+            for ($probeWait = 0; $probeWait -lt 20; $probeWait++) {
+                $probe = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                    Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($FilePath, [StringComparison]::OrdinalIgnoreCase) } |
+                    Select-Object -First 1
+                if ($probe) { break }
+                Start-Sleep -Milliseconds 500
+            }
+            $interactiveSession = $null
+            $startedInInteractiveSession = $false
+            if ($probe) {
+                $startedInInteractiveSession = $true
+                $interactiveSession = $probe.SessionId
+                Stop-Process -Id $probe.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+            Start-Sleep -Milliseconds 500
+            $taskResult = $registeredTask.LastTaskResult
+            $blocked = Get-D1BlockEvent "Microsoft-Windows-AppLocker/EXE and DLL" 8004 $FilePath $CustomerSid
+            $sameSession = ($null -ne $agentSession -and $null -ne $interactiveSession -and $agentSession -eq $interactiveSession)
+            Write-Host "Interactive Customer-session probe result: processStarted=$startedInInteractiveSession; processSessionId=$interactiveSession; Cafe.AgentSessionId=$agentSession; sameSessionAsCafeAgent=$sameSession; taskLastResult=$taskResult; event8004=$blocked"
+            if (-not $agent) { Write-Host "No Customer-owned Cafe.Agent process was present to identify the lock-screen session." }
+            return [pscustomobject]@{ Started = $startedInInteractiveSession; SessionId = $interactiveSession; AgentSessionId = $agentSession; SameSession = $sameSession; TaskResult = $taskResult; BlockedEvent = $blocked }
+        } catch {
+            Write-Host "Interactive Customer-session probe could not run: $($_.Exception.Message)"
+            return [pscustomobject]@{ Started = $false; SessionId = $null; AgentSessionId = $agentSession; SameSession = $false; TaskResult = $null; BlockedEvent = $false; Error = $_.Exception.Message }
+        } finally {
+            if ($taskFolder -and $taskName) {
+                try { $taskFolder.DeleteTask($taskName, 0) } catch { Write-Host "Could not remove temporary interactive diagnostic task: $($_.Exception.Message)" }
+            }
+        }
+    }
+    $d1StartedUtc = [DateTime]::UtcNow
+    $pingSource = "$env:WINDIR\System32\PING.EXE"
+    $d1Suffix = [guid]::NewGuid().ToString("N")
+    $d1ExeCases = @(
+        @{ Id = "D1.C4a"; Name = "Desktop"; File = "$prof\Desktop\d1-$d1Suffix.exe" },
+        @{ Id = "D1.C4b"; Name = "Downloads"; File = "$prof\Downloads\d1-$d1Suffix.exe" },
+        @{ Id = "D1.C4c"; Name = "AppData Local Temp"; File = "$prof\AppData\Local\Temp\d1-$d1Suffix.exe" },
+        @{ Id = "D1.C4d"; Name = "C Users Public"; File = "C:\Users\Public\d1-$d1Suffix.exe" }
+    )
+    foreach ($case in $d1ExeCases) {
+        $parent = Split-Path -Parent $case.File
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        Copy-Item -LiteralPath $pingSource -Destination $case.File -Force
+        $ran = $false
+        try {
+            $process = AsCustomer $case.File "-n 1 127.0.0.1"
+            if ($process.WaitForExit(10000)) { $ran = ($process.ExitCode -eq 0) }
+            else { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue; $ran = $true }
+        } catch { $ran = $false }
+        if ($case.Id -eq "D1.C4a") {
+            Write-Host "D1.C4 diagnostic Customer execution result: file=$($case.File); processRan=$ran; exitCode=$($process.ExitCode)"
+            $interactiveProbe = Invoke-CustomerInteractiveTaskProbe $case.File $u.SID.Value
+            Write-Host "D1 comparison (same probe image): Start-Process -Credential ran=$ran; InteractiveToken task started=$($interactiveProbe.Started); same Cafe.Agent session=$($interactiveProbe.SameSession); interactive 8004=$($interactiveProbe.BlockedEvent)"
+        }
+        $logged = WaitFor 20 { Get-D1BlockEvent "Microsoft-Windows-AppLocker/EXE and DLL" 8004 $case.File $u.SID.Value }
+        Check $case.Id "Customer cannot run PING.EXE from $($case.Name); AppLocker logs event 8004" ((-not $ran) -and $logged) "ran $ran; event 8004 $logged; $($case.File)"
+    }
+
+    # The customer account has DisableCMD=2 for normal use. Temporarily remove only that test restriction
+    # while checking AppLocker script rules, then restore it before continuing.
+    $customerHivePath = "Registry::HKEY_USERS\$($u.SID.Value)"
+    $mountedD1Hive = $false
+    if (-not (Test-Path -LiteralPath $customerHivePath)) {
+        & reg.exe load "HKU\$($u.SID.Value)" "$prof\NTUSER.DAT" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not load Customer hive for the AppLocker batch-file tests." }
+        $customerHivePath = "Registry::HKEY_USERS\$($u.SID.Value)"
+        $mountedD1Hive = $true
+    }
+    $cmdPolicyKey = "$customerHivePath\Software\Policies\Microsoft\Windows\System"
+    $disableCmdProperty = Get-ItemProperty -LiteralPath $cmdPolicyKey -Name DisableCMD -ErrorAction SilentlyContinue
+    $hadDisableCmd = $null -ne $disableCmdProperty
+    $disableCmdBefore = if ($hadDisableCmd) { $disableCmdProperty.DisableCMD } else { $null }
+    try {
+        Remove-ItemProperty -LiteralPath $cmdPolicyKey -Name DisableCMD -ErrorAction SilentlyContinue
+        $downloadBat = "$prof\Downloads\d1-$d1Suffix.bat"
+        $downloadBatMarker = Join-Path "$prof\AppData\Local\Temp" "d1-bat-download-$d1Suffix.txt"
+        [IO.File]::WriteAllText($downloadBat, "@echo off`r`necho ran> `"$downloadBatMarker`"`r`nexit /b 0`r`n")
+        $batRan = $false
+        try {
+            $batProcess = AsCustomer "$env:WINDIR\System32\cmd.exe" "/d /c `"$downloadBat`""
+            if ($batProcess.WaitForExit(10000)) { $batRan = ($batProcess.ExitCode -eq 0 -and (Test-Path -LiteralPath $downloadBatMarker)) }
+            else { Stop-Process -Id $batProcess.Id -Force -ErrorAction SilentlyContinue; $batRan = $true }
+        } catch { $batRan = $false }
+        $batLogged = WaitFor 20 { Get-D1BlockEvent "Microsoft-Windows-AppLocker/MSI and Script" 8007 $downloadBat $u.SID.Value }
+        Check "D1.C5" "Customer cannot run a .bat from Downloads; AppLocker logs event 8007" ((-not $batRan) -and $batLogged) "ran $batRan; event 8007 $batLogged"
+
+        $downloadPs1 = "$prof\Downloads\d1-$d1Suffix.ps1"
+        $downloadPsResult = "$prof\Downloads\d1-ps-result-$d1Suffix.txt"
+        $psScript = @"
+`$mode = `$ExecutionContext.SessionState.LanguageMode
+"LanguageMode=`$mode" | Set-Content -LiteralPath '$downloadPsResult'
+try {
+    Add-Type -TypeDefinition 'public class CafeD1ScriptProbe { public static int Value = 1; }' -ErrorAction Stop
+    "Add-Type=Succeeded" | Add-Content -LiteralPath '$downloadPsResult'
+    exit 11
+} catch {
+    "Add-Type=Failed" | Add-Content -LiteralPath '$downloadPsResult'
+    if (`$mode -eq 'ConstrainedLanguage') { exit 0 }
+    exit 12
+}
+"@
+        [IO.File]::WriteAllText($downloadPs1, $psScript)
+        $psExited = $false
+        $psExitCode = -1
+        try {
+            $psProcess = AsCustomer "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" "-NoProfile -ExecutionPolicy Bypass -File `"$downloadPs1`""
+            $psExited = $psProcess.WaitForExit(10000)
+            if ($psExited) { $psExitCode = $psProcess.ExitCode }
+            else { Stop-Process -Id $psProcess.Id -Force -ErrorAction SilentlyContinue }
+        } catch { $psExited = $false }
+        $psResultText = if (Test-Path -LiteralPath $downloadPsResult) { Get-Content -LiteralPath $downloadPsResult -Raw } else { "" }
+        $psConstrained = $psExited -and $psExitCode -eq 0 -and
+            $psResultText.Contains("LanguageMode=ConstrainedLanguage") -and $psResultText.Contains("Add-Type=Failed")
+        $psLogged = WaitFor 20 { Get-D1BlockEvent "Microsoft-Windows-AppLocker/MSI and Script" 8007 $downloadPs1 $u.SID.Value }
+        $psRefused = $psLogged -and -not $psConstrained
+        $psOutcome = $psRefused -or $psConstrained
+        $psDetail = if ($psConstrained) { "script ran in ConstrainedLanguage; Add-Type failed inside the script" }
+            elseif ($psRefused) { "script was refused with AppLocker event 8007" }
+            else { "no expected 8007 refusal or ConstrainedLanguage/Add-Type failure; exit $psExitCode; output $psResultText" }
+        Check "D1.C6" "Customer .ps1 is refused or runs in ConstrainedLanguage with Add-Type blocked" $psOutcome $psDetail
+
+        # Owner option B: an explicit allow list leaves the selected writable folder un-denied,
+        # while another discovered writable folder remains denied.
+        $ownerAllowedDir = "C:\CafeD1OwnerAllowed"
+        $ownerBlockedDir = "C:\CafeD1OwnerBlocked"
+        foreach ($folder in @($ownerAllowedDir, $ownerBlockedDir)) {
+            New-Item -ItemType Directory -Path $folder -Force | Out-Null
+            & icacls.exe $folder /grant "*$($u.SID.Value):(OI)(CI)M" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Could not grant Customer write access to $folder." }
+        }
+        Copy-Item -LiteralPath $pingSource -Destination "$ownerAllowedDir\allowed.exe" -Force
+        Copy-Item -LiteralPath $pingSource -Destination "$ownerBlockedDir\blocked.exe" -Force
+        & "$app\applocker.ps1" -Mode Install -CustomerSid $u.SID.Value -DataPath $data -AllowFolders $ownerAllowedDir
+        $ownerPolicy = [xml](Get-AppLockerPolicy -Local -Xml)
+        $ownerExeRules = @($ownerPolicy.AppLockerPolicy.RuleCollection | Where-Object Type -eq "Exe" | ForEach-Object { $_.FilePathRule })
+        $allowedDeny = @($ownerExeRules | Where-Object { $_.Action -eq "Deny" -and $_.UserOrGroupSid -eq $u.SID.Value -and $_.Conditions.FilePathCondition.Path -eq "$ownerAllowedDir\*" }).Count -gt 0
+        $blockedDeny = @($ownerExeRules | Where-Object { $_.Action -eq "Deny" -and $_.UserOrGroupSid -eq $u.SID.Value -and $_.Conditions.FilePathCondition.Path -eq "$ownerBlockedDir\*" }).Count -gt 0
+        $allowedRun = $false
+        try {
+            $ownerAllowedProcess = AsCustomer "$ownerAllowedDir\allowed.exe" "-n 1 127.0.0.1"
+            $allowedRun = $ownerAllowedProcess.WaitForExit(10000) -and $ownerAllowedProcess.ExitCode -eq 0
+        } catch { $allowedRun = $false }
+        $blockedRun = $false
+        try {
+            $ownerBlockedProcess = AsCustomer "$ownerBlockedDir\blocked.exe" "-n 1 127.0.0.1"
+            if ($ownerBlockedProcess.WaitForExit(10000)) { $blockedRun = ($ownerBlockedProcess.ExitCode -eq 0) }
+            else { Stop-Process -Id $ownerBlockedProcess.Id -Force -ErrorAction SilentlyContinue; $blockedRun = $true }
+        } catch { $blockedRun = $false }
+        $ownerBlockedLogged = WaitFor 20 { Get-D1BlockEvent "Microsoft-Windows-AppLocker/EXE and DLL" 8004 "$ownerBlockedDir\blocked.exe" $u.SID.Value }
+        Check "D1.C6a" "Owner-allowed writable folder has no Customer deny rule and its executable runs" ((-not $allowedDeny) -and $allowedRun) "deny rule $allowedDeny; executable ran $allowedRun"
+        Check "D1.C6b" "Discovered writable folder omitted from -AllowFolders is denied for Customer" ($blockedDeny -and (-not $blockedRun) -and $ownerBlockedLogged) "deny rule $blockedDeny; executable ran $blockedRun; event 8004 $ownerBlockedLogged"
+
+        $programDataProbeDir = Join-Path $env:ProgramData "CafeD1CustomerFolder-$d1Suffix"
+        $programDataCreateExit = CustomerPs "try { New-Item -Path '$programDataProbeDir' -ItemType Directory -ErrorAction Stop | Out-Null; exit 0 } catch { exit 1 }"
+        $programDataCreated = $programDataCreateExit -eq 0 -and (Test-Path -LiteralPath $programDataProbeDir -PathType Container)
+        if ($programDataCreated) {
+            $programDataProbeExe = Join-Path $programDataProbeDir "blocked.exe"
+            Copy-Item -LiteralPath $pingSource -Destination $programDataProbeExe -Force
+            $programDataExeRan = $false
+            try {
+                $programDataProcess = AsCustomer $programDataProbeExe "-n 1 127.0.0.1"
+                if ($programDataProcess.WaitForExit(10000)) { $programDataExeRan = ($programDataProcess.ExitCode -eq 0) }
+                else { Stop-Process -Id $programDataProcess.Id -Force -ErrorAction SilentlyContinue; $programDataExeRan = $true }
+            } catch { $programDataExeRan = $false }
+            $programDataEvent = WaitFor 20 { Get-D1BlockEvent "Microsoft-Windows-AppLocker/EXE and DLL" 8004 $programDataProbeExe $u.SID.Value }
+        } else {
+            $programDataExeRan = $true
+            $programDataEvent = $false
+        }
+        Check "D1.C6c" "Customer can create a folder in ProgramData but cannot execute an EXE from it" ($programDataCreated -and (-not $programDataExeRan) -and $programDataEvent) "folder created $programDataCreated; executable ran $programDataExeRan; event 8004 $programDataEvent"
+
+        $fakeGameDir = "$env:ProgramFiles\CafeD1FakeGame"
+        New-Item -ItemType Directory -Path $fakeGameDir -Force | Out-Null
+        Copy-Item -LiteralPath "$out\timer\CafeTimerTest.exe" -Destination "$fakeGameDir\game.exe" -Force
+        $gameProcess = AsCustomer "$fakeGameDir\game.exe" "--selftest"
+        $gameExited = $gameProcess.WaitForExit(15000)
+        if (-not $gameExited) { Stop-Process -Id $gameProcess.Id -Force -ErrorAction SilentlyContinue }
+        $gameOk = $gameExited -and $gameProcess.ExitCode -eq 0
+        Check "D1.C7" "A fake installed game in Program Files still runs as Customer" $gameOk "exit $($gameProcess.ExitCode)"
+
+        $programFilesBat = "$fakeGameDir\allowed.bat"
+        $programFilesBatMarker = Join-Path "$prof\AppData\Local\Temp" "d1-bat-programfiles-$d1Suffix.txt"
+        [IO.File]::WriteAllText($programFilesBat, "@echo off`r`necho ran> `"$programFilesBatMarker`"`r`nexit /b 0`r`n")
+        $allowedBat = AsCustomer "$env:WINDIR\System32\cmd.exe" "/d /c `"$programFilesBat`""
+        $allowedBatExited = $allowedBat.WaitForExit(10000)
+        if (-not $allowedBatExited) { Stop-Process -Id $allowedBat.Id -Force -ErrorAction SilentlyContinue }
+        $allowedBatOk = $allowedBatExited -and $allowedBat.ExitCode -eq 0 -and (Test-Path -LiteralPath $programFilesBatMarker)
+        Check "D1.C8" "A .bat in Program Files still runs as Customer" $allowedBatOk "exit $($allowedBat.ExitCode); marker $((Test-Path $programFilesBatMarker))"
+    } finally {
+        if ($hadDisableCmd) {
+            $restoreHiveName = "CafeD1Restore_$PID"
+            $restoreHiveMounted = $false
+            $restoredInLiveHive = $false
+            if (Test-Path -LiteralPath $customerHivePath) {
+                try {
+                    $restorePolicyKey = "$customerHivePath\Software\Policies\Microsoft\Windows\System"
+                    if (-not (Test-Path -LiteralPath $restorePolicyKey)) {
+                        New-Item -Path $restorePolicyKey -Force | Out-Null
+                    }
+                    Set-ItemProperty -LiteralPath $restorePolicyKey -Name DisableCMD -Value $disableCmdBefore -Type DWord
+                    $restoredInLiveHive = $true
+                } catch {
+                    if (Test-Path -LiteralPath $customerHivePath) { throw }
+                    Write-Host "Customer hive unloaded during DisableCMD restore; retrying against NTUSER.DAT."
+                }
+            }
+            if (-not $restoredInLiveHive) {
+                $restoreProfilePath = (Get-CimInstance Win32_UserProfile | Where-Object SID -eq $u.SID.Value).LocalPath
+                if (-not $restoreProfilePath) { $restoreProfilePath = $prof }
+                $restoreLoaded = $false
+                for ($restoreAttempt = 0; $restoreAttempt -lt 10; $restoreAttempt++) {
+                    & reg.exe load "HKU\$restoreHiveName" "$restoreProfilePath\NTUSER.DAT" | Out-Null
+                    if ($LASTEXITCODE -eq 0) { $restoreLoaded = $true; break }
+                    Start-Sleep -Seconds 1
+                }
+                if (-not $restoreLoaded) { throw "Customer's hive was unloaded during AsCustomer tests and could not be reloaded to restore DisableCMD." }
+                $restoreHiveMounted = $true
+                try {
+                    $restorePolicyKey = "Registry::HKEY_USERS\$restoreHiveName\Software\Policies\Microsoft\Windows\System"
+                    if (-not (Test-Path -LiteralPath $restorePolicyKey)) {
+                        New-Item -Path $restorePolicyKey -Force | Out-Null
+                    }
+                    Set-ItemProperty -LiteralPath $restorePolicyKey -Name DisableCMD -Value $disableCmdBefore -Type DWord
+                    Write-Host "Restored DisableCMD=$disableCmdBefore in the reloaded Customer NTUSER.DAT."
+                } finally {
+                    if ($restoreHiveMounted) {
+                        [gc]::Collect()
+                        [gc]::WaitForPendingFinalizers()
+                        & reg.exe unload "HKU\$restoreHiveName" | Out-Null
+                        if ($LASTEXITCODE -ne 0) { throw "Could not unload the temporary Customer hive after restoring DisableCMD." }
+                    }
+                }
+            }
+        }
+        if ($mountedD1Hive -and (Test-Path -LiteralPath $customerHivePath)) {
+            # Only unload when this test performed the reg.exe load. If the Customer profile service
+            # has adopted the hive, or Windows still reports it busy, leave HKU\<SID> mounted.
+            $customerProfileForHive = Get-CimInstance Win32_UserProfile | Where-Object SID -eq $u.SID.Value
+            $customerProcessesForHive = @(Get-Process -IncludeUserName -ErrorAction SilentlyContinue |
+                Where-Object { $_.UserName -eq "$env:COMPUTERNAME\Customer" })
+            if (($customerProfileForHive -and $customerProfileForHive.Loaded) -or $customerProcessesForHive.Count -gt 0) {
+                Write-Host "Customer profile/session owns HKU\$($u.SID.Value); leaving the test-loaded hive mounted and continuing to use the SID hive."
+            } else {
+                [gc]::Collect()
+                [gc]::WaitForPendingFinalizers()
+                & reg.exe unload "HKU\$($u.SID.Value)" | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Warning "Windows refused to unload the D1 test-loaded Customer hive (exit $LASTEXITCODE); leaving HKU\$($u.SID.Value) mounted instead of failing B3.X."
+                }
+            }
+        }
+    }
+
+    $adminExe = "$prof\Downloads\d1-$d1Suffix.exe"
+    $adminProcess = Start-Process -FilePath $adminExe -ArgumentList "-n 1 127.0.0.1" -PassThru -WindowStyle Hidden
+    $adminExited = $adminProcess.WaitForExit(10000)
+    if (-not $adminExited) { Stop-Process -Id $adminProcess.Id -Force -ErrorAction SilentlyContinue }
+    Check "D1.C10" "The same Downloads executable remains runnable by an administrator" ($adminExited -and $adminProcess.ExitCode -eq 0) "exited $adminExited"
+
+
     $hiveRead = CustomerPs "try { [IO.File]::ReadAllBytes('$data\clean-profile-hive\NTUSER.DAT') | Out-Null; if (Test-Path '$data\clean-profile-hive\UsrClass.dat') { [IO.File]::ReadAllBytes('$data\clean-profile-hive\UsrClass.dat') | Out-Null }; exit 0 } catch { exit 1 }"
     Check "B3.E6" "Owner registry hives are saved and Customer cannot read them" ((Test-Path "$data\clean-profile-hive\NTUSER.DAT") -and $hiveRead -ne 0) "NTUSER.DAT and optional UsrClass.dat are admin/SYSTEM-only; read attempt exit $hiveRead"
     # Prove that the watchdog still starts the locked UI when its protected keys are absent,
@@ -542,6 +969,25 @@ try {
         @(Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Where-Object { [CafeWindowProbe]::HasVisibleWindow($_.Id) }).Count -gt 0
     }
     Check "B3.M6" "Watchdog starts the lock screen after a full profile reset" $resetLockReady "visible Cafe.Agent lock screen: $resetLockReady"
+    $customerAgentQuery = {
+        @(Get-Process Cafe.Agent -IncludeUserName -ErrorAction SilentlyContinue | Where-Object {
+            $_.UserName -eq "$env:COMPUTERNAME\Customer" -and $_.Path -eq "$app\Cafe.Agent.exe"
+        }).Count -gt 0
+    }
+    $agentStarts = WaitFor 5 $customerAgentQuery
+    $customerAgentProbe = $null
+    if (-not $agentStarts) {
+        # Hosted runners do not auto-logon to Customer; start the installed image with the same
+        # interactive Customer credential path used by the D1 executable probes.
+        Write-Host "No watchdog-owned Customer Cafe.Agent is present in the runner session; launching the Program Files image as Customer to verify its runtime dependencies."
+        $customerAgentProbe = AsCustomer "$app\Cafe.Agent.exe" "--server https://127.0.0.1:5443"
+        $agentStarts = WaitFor 20 $customerAgentQuery
+    }
+    $agentProcesses = @(Get-Process Cafe.Agent -IncludeUserName -ErrorAction SilentlyContinue | Where-Object {
+        $_.UserName -eq "$env:COMPUTERNAME\Customer" -and $_.Path -eq "$app\Cafe.Agent.exe"
+    })
+    Check "D1.C9" "Cafe.Agent from Program Files loads and runs under the Customer token" ($agentStarts -and $agentProcesses.Count -gt 0) "Customer-owned Cafe.Agent processes $($agentProcesses.Count); Program Files runtime sidecars $(@(Get-ChildItem -LiteralPath $app -Filter '*.dll' -File).Count)"
+    if ($customerAgentProbe -and -not $customerAgentProbe.HasExited) { Stop-Process -Id $customerAgentProbe.Id -Force -ErrorAction SilentlyContinue }
     # An unreachable counter server must also leave the request pending; reconnecting lets the next loop retry.
     Set-Content "$data\wipe\request" ""
     Stop-Process -Id $server.Id -Force
@@ -592,6 +1038,7 @@ try {
     $script:f12LastHttpStatus = "not called"
     $script:f12LastCurlError = ""
     function Invoke-F12CurlJson([string[]]$curlArguments) {
+        $ErrorActionPreference = "Continue"
         $curlOutput = & curl.exe -sSk -w "HTTPSTATUS:%{http_code}" @curlArguments 2>&1
         $curlExit = $LASTEXITCODE
         $curlText = ($curlOutput -join [char]10)
@@ -691,10 +1138,15 @@ try {
     Remove-Item "$app\test-wipe-mode.flag" -Force -ErrorAction SilentlyContinue
     Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
     Copy-Item "$data\logs\*" $wd -ErrorAction SilentlyContinue   # the watchdog's log goes with the uninstall; keep it for the artifacts
-    & "$app\install-pc.ps1" -Uninstall -Ci
+    $postUninstallPassword = [Cafe.Lsa]::Read("DefaultPassword")
+    $uninstallLogPath = Join-Path $env:TEMP "cafe-pc-uninstall.log"
+    Remove-Item -LiteralPath $uninstallLogPath -Force -ErrorAction SilentlyContinue
+    & "$app\install-pc.ps1" -Uninstall -Ci *>&1 |
+        Tee-Object -FilePath $uninstallLogPath |
+        ForEach-Object { Write-Host "$_" }
     $afterIfIndexes = @(Get-NetRoute -DestinationPrefix "0.0.0.0/0" | Sort-Object RouteMetric | Select-Object -ExpandProperty InterfaceIndex -Unique)
     $dnsAfter = @($afterIfIndexes | ForEach-Object { $i = $_; "$i=$((Get-DnsClientServerAddress -InterfaceIndex $i -AddressFamily IPv4).ServerAddresses -join ',')" })
-    Check "B3.I1" "PC uninstall: service, account, files and rules gone" (-not (Get-Service CafeWatchdog -ErrorAction SilentlyContinue) -and -not (Get-LocalUser Customer -ErrorAction SilentlyContinue) -and -not (Test-Path $app) -and -not (Get-NetFirewallRule -Group "Cafe PC" -ErrorAction SilentlyContinue)) ""
+    Check "B3.I1" "PC uninstall: service, account, files, data and rules gone" (-not (Get-Service CafeWatchdog -ErrorAction SilentlyContinue) -and -not (Get-LocalUser Customer -ErrorAction SilentlyContinue) -and -not (Test-Path $app) -and -not (Test-Path $data) -and -not (Get-NetFirewallRule -Group "Cafe PC" -ErrorAction SilentlyContinue)) ""
     $blockedNames = @("Cafe: block SMB (TCP 445)", "Cafe: block NetBIOS name service (UDP 137-138)",
         "Cafe: block NetBIOS session service (TCP 139)", "Cafe: block Remote Desktop (TCP 3389)",
         "Cafe: block Remote Desktop (UDP 3389)", "Cafe: block Windows Remote Management (TCP 5985-5986)")
@@ -704,6 +1156,90 @@ try {
     Check "B3.I2b" "PC uninstall: clock settings back as before" ((Get-ItemProperty $ntpKey).NtpServer -eq $ntpBefore) "$ntpBefore"
     Check "B3.I2c" "PC uninstall: browsers' secure DNS setting back as before" ((Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -ErrorAction SilentlyContinue).DnsOverHttpsMode -eq $dohOriginal) "before: '$dohOriginal'"
     Check "B3.I3" "PC uninstall: Level A off" (-not ((CiTool.exe --list-policies) -match "Cafe Level A")) ""
+
+    $appLockerPolicyAfter = [xml](Get-AppLockerPolicy -Local -Xml)
+    $policyRestored = $appLockerPolicyAfter.OuterXml -eq $appLockerPolicyBefore.OuterXml
+    $d1RulesRemain = @($appLockerPolicyAfter.SelectNodes("//FilePathRule[contains(@Name, 'Cafe D1')]")).Count -gt 0
+    Check "D1.I1" "PC uninstall restores the previous AppLocker policy and removes every D1 rule" ($policyRestored -and -not $d1RulesRemain) "policy restored $policyRestored; D1 rules remain $d1RulesRemain"
+    $appIdServiceAfter = Get-CimInstance Win32_Service -Filter "Name='AppIDSvc'"
+    $uninstallLogText = if (Test-Path -LiteralPath $uninstallLogPath) { Get-Content -LiteralPath $uninstallLogPath -Raw } else { "" }
+    $appIdRestoreWarning = $uninstallLogText -match "Could not restore AppIDSvc startup mode"
+    $appLockerPolicyRemoved = $policyRestored -and -not $d1RulesRemain
+    $appIdStartModeRestored = $appIdServiceAfter.StartMode -eq $appIdServiceBefore.StartMode
+    Check "D1.I2" "PC uninstall removes the D1 AppLocker policy and restores AppIDSvc start mode or logs the protected-service refusal" ($appLockerPolicyRemoved -and ($appIdStartModeRestored -or $appIdRestoreWarning)) "D1 policy removed $appLockerPolicyRemoved; start mode before $($appIdServiceBefore.StartMode), after $($appIdServiceAfter.StartMode); protected-service warning logged $appIdRestoreWarning"
+    function Get-CRootAclMeaning([string]$Sddl) {
+        $sections = @{}
+        foreach ($match in [regex]::Matches($Sddl, '([OGDS]):(.*?)(?=[OGDS]:|$)', [Text.RegularExpressions.RegexOptions]::Singleline)) {
+            $sections[$match.Groups[1].Value] = $match.Groups[2].Value
+        }
+        $daclEntries = @()
+        if ($sections.ContainsKey("D")) {
+            $daclEntries = @([regex]::Matches($sections["D"], '\([^)]*\)') |
+                ForEach-Object { $_.Value } | Sort-Object -Unique -CaseSensitive)
+        }
+        $labelEntries = @()
+        if ($sections.ContainsKey("S")) {
+            $labelEntries = @([regex]::Matches($sections["S"], '\(ML;[^)]*\)') |
+                ForEach-Object { $_.Value } | Sort-Object -Unique -CaseSensitive)
+        }
+        [pscustomobject]@{
+            Owner = $sections["O"]
+            Group = $sections["G"]
+            Dacl = $daclEntries -join "`n"
+            MandatoryLabel = $labelEntries -join "`n"
+        }
+    }
+    $cRootAclAfterUninstall = (Get-Acl -LiteralPath "$env:SystemDrive\").Sddl
+    $cRootAclBeforeMeaning = Get-CRootAclMeaning $cRootAclBefore
+    $cRootAclAfterMeaning = Get-CRootAclMeaning $cRootAclAfterUninstall
+    $cRootOwnerSame = $cRootAclBeforeMeaning.Owner -eq $cRootAclAfterMeaning.Owner
+    $cRootGroupSame = $cRootAclBeforeMeaning.Group -eq $cRootAclAfterMeaning.Group
+    $cRootDaclSame = $cRootAclBeforeMeaning.Dacl -ceq $cRootAclAfterMeaning.Dacl
+    $cRootLabelSame = $cRootAclBeforeMeaning.MandatoryLabel -ceq $cRootAclAfterMeaning.MandatoryLabel
+    $cRootAclRestored = $cRootOwnerSame -and $cRootGroupSame -and $cRootDaclSame -and $cRootLabelSame
+    $cRootAclDetail = if ($cRootAclRestored) {
+        "owner, group, unordered DACL ACE set, and SACL mandatory label restored"
+    } else {
+        "owner same $cRootOwnerSame; group same $cRootGroupSame; DACL ACE set same $cRootDaclSame; SACL mandatory label same $cRootLabelSame; original SDDL: $cRootAclBefore; after-uninstall SDDL: $cRootAclAfterUninstall"
+    }
+    Check "D1.I4" "PC uninstall restores the C drive root ACL meaning (owner, group, DACL ACE set, SACL label)" $cRootAclRestored $cRootAclDetail
+
+    $postUninstallRuns = $false
+    $postUninstallDetail = "Customer test account was not recreated."
+    $postUninstallUser = $null
+    try {
+        if ([string]::IsNullOrWhiteSpace($postUninstallPassword)) { throw "The pre-uninstall Customer password was unavailable." }
+        $postUninstallSecurePassword = New-Object Security.SecureString
+        foreach ($passwordCharacter in $postUninstallPassword.ToCharArray()) { $postUninstallSecurePassword.AppendChar($passwordCharacter) }
+        $postUninstallSecurePassword.MakeReadOnly()
+        $postUninstallUser = New-LocalUser -Name "Customer" -Password $postUninstallSecurePassword -PasswordNeverExpires -AccountNeverExpires -UserMayNotChangePassword -FullName "Customer"
+        Add-LocalGroupMember -SID "S-1-5-32-545" -Member $postUninstallUser
+        [Cafe.Lsa]::Store("DefaultPassword", $postUninstallPassword)
+        $profileProbe = AsCustomer "$env:WINDIR\System32\cmd.exe" "/c exit"
+        $profileProbe.WaitForExit(10000)
+        $postUninstallProfile = Get-CimInstance Win32_UserProfile | Where-Object SID -eq $postUninstallUser.SID.Value | Select-Object -First 1
+        if (-not $postUninstallProfile -or -not $postUninstallProfile.LocalPath) { throw "The post-uninstall Customer profile was not created." }
+        $postUninstallDownloads = Join-Path $postUninstallProfile.LocalPath "Downloads"
+        New-Item -ItemType Directory -Path $postUninstallDownloads -Force | Out-Null
+        $postUninstallExe = Join-Path $postUninstallDownloads "d1-after-uninstall.exe"
+        Copy-Item -LiteralPath $pingSource -Destination $postUninstallExe -Force
+        $postUninstallProcess = AsCustomer $postUninstallExe "-n 1 127.0.0.1"
+        $postUninstallExited = $postUninstallProcess.WaitForExit(10000)
+        if (-not $postUninstallExited) { Stop-Process -Id $postUninstallProcess.Id -Force -ErrorAction SilentlyContinue }
+        $postUninstallRuns = $postUninstallExited -and $postUninstallProcess.ExitCode -eq 0
+        $postUninstallDetail = "Customer Downloads PING.EXE exit $($postUninstallProcess.ExitCode); AppLocker policy restored $policyRestored; D1 rules remain $d1RulesRemain"
+    } catch {
+        $postUninstallDetail = $_.Exception.Message
+    } finally {
+        [Cafe.Lsa]::Store("DefaultPassword", $null)
+        if ($postUninstallUser) {
+            $postUninstallProfile = Get-CimInstance Win32_UserProfile | Where-Object SID -eq $postUninstallUser.SID.Value
+            if ($postUninstallProfile) { $postUninstallProfile | Remove-CimInstance -ErrorAction SilentlyContinue }
+            Remove-LocalUser -Name "Customer" -ErrorAction SilentlyContinue
+        }
+    }
+    Check "D1.I3" "After uninstall, Customer can run PING.EXE from Downloads and the previous AppLocker policy is restored" ($postUninstallRuns -and $policyRestored -and -not $d1RulesRemain) $postUninstallDetail
+
     & "$stageA\install-admin.ps1" -Uninstall -Ci
     Check "B3.I4" "Counter PC uninstall: server and filter gone" (-not (Get-Service CafeServer, AdGuardHome -ErrorAction SilentlyContinue)) ""
     Check "B3.I4b" "Counter PC uninstall: clock settings back as before" ((Get-ItemProperty $ntpKey).NtpServer -eq $ntpOriginal) "$ntpOriginal"
@@ -714,6 +1250,10 @@ try {
 }
 catch { Check "B3.X" "script error" $false "$_ (line $($_.InvocationInfo.ScriptLineNumber))" }
 finally {
+    if (Test-Path -LiteralPath "$data\customer-writable-folders.txt") {
+        New-Item -ItemType Directory -Path $wd -Force | Out-Null
+        Copy-Item -LiteralPath "$data\customer-writable-folders.txt" -Destination $wd -Force -ErrorAction SilentlyContinue
+    }
     foreach ($f in Get-ChildItem (Join-Path $data "logs") -Filter "watchdog-*.log" -ErrorAction SilentlyContinue) {
         Copy-Item $f.FullName $wd -Force -ErrorAction SilentlyContinue
     }

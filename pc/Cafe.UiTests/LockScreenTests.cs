@@ -658,10 +658,19 @@ sealed class Rig : IDisposable
         _server.OutputDataReceived += (_, e) => { lock (_serverLog) _serverLog.AppendLine(e.Data); };
         _server.ErrorDataReceived += (_, e) => { lock (_serverLog) _serverLog.AppendLine(e.Data); };
         _server.Start(); _server.BeginOutputReadLine(); _server.BeginErrorReadLine();
-        WaitFor(() => File.Exists(Path.Combine(Data, "server.pin")) && Ping(), 60, "server did not start", () => _serverLog.ToString());
-        Directory.CreateDirectory(_pcDir);
-        File.Copy(Path.Combine(Data, "pc1.token"), Path.Combine(_pcDir, "pc.token"), true);
-        File.Copy(Path.Combine(Data, "server.pin"), Path.Combine(_pcDir, "server.pin"), true);
+        try
+        {
+            WaitFor(() => File.Exists(Path.Combine(Data, "server.pin")) && Ping(), 60, "server did not start", () => _serverLog.ToString());
+            Directory.CreateDirectory(_pcDir);
+            File.Copy(Path.Combine(Data, "pc1.token"), Path.Combine(_pcDir, "pc.token"), true);
+            File.Copy(Path.Combine(Data, "server.pin"), Path.Combine(_pcDir, "server.pin"), true);
+        }
+        catch
+        {
+            Kill(_server); // A failed startup must not leave the server (or descendants) holding port 5443 for the next test.
+            _server = null;
+            throw;
+        }
     }
     public Process StartAgent()
     {
