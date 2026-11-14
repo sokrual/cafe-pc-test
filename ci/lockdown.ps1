@@ -1038,6 +1038,7 @@ try {
     $script:f12LastHttpStatus = "not called"
     $script:f12LastCurlError = ""
     function Invoke-F12CurlJson([string[]]$curlArguments) {
+        $ErrorActionPreference = "Continue"
         $curlOutput = & curl.exe -sSk -w "HTTPSTATUS:%{http_code}" @curlArguments 2>&1
         $curlExit = $LASTEXITCODE
         $curlText = ($curlOutput -join [char]10)
