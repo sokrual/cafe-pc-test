@@ -16,8 +16,10 @@ static class Program
     {
         ProcessSecurity.ProtectCustomerAccess();
         string? Arg(string n) => Array.IndexOf(args, n) is var i and >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+        var installedAgentPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "GamingCafe", "Cafe.Agent.exe");
         var testOfflineSession = args.Contains("--test-offline-session", StringComparer.OrdinalIgnoreCase)
-            && File.Exists(Path.Combine(AppContext.BaseDirectory, "test-offline-session.flag"));
+            && string.Equals(Path.GetFullPath(Environment.ProcessPath ?? ""), installedAgentPath, StringComparison.OrdinalIgnoreCase)
+            && File.Exists(Path.Combine(Path.GetDirectoryName(installedAgentPath)!, "test-offline-session.flag"));
         var testQueuePath = args.Contains("--test-queue-selflock", StringComparer.OrdinalIgnoreCase) ? "/pc/selflock"
             : args.Contains("--test-queue-logout", StringComparer.OrdinalIgnoreCase) ? "/pc/logout" : null;
         if (testQueuePath is not null)
