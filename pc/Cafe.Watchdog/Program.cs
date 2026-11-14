@@ -58,7 +58,7 @@ static class ProcessAccessProbe
     {
         var index = Array.FindIndex(args, value => value.Equals("--test-process-access", StringComparison.OrdinalIgnoreCase));
         if (index < 0 || index + 1 >= args.Length || !uint.TryParse(args[index + 1], out var processId)) return 2;
-        foreach (var access in new uint[] { 0x0020, 0x0002, 0x0040 })
+        foreach (var access in new uint[] { 0x0020, 0x0002, 0x0040, 0x00040000 })
         {
             var handle = OpenProcess(access, false, processId);
             var error = Marshal.GetLastWin32Error();
