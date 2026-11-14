@@ -253,6 +253,57 @@ try {
     $offlineCacheRead = CustomerPs "try { [IO.File]::ReadAllBytes('$offlineCache') | Out-Null; exit 0 } catch { exit 1 }"
     Check "B3.C4c" "Customer cannot read the machine-encrypted offline authenticator cache" ((Test-Path $offlineCache) -and $offlineCacheRead -ne 0) "cache exists $((Test-Path $offlineCache)); customer read exit $offlineCacheRead"
     $fixture = Get-Content "$tdata\offline-secret-fixture.json" -Raw | ConvertFrom-Json
+    function CounterHeaders($phone, $pin, $secret) {
+        $body = @{ phone = $phone; pin = $pin; code = [CafeTotpProbe]::Current($secret) } | ConvertTo-Json
+        $login = Invoke-RestMethod "https://127.0.0.1:5443/staff/login" -Method Post -ContentType "application/json" -Body $body
+        @{ Authorization = "Bearer $($login.token)" }
+    }
+    function Set-CleanProfileTimeLock([bool]$enabled) {
+        $mount = "CafeF4Baseline"
+        reg.exe load "HKU\$mount" "$data\clean-profile-hive\NTUSER.DAT" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not load the clean Customer hive to set the stale-setting test value." }
+        try {
+            $key = "Registry::HKEY_USERS\$mount\Software\GamingCafe\Agent"
+            New-Item -Path $key -Force | Out-Null
+            New-ItemProperty -LiteralPath $key -Name LockWhenTimeRunsOut -PropertyType DWord -Value ([int]$enabled) -Force | Out-Null
+        } finally {
+            [gc]::Collect(); [gc]::WaitForPendingFinalizers()
+            reg.exe unload "HKU\$mount" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Could not unload the clean Customer hive after setting the stale value." }
+        }
+    }
+    function Read-WatchdogTimeLock() { (& "$app\Cafe.Watchdog.exe" --test-read-lock-setting) -join "" }
+    function Test-OfflineTimerAfterReset([bool]$expectedLock, $id) {
+        $logDir = Join-Path $prof "AppData\Local\Temp\CafeF4-$id"
+        New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+        $logPath = Join-Path $logDir "agent-$(Get-Date -Format yyyyMMdd).log"
+        $started = $false
+        $expired = $false
+        Set-Content "$app\setup.flag" ""
+        Set-Content "$app\test-offline-session.flag" ""
+        Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force
+        try {
+            $probe = AsCustomer "$app\Cafe.Agent.exe" "--test-offline-session --logs $logDir"
+            $started = WaitFor 20 { (Test-Path $logPath) -and [bool](Select-String -Path $logPath -Pattern "unlocked, session -1 (prepaid)" -SimpleMatch) }
+            Start-Sleep -Seconds 70
+            $expired = (Test-Path $logPath) -and [bool](Select-String -Path $logPath -Pattern "locked: Time is up." -SimpleMatch)
+            $alive = Get-Process -Id $probe.Id -ErrorAction SilentlyContinue
+            $ok = $started -and ($expectedLock -eq $expired) -and [bool]$alive
+            Check $id "After full profile reset and counter outage, the last server time-lock value controls expiry" $ok "Agent started $started; expiry lock logged $expired; expected $expectedLock; process alive $([bool]$alive)"
+        } finally {
+            Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force
+            Remove-Item "$app\setup.flag" -Force -ErrorAction SilentlyContinue
+            Remove-Item "$app\test-offline-session.flag" -Force -ErrorAction SilentlyContinue
+            $normalAgent = WaitFor 5 { [bool](Get-Process Cafe.Agent -ErrorAction SilentlyContinue) }
+            if (-not $normalAgent) {
+                $normalLogDir = Join-Path $prof "AppData\Local\Temp\CafeF4Normal"
+                New-Item -ItemType Directory -Path $normalLogDir -Force | Out-Null
+                $normalAgentProbe = AsCustomer "$app\Cafe.Agent.exe" "--logs $normalLogDir"
+                $normalAgent = WaitFor 20 { [bool](Get-Process -Id $normalAgentProbe.Id -ErrorAction SilentlyContinue) }
+            }
+            if (-not $normalAgent) { throw "The normal Cafe.Agent process did not restart after the offline timer test." }
+        }
+    }
     $clearOffline = [CafeDpapiProbe]::Unprotect([IO.File]::ReadAllBytes($offlineCache))
     $offlineState = [Text.Encoding]::UTF8.GetString($clearOffline) | ConvertFrom-Json
     $cachedSecrets = @($offlineState.Accounts | ForEach-Object { $_.Secret })
@@ -860,15 +911,38 @@ try {
     # A directory containing a junction at the request path is a request, not a reason to follow it.
     New-Item "$data\wipe\request" -ItemType Directory -Force | Out-Null
     New-Item -ItemType Junction -Path "$data\wipe\request\escape" -Target "C:\CafeCanary" | Out-Null
+    Set-CleanProfileTimeLock $false
+    $ownerHeaders = CounterHeaders "9000000001" "432100" $fixture.ownerCounter
+    Invoke-RestMethod "https://127.0.0.1:5443/staff/settings/time-lock" -Method Post -Headers $ownerHeaders -ContentType "application/json" -Body (@{ enabled = $true } | ConvertTo-Json) | Out-Null
+    if (-not (Get-Process Cafe.Agent -ErrorAction SilentlyContinue)) {
+        $warmLogDir = Join-Path $prof "AppData\Local\Temp\CafeF4Warm"
+        New-Item -ItemType Directory -Path $warmLogDir -Force | Out-Null
+        $f4WarmAgent = AsCustomer "$app\Cafe.Agent.exe" "--logs $warmLogDir"
+    }
+    $timeLockOnCached = WaitFor 15 { (Read-WatchdogTimeLock) -eq "True" }
+    Check "F4.ON-CACHED" "Watchdog stores the owner's ON setting outside the Customer profile" $timeLockOnCached "cached $(Read-WatchdogTimeLock); clean profile value False"
+    Set-Content "$app\setup.flag" ""
     $resetClock = [Diagnostics.Stopwatch]::StartNew()
     Pc "/pc/logout" @{} | Out-Null
     $asked = WaitFor 15 { Test-Path "$data\wipe\request" }
     $done = WaitFor 90 { -not (Test-Path "$data\wipe\request") }
+    $resetClock.Stop()
+    $resetSeconds = [math]::Round($resetClock.Elapsed.TotalSeconds, 2)
+    if ($done) {
+        Stop-Process -Id $server.Id -Force
+        $timeLockAfterReset = (Read-WatchdogTimeLock) -eq "True"
+        Check "F4.ON-RESET-CACHED" "ON setting remains in watchdog data after the full Customer profile reset" $timeLockAfterReset "cached setting after reset: $(Read-WatchdogTimeLock)"
+        Test-OfflineTimerAfterReset $true "F4.ON"
+        $server = Start-Process "$out\server\Cafe.Server.exe" -ArgumentList "--data $tdata --seed-test" -PassThru -WindowStyle Hidden
+        $serverReadyAfterF4On = WaitFor 90 { ((curl.exe -sk -o NUL -w "%{http_code}" -H "X-Pc-Token: $token" "https://127.0.0.1:5443/pc/state") -join "") -eq "200" }
+        Check "F4.ON-RECONNECT" "Counter reconnects after the offline ON expiry test" $serverReadyAfterF4On "server ready $serverReadyAfterF4On"
+    } else {
+        Check "F4.ON-RESET-CACHED" "ON setting remains in watchdog data after the full Customer profile reset" $false "profile reset did not complete"
+        Check "F4.ON" "Offline expiry follows the last server ON value after reset" $false "profile reset did not complete"
+    }
     $resetLockReady = WaitFor 15 {
         @(Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Where-Object { [CafeWindowProbe]::HasVisibleWindow($_.Id) }).Count -gt 0
     }
-    $resetClock.Stop()
-    $resetSeconds = [math]::Round($resetClock.Elapsed.TotalSeconds, 2)
     Check "B3.F1" "Logout request folder and its junction are removed without following the link" ($asked -and $done -and (Test-Path "C:\CafeCanary\keep.txt")) "asked $asked, done $done"
     Check "B3.M1" "Full profile reset logout-to-lock-screen-ready measurement" ($done -and $resetLockReady) "$resetSeconds seconds; request removed $done; lock screen ready $resetLockReady"
     # A junction at the request path itself is also removed without touching its target.
@@ -987,6 +1061,14 @@ try {
         $_.UserName -eq "$env:COMPUTERNAME\Customer" -and $_.Path -eq "$app\Cafe.Agent.exe"
     })
     Check "D1.C9" "Cafe.Agent from Program Files loads and runs under the Customer token" ($agentStarts -and $agentProcesses.Count -gt 0) "Customer-owned Cafe.Agent processes $($agentProcesses.Count); Program Files runtime sidecars $(@(Get-ChildItem -LiteralPath $app -Filter '*.dll' -File).Count)"
+    $processAccessOk = $false
+    $processAccessDetail = "no Customer-owned Cafe.Agent process was available"
+    if ($agentProcesses.Count -gt 0) {
+        $processAccessProbe = AsCustomer "$app\Cafe.Watchdog.exe" "--test-agent-process-access $($agentProcesses[0].Id)"
+        $processAccessOk = $processAccessProbe.WaitForExit(15000) -and $processAccessProbe.ExitCode -eq 0
+        $processAccessDetail = "probe exit $($processAccessProbe.ExitCode); denied VM_WRITE, VM_OPERATION, CREATE_THREAD, DUP_HANDLE, WRITE_DAC and WRITE_OWNER"
+    }
+    Check "B3.G3" "Customer cannot inject into or change the DACL of Cafe.Agent" $processAccessOk $processAccessDetail
     if ($customerAgentProbe -and -not $customerAgentProbe.HasExited) { Stop-Process -Id $customerAgentProbe.Id -Force -ErrorAction SilentlyContinue }
     # An unreachable counter server must also leave the request pending; reconnecting lets the next loop retry.
     Set-Content "$data\wipe\request" ""
@@ -1019,8 +1101,16 @@ try {
     cmd.exe /c "schtasks /query /tn CafeCustomerTask >nul 2>&1"
     Check "B3.F11" "Customer's scheduled task removed" ($taskMade -eq 0 -and $LASTEXITCODE -ne 0) "made: exit $taskMade"
     # Verify final server state and the bill through staff endpoints; queue-empty alone is not proof.
+    $ownerHeaders = CounterHeaders "9000000001" "432100" $fixture.ownerCounter
+    Set-CleanProfileTimeLock $true
+    Invoke-RestMethod "https://127.0.0.1:5443/staff/settings/time-lock" -Method Post -Headers $ownerHeaders -ContentType "application/json" -Body (@{ enabled = $false } | ConvertTo-Json) | Out-Null
+    $timeLockOffCached = WaitFor 15 { (Read-WatchdogTimeLock) -eq "False" }
+    Check "F4.OFF-CACHED" "Watchdog stores the owner's OFF setting outside the Customer profile" $timeLockOffCached "cached $(Read-WatchdogTimeLock); clean profile value True"
     $loginState = Pc "/pc/login" @{ phone = "9000000003"; pin = "2222" }
     $sessionBeforeLogout = $loginState.Session
+    Set-Content "$app\setup.flag" ""
+    Set-Content "$data\wipe\request" ""
+    $f4OffResetAsked = Test-Path "$data\wipe\request"
     Stop-Process -Id $server.Id -Force
     $offlineSelfLock = AsCustomer "$app\Cafe.Agent.exe" "--test-queue-selflock"
     $selfLockQueued = $offlineSelfLock.WaitForExit(15000) -and $offlineSelfLock.ExitCode -eq 0
@@ -1106,6 +1196,15 @@ try {
     $remainingActions = Get-QueuedActionCount $queuedLogoutFile
     $logoutReplayed = [bool]($staffLogin -and $finalStaffState -and $null -eq $finalStaffState.Session -and $finalStaffBill.Charged -gt 0)
     Check "B3.F12" "Offline self-lock and logout survive lock-screen kill and watchdog restart; staff API confirms ended session and charged bill" ($sessionBeforeLogout -and $logoutDurable -and $logoutReplayed -and $remainingActions -eq 0) "session before $sessionBeforeLogout; self-lock queued $selfLockQueued; logout queued $logoutQueued; queue ordered $logoutDurable; server ready $serverReady; staff login $staffLogin ($staffLoginError); staff session $($finalStaffState.Session); bill charged $($finalStaffBill.Charged); pending actions $remainingActions; last HTTP $script:f12LastHttpStatus; curl error $script:f12LastCurlError"
+    $f4OffResetDone = WaitFor 90 { -not (Test-Path "$data\wipe\request") }
+    Check "F4.OFF-RESET" "Logout performs the full reset with a stale ON profile value" ($f4OffResetAsked -and $f4OffResetDone) "request observed $f4OffResetAsked; reset complete $f4OffResetDone"
+    Stop-Process -Id $server.Id -Force
+    $timeLockOffAfterReset = (Read-WatchdogTimeLock) -eq "False"
+    Check "F4.OFF-RESET-CACHED" "OFF setting remains in watchdog data after the full Customer profile reset" $timeLockOffAfterReset "cached setting after reset: $(Read-WatchdogTimeLock)"
+    Test-OfflineTimerAfterReset $false "F4.OFF"
+    $server = Start-Process "$out\server\Cafe.Server.exe" -ArgumentList "--data $tdata --seed-test" -PassThru -WindowStyle Hidden
+    $serverReadyAfterF4Off = WaitFor 90 { ((curl.exe -sk -o NUL -w "%{http_code}" -H "X-Pc-Token: $token" "https://127.0.0.1:5443/pc/state") -join "") -eq "200" }
+    Check "F4.OFF-RECONNECT" "Counter reconnects after the offline OFF expiry test" $serverReadyAfterF4Off "server ready $serverReadyAfterF4Off"
     Stop-Process -Id $p3.Id -Force -ErrorAction SilentlyContinue
 
     # ===== G. what a customer cannot do =====
