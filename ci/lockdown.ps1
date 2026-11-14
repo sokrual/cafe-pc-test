@@ -1001,16 +1001,21 @@ try {
     Check "D1.C9" "Cafe.Agent from Program Files loads and runs under the Customer token" ($agentStarts -and $agentProcesses.Count -gt 0) "Customer-owned Cafe.Agent processes $($agentProcesses.Count); Program Files runtime sidecars $(@(Get-ChildItem -LiteralPath $app -Filter '*.dll' -File).Count)"
     $processAccessDenied = $false
     $processAccessDetail = "No Customer-owned Cafe.Agent process was found"
+    $processTestDir = Join-Path $env:ProgramFiles "CafeProcessSecurityTest"
     if ($agentProcesses.Count -gt 0) {
         try {
-            $processProbe = AsCustomer "$app\Cafe.Watchdog.exe" "--test-process-access $($agentProcesses[0].Id)"
+            Remove-Item -LiteralPath $processTestDir -Recurse -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Path $processTestDir -Force | Out-Null
+            Copy-Item -LiteralPath "$app\Cafe.Watchdog.exe" -Destination "$processTestDir\Cafe.Watchdog.exe" -Force
+            $processProbe = AsCustomer "$processTestDir\Cafe.Watchdog.exe" "--test-process-access $($agentProcesses[0].Id)"
             $processProbeExited = $processProbe.WaitForExit(15000)
             if (-not $processProbeExited) { Stop-Process -Id $processProbe.Id -Force -ErrorAction SilentlyContinue }
             $processAccessDenied = $processProbeExited -and $processProbe.ExitCode -eq 0
-            $processAccessDetail = "Program Files Cafe.Watchdog.exe as Customer; exit $($processProbe.ExitCode)"
+            $processAccessDetail = "Program Files test-folder probe as Customer; exit $($processProbe.ExitCode)"
         } catch { $processAccessDetail = $_.Exception.Message }
+        finally { Remove-Item -LiteralPath $processTestDir -Recurse -Force -ErrorAction SilentlyContinue }
     }
-    Check "F14.1" "Customer program from Program Files cannot open Cafe.Agent for VM_WRITE, CREATE_THREAD or DUP_HANDLE" $processAccessDenied $processAccessDetail
+    Check "F14.1" "Customer program from a Program Files test folder cannot open Cafe.Agent for VM_WRITE, CREATE_THREAD or DUP_HANDLE" $processAccessDenied $processAccessDetail
     if ($customerAgentProbe -and -not $customerAgentProbe.HasExited) { Stop-Process -Id $customerAgentProbe.Id -Force -ErrorAction SilentlyContinue }
     # An unreachable counter server must also leave the request pending; reconnecting lets the next loop retry.
     Set-Content "$data\wipe\request" ""
