@@ -7,7 +7,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\\Cafe.ProcessAccessProbe\\Cafe.ProcessAccessProbe.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Cafe.ProcessAccessProbe\Cafe.ProcessAccessProbe.csproj" ReferenceOutputAssembly="false" />
     <PackageReference Include="xunit.v3" Version="4.0.3" />
     <PackageReference Include="FlaUI.UIA3" Version="5.0.0" />
   </ItemGroup>
