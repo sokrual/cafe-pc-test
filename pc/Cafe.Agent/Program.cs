@@ -23,7 +23,7 @@ static class ProcessSecurity
 
     public static void Harden()
     {
-        const string sddl = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(D;;0x00000062;;;OW)(A;;0x00121010;;;OW)";
+        const string sddl = "D:P(A;;GA;;;SY)(D;;0x00000062;;;OW)(A;;0x00121410;;;OW)";
         if (!ConvertStringSecurityDescriptorToSecurityDescriptor(sddl, 1, out var descriptor, out _))
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
         try
