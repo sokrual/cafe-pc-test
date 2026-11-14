@@ -66,8 +66,7 @@ public sealed class ProcessSecurityTests
             var until = DateTime.UtcNow.AddSeconds(20);
             while (DateTime.UtcNow < until)
             {
-                result = RunAsCustomer(password, powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                    "-File", script, agent.Id.ToString()], testDirectory);
+                result = RunAsCustomer(password, powershell, script, agent.Id, testDirectory);
                 if (result == 0) break;
                 Thread.Sleep(500); // wait for Cafe.Agent to apply its process DACL at startup
             }
@@ -111,11 +110,22 @@ public sealed class ProcessSecurityTests
         finally { CloseHandle(process.Thread); CloseHandle(process.Process); }
     }
 
-    static int RunAsCustomer(string password, string executable, string[] arguments, string workingDirectory)
+    static int RunAsCustomer(string password, string executable, string script, int pid, string workingDirectory)
     {
-        using var process = StartAsCustomer(password, executable, arguments, workingDirectory);
-        if (!process.WaitForExit(30000)) throw new TimeoutException("Customer process-access probe did not finish.");
-        return process.ExitCode;
+        var command = new StringBuilder($"\\\"{executable}\\\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {Quote(script)} {pid}");
+        var startup = new StartupInfo { Cb = Marshal.SizeOf<StartupInfo>(), Desktop = @"winsta0\\default", Flags = 1, ShowWindow = 0 };
+        if (!CreateProcessWithLogonW("Customer", ".", password, 1, executable, command, 0x00000400,
+            IntPtr.Zero, workingDirectory, ref startup, out var process))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        try
+        {
+            if (WaitForSingleObject(process.Process, 30000) != 0)
+                throw new TimeoutException("Customer process-access probe did not finish.");
+            if (!GetExitCodeProcess(process.Process, out var exitCode))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            return unchecked((int)exitCode);
+        }
+        finally { CloseHandle(process.Thread); CloseHandle(process.Process); }
     }
 
     static string Quote(string value) => "\"" + value.Replace("\"", "\\\"") + "\"";
@@ -143,6 +153,12 @@ public sealed class ProcessSecurityTests
     static extern bool CreateProcessWithLogonW(string user, string domain, string password, uint logonFlags,
         string applicationName, StringBuilder commandLine, uint creationFlags, IntPtr environment,
         string currentDirectory, ref StartupInfo startupInfo, out ProcessInformation processInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool CloseHandle(IntPtr handle);
