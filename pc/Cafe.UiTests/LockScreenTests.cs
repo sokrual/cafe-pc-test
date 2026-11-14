@@ -361,7 +361,7 @@ public sealed class OfflineLockTests
                 && File.ReadAllBytes(rig.LockSettingFile).SequenceEqual(new[] { enabled ? (byte)1 : (byte)0 }),
                 10, "watchdog did not persist the last server time-lock setting");
             rig.StopServer();
-            Registry.CurrentUser.DeleteSubKeyTree(@"Software\\GamingCafe\\Agent", false); // a full reset replaces NTUSER.DAT
+            Registry.CurrentUser.DeleteSubKeyTree(@"Software\GamingCafe\Agent", false); // a full reset replaces NTUSER.DAT
 
             Thread.Sleep(TimeSpan.FromSeconds(70));
             Assert.Equal(enabled, Find() is { IsOffscreen: false });
