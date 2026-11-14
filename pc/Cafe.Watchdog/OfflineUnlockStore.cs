@@ -97,6 +97,7 @@ sealed class OfflineUnlockStore
         lock (_gate)
         {
             var state = Read();
+            if (state.LockWhenTimeRunsOut == enabled && File.Exists(_path)) return;
             state.LockWhenTimeRunsOut = enabled;
             Write(state);
         }
