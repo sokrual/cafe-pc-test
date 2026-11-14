@@ -24,7 +24,7 @@ static class Program
     {
         var sid = WindowsIdentity.GetCurrent().User?.Value
             ?? throw new InvalidOperationException("current account SID is unavailable");
-        var sddl = $"D:P(D;;0x0062;;;{sid})(D;;WD;;;OW)(A;;GA;;;SY)(A;;GR;;;{sid})";
+        var sddl = $"D:P(D;;0x0062;;;{sid})(D;;WD;;;OW)(A;;GA;;;SY)(A;;0x00121410;;;{sid})";
         if (!ConvertStringSecurityDescriptorToSecurityDescriptor(sddl, 1, out var descriptor, out _))
             throw new Win32Exception(Marshal.GetLastWin32Error());
         try
