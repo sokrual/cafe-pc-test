@@ -27,13 +27,6 @@ public sealed class ProcessSecurityTests
         var testDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
             "CafeProcessAccessTest-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(testDirectory);
-        var script = Path.Combine(testDirectory, "probe.ps1");
-        File.WriteAllText(script, """
-            $source = 'using System; using System.Runtime.InteropServices; public static class CafeProcessAccessProbe { [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid); [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle); public static int Check(int pid) { foreach (uint access in new uint[] { 0x20, 0x2, 0x40, 0x40000 }) { var handle = OpenProcess(access, false, pid); if (handle != IntPtr.Zero) { CloseHandle(handle); return 1; } if (Marshal.GetLastWin32Error() != 5) return 2; } return 0; } }'
-            Add-Type -TypeDefinition $source
-            exit [CafeProcessAccessProbe]::Check([int]$args[0])
-            """);
-
         using var rig = new Rig();
         Process? proxy = null;
         Process? agent = null;
@@ -42,6 +35,10 @@ public sealed class ProcessSecurityTests
             var sourceDirectory = Path.GetDirectoryName(Rig.Env("CAFE_AGENT_EXE"))!;
             foreach (var file in Directory.GetFiles(sourceDirectory))
                 File.Copy(file, Path.Combine(testDirectory, Path.GetFileName(file)), true);
+            var probeDirectory = Path.Combine(AppContext.BaseDirectory, "ProcessAccessProbe");
+            foreach (var file in Directory.GetFiles(probeDirectory))
+                File.Copy(file, Path.Combine(testDirectory, Path.GetFileName(file)), true);
+            var probeExe = Path.Combine(testDirectory, "Cafe.ProcessAccessProbe.exe");
             var agentExe = Path.Combine(testDirectory, "Cafe.Agent.exe");
             var customerSid = new NTAccount("Customer").Translate(typeof(SecurityIdentifier)).Value;
 
@@ -60,13 +57,11 @@ public sealed class ProcessSecurityTests
             // Start the Agent as Customer too: OWNER RIGHTS must stop the process owner
             // from restoring write access to its own process.
             agent = StartAsCustomer(password, agentExe, ["--name", "Test Cafe"], testDirectory);
-            var powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
-                "WindowsPowerShell", "v1.0", "powershell.exe");
             var result = -1;
             var until = DateTime.UtcNow.AddSeconds(20);
             while (DateTime.UtcNow < until)
             {
-                result = RunAsCustomer(password, powershell, script, agent.Id, testDirectory);
+                result = RunAsCustomer(password, probeExe, agent.Id, testDirectory);
                 if (result == 0) break;
                 Thread.Sleep(500); // wait for Cafe.Agent to apply its process DACL at startup
             }
@@ -110,9 +105,9 @@ public sealed class ProcessSecurityTests
         finally { CloseHandle(process.Thread); CloseHandle(process.Process); }
     }
 
-    static int RunAsCustomer(string password, string executable, string script, int pid, string workingDirectory)
+    static int RunAsCustomer(string password, string executable, int pid, string workingDirectory)
     {
-        var command = new StringBuilder($"\"{executable}\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {Quote(script)} {pid}");
+        var command = new StringBuilder($"\"{executable}\" {pid}");
         var startup = new StartupInfo { Cb = Marshal.SizeOf<StartupInfo>(), Desktop = @"winsta0\default", Flags = 1, ShowWindow = 0 };
         if (!CreateProcessWithLogonW("Customer", ".", password, 1, executable, command, 0x00000400,
             IntPtr.Zero, workingDirectory, ref startup, out var process))
