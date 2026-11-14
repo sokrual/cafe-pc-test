@@ -75,7 +75,7 @@ jobs:
       matrix:
         os: [windows-latest, windows-11-arm]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
