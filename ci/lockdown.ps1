@@ -150,6 +150,7 @@ function Get-PenDriveBlock {
         AllowCount = @((Get-Item "$penKey\AllowInstanceIDs" -ErrorAction SilentlyContinue).Property).Count
         WriteProtect = (Get-ItemProperty $penStorageKey -ErrorAction SilentlyContinue).WriteProtect
         Message = (Get-ItemProperty "$penKey\DeniedPolicy" -ErrorAction SilentlyContinue).SimpleText
+        Phones = $r.DenyDeviceClasses -eq 1 -and $r.DenyDeviceClassesRetroactive -eq 0 -and (Get-ItemProperty "$penKey\DenyDeviceClasses" -ErrorAction SilentlyContinue).'1' -eq "{eec5ad98-8080-425f-922a-dabf3de3f69a}"
     }
 }
 Import-Module AppLocker -ErrorAction Stop
@@ -361,6 +362,7 @@ try {
     # D2 pen drives. There is no USB on a cloud machine: a real pen drive is checked in Phase 0 (STATUS.txt).
     $penBlock = Get-PenDriveBlock
     Check "D2.C1" "Pen drive block on after install: USB storage held back, nothing allowed, read-only by default, counter message set" ($penBlock.On -and $penBlock.AllowCount -eq 0 -and $penBlock.WriteProtect -eq 1 -and $penBlock.Message) "block $($penBlock.On); allowed $($penBlock.AllowCount); WriteProtect $($penBlock.WriteProtect); message '$($penBlock.Message)'"
+    Check "D2.C4" "Phones never get file transfer: Windows' portable-devices class is not set up (charging needs no driver)" ($penBlock.Phones) "phone block $($penBlock.Phones)"
     # one short command each: the Windows call that starts a program as another account takes at most 1024 characters
     $penCustomerExits = @(
         (CustomerPs "try { Set-ItemProperty '$penKey' DenyDeviceIDs 0 -ErrorAction Stop; exit 0 } catch { exit 7 }"),
@@ -434,7 +436,7 @@ try {
     Remove-Item "$app\setup.flag" -Force -ErrorAction SilentlyContinue
     & "$app\pendrives.ps1" -Mode Install -DataPath $data   # what the owner's next INSTALL-PC run does after setup
     $penAfterSetup = Get-PenDriveBlock
-    Check "D2.C3" "Setup mode switches the pen drive block off for the owner, and it comes back on afterwards" (-not $penInSetup.On -and $penKeyInSetup -eq $penRestrictionsOriginal -and $penAfterSetup.On -and $penAfterSetup.WriteProtect -eq 1) "in setup: block $($penInSetup.On), policy key $penKeyInSetup (before install $penRestrictionsOriginal); after: block $($penAfterSetup.On), WriteProtect $($penAfterSetup.WriteProtect)"
+    Check "D2.C3" "Setup mode switches the pen drive block off for the owner, and it comes back on afterwards" (-not $penInSetup.On -and -not $penInSetup.Phones -and $penKeyInSetup -eq $penRestrictionsOriginal -and $penAfterSetup.On -and $penAfterSetup.Phones -and $penAfterSetup.WriteProtect -eq 1) "in setup: block $($penInSetup.On), policy key $penKeyInSetup (before install $penRestrictionsOriginal); after: block $($penAfterSetup.On), WriteProtect $($penAfterSetup.WriteProtect)"
     Restart-Service CafeWatchdog -Force
     $migrationLock = WaitFor 20 {
         @(Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Where-Object { [CafeWindowProbe]::HasVisibleWindow($_.Id) }).Count -gt 0
