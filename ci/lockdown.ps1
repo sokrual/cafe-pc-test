@@ -138,6 +138,20 @@ $idleKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
 $idleOriginal = Get-ItemProperty $idleKey -ErrorAction SilentlyContinue
 $enableLUAOriginal = $idleOriginal.EnableLUA
 $dohOriginal = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -ErrorAction SilentlyContinue).DnsOverHttpsMode
+$penKey = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions"
+$penStorageKey = "HKLM:\SYSTEM\CurrentControlSet\Control\StorageDevicePolicies"
+$penRestrictionsOriginal = Test-Path $penKey
+$writeProtectOriginal = (Get-ItemProperty $penStorageKey -ErrorAction SilentlyContinue).WriteProtect
+function Get-PenDriveBlock {
+    $r = Get-ItemProperty $penKey -ErrorAction SilentlyContinue
+    $deny = @((Get-ItemProperty "$penKey\DenyDeviceIDs" -ErrorAction SilentlyContinue).'1')   # pendrives.ps1 writes one entry, "1"
+    [pscustomobject]@{
+        On = $r.DenyDeviceIDs -eq 1 -and $deny -contains "USB\Class_08" -and $r.AllowDenyLayered -eq 1 -and $r.AllowInstanceIDs -eq 1 -and $r.DenyDeviceIDsRetroactive -eq 0
+        AllowCount = @((Get-Item "$penKey\AllowInstanceIDs" -ErrorAction SilentlyContinue).Property).Count
+        WriteProtect = (Get-ItemProperty $penStorageKey -ErrorAction SilentlyContinue).WriteProtect
+        Message = (Get-ItemProperty "$penKey\DeniedPolicy" -ErrorAction SilentlyContinue).SimpleText
+    }
+}
 Import-Module AppLocker -ErrorAction Stop
 $appLockerPolicyBefore = [xml](Get-AppLockerPolicy -Local -Xml)
 $appIdServiceBefore = Get-CimInstance Win32_Service -Filter "Name='AppIDSvc'"
@@ -344,6 +358,28 @@ try {
     $rootCreateExit = CustomerPs "try { New-Item -Path '$rootCreateProbe' -ItemType Directory -ErrorAction Stop | Out-Null; exit 0 } catch { exit 1 }"
     Check "D1.C3b" "Customer cannot create a new folder directly under the C drive root" ($rootCreateExit -ne 0 -and -not (Test-Path -LiteralPath $rootCreateProbe)) "CustomerPs exit $rootCreateExit; folder exists $(Test-Path -LiteralPath $rootCreateProbe)"
 
+    # D2 pen drives. There is no USB on a cloud machine: a real pen drive is checked in Phase 0 (STATUS.txt).
+    $penBlock = Get-PenDriveBlock
+    Check "D2.C1" "Pen drive block on after install: USB storage held back, nothing allowed, read-only by default, counter message set" ($penBlock.On -and $penBlock.AllowCount -eq 0 -and $penBlock.WriteProtect -eq 1 -and $penBlock.Message) "block $($penBlock.On); allowed $($penBlock.AllowCount); WriteProtect $($penBlock.WriteProtect); message '$($penBlock.Message)'"
+    # one short command each: the Windows call that starts a program as another account takes at most 1024 characters
+    $penCustomerExits = @(
+        (CustomerPs "try { Set-ItemProperty '$penKey' DenyDeviceIDs 0 -ErrorAction Stop; exit 0 } catch { exit 7 }"),
+        (CustomerPs "try { Set-ItemProperty '$penStorageKey' WriteProtect 0 -ErrorAction Stop; exit 0 } catch { exit 7 }"),
+        (CustomerPs "try { New-ItemProperty '$penKey\AllowInstanceIDs' -Name 1 -Value 'USB\VID_FFFF' -ErrorAction Stop | Out-Null; exit 0 } catch { exit 7 }"))
+    $penCustomerExit = "$penCustomerExits"
+    $penAfterCustomer = Get-PenDriveBlock
+    Check "D2.C2" "Customer cannot switch the pen drive block off, allow a drive, or allow writing" ($penCustomerExit -eq "7 7 7" -and $penAfterCustomer.On -and $penAfterCustomer.AllowCount -eq 0 -and $penAfterCustomer.WriteProtect -eq 1) "CustomerPs exits for block, write setting, allow list: $penCustomerExit (7 = refused)"
+    Stop-Service CafeWatchdog -Force   # the service would correct the allow list during the self-test
+    $penTestKeys = Join-Path $env:TEMP "cafe-pen-test-keys"; New-Item $penTestKeys -ItemType Directory -Force | Out-Null
+    $env:CAFE_TEST_MODE = "1"
+    $penSelfTest = cmd.exe /c "`"$app\Cafe.Watchdog.exe`" --test-pen-drive --test-mode --keys `"$penTestKeys`" 2>&1"
+    $penSelfTestExit = $LASTEXITCODE
+    Remove-Item Env:CAFE_TEST_MODE
+    $penSelfTest | ForEach-Object { Write-Host "D2.W1 $_" }
+    $penAfterSelfTest = Get-PenDriveBlock
+    Start-Service CafeWatchdog
+    Check "D2.W1" "Watchdog reads USB storage through Windows, gives a drive read-only, then read and write, then ends it at logout" ($penSelfTestExit -eq 0 -and $penAfterSelfTest.On -and $penAfterSelfTest.AllowCount -eq 0 -and $penAfterSelfTest.WriteProtect -eq 1) "self-test exit $penSelfTestExit (3 block off, 4 read-only, 5 read and write, 6 logout)"
+
     # Capture the effective policy decision, kernel/service state, and every AppLocker event since install.
     Write-Host "===== D1 enforcement diagnostics (install started $($d1InstallStarted.ToString('o'))) ====="
     Write-Host "AsCustomer launch path: Start-Process -Credential (CreateProcessWithLogonW); LOGON32_LOGON_INTERACTIVE=2; LoadUserProfile=true."
@@ -392,8 +428,13 @@ try {
     Move-Item "$data\clean-profile-hive" $heldHive
     & "$stage\install-pc.ps1" -Ci -AllowFolders ""
     $migrationSetup = (Test-Path "$app\setup.flag") -and -not (Get-Process Cafe.Agent -ErrorAction SilentlyContinue)
+    $penInSetup = Get-PenDriveBlock
+    $penKeyInSetup = Test-Path $penKey
     Move-Item $heldHive "$data\clean-profile-hive"
     Remove-Item "$app\setup.flag" -Force -ErrorAction SilentlyContinue
+    & "$app\pendrives.ps1" -Mode Install -DataPath $data   # what the owner's next INSTALL-PC run does after setup
+    $penAfterSetup = Get-PenDriveBlock
+    Check "D2.C3" "Setup mode switches the pen drive block off for the owner, and it comes back on afterwards" (-not $penInSetup.On -and $penKeyInSetup -eq $penRestrictionsOriginal -and $penAfterSetup.On -and $penAfterSetup.WriteProtect -eq 1) "in setup: block $($penInSetup.On), policy key $penKeyInSetup (before install $penRestrictionsOriginal); after: block $($penAfterSetup.On), WriteProtect $($penAfterSetup.WriteProtect)"
     Restart-Service CafeWatchdog -Force
     $migrationLock = WaitFor 20 {
         @(Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Where-Object { [CafeWindowProbe]::HasVisibleWindow($_.Id) }).Count -gt 0
@@ -833,6 +874,14 @@ try {
     "`"InstallConfigStore`"`n{`n`t`"Software`" { `"x`" `"1`" }`n`t`"ConnectCache`"`n`t{`n`t`t`"7a2b`" `"secret`"`n`t}`n}" | Set-Content "C:\FakeSteam\config\config.vdf"
     $steamKey = "HKLM:\SOFTWARE\WOW6432Node\Valve\Steam"; New-Item $steamKey -Force | Out-Null; Set-ItemProperty $steamKey InstallPath "C:\FakeSteam"
     Pc "/pc/login" @{ phone = "9000000003"; pin = "2222" } | Out-Null
+    # D2: the PC reports a held-back pen drive; it waits on the counter; the owner's answer reaches the PC
+    $penDevice = "USB\VID_0781&PID_5567\CAFECI0001"
+    $penAsked = Pc "/pc/pen-drive" @{ device = $penDevice; name = "CI stick" }
+    $penWaiting = @(Invoke-RestMethod "https://127.0.0.1:5443/staff/pen-drives" -Headers $ownerHeaders | Where-Object { $_.id -eq $penAsked.id -and $_.pc -eq "PC1" -and $_.name -eq "CI stick" })
+    Invoke-RestMethod "https://127.0.0.1:5443/staff/pen-drives/$($penAsked.id)" -Method Post -Headers $ownerHeaders -ContentType "application/json" -Body (@{ access = "read" } | ConvertTo-Json) | Out-Null
+    $penAnswered = Pc "/pc/pen-drive" @{ device = $penDevice; name = "CI stick" }
+    $penPcAsStaff = try { Invoke-WebRequest "https://127.0.0.1:5443/staff/pen-drives" -Headers @{ "X-Pc-Token" = $token } -UseBasicParsing | Out-Null; "answered" } catch { [int]$_.Exception.Response.StatusCode }
+    Check "D2.F1" "A pen drive the PC reports waits on the counter, the owner allows read-only, the PC gets that answer, and a PC key cannot answer" ($null -eq $penAsked.access -and $penWaiting.Count -eq 1 -and $penAnswered.access -eq "read" -and $penAnswered.id -eq $penAsked.id -and $penPcAsStaff -eq 401) "first answer '$($penAsked.access)'; on counter $($penWaiting.Count); after answer '$($penAnswered.access)'; PC key on staff page: $penPcAsStaff"
     # A fresh request is handled promptly; an unchanged active-session reason is logged only once across retries.
     $watchdogLog = Join-Path "$data\logs" "watchdog-$(Get-Date -Format yyyyMMdd).log"
     $beforeDeferred = if (Test-Path $watchdogLog) { @(Select-String -Path $watchdogLog -Pattern "cleanup deferred (session active)" -SimpleMatch).Count } else { 0 }
@@ -1200,6 +1249,8 @@ try {
     Check "B3.I2b" "PC uninstall: clock settings back as before" ((Get-ItemProperty $ntpKey).NtpServer -eq $ntpBefore) "$ntpBefore"
     Check "B3.I2c" "PC uninstall: browsers' secure DNS setting back as before" ((Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -ErrorAction SilentlyContinue).DnsOverHttpsMode -eq $dohOriginal) "before: '$dohOriginal'"
     Check "B3.I3" "PC uninstall: Level A off" (-not ((CiTool.exe --list-policies) -match "Cafe Level A")) ""
+    $writeProtectAfter = (Get-ItemProperty $penStorageKey -ErrorAction SilentlyContinue).WriteProtect
+    Check "D2.I1" "PC uninstall puts the pen drive settings back as they were" ((Test-Path $penKey) -eq $penRestrictionsOriginal -and $writeProtectAfter -eq $writeProtectOriginal) "restrictions key before $penRestrictionsOriginal, after $(Test-Path $penKey); WriteProtect before '$writeProtectOriginal', after '$writeProtectAfter'"
 
     $appLockerPolicyAfter = [xml](Get-AppLockerPolicy -Local -Xml)
     $policyRestored = $appLockerPolicyAfter.OuterXml -eq $appLockerPolicyBefore.OuterXml

@@ -51,7 +51,12 @@ B3  Lockdown and installers                                         BUILT - fina
               D1 programs cannot run from customer-writable folders or removable drives      DONE (PR #22, 14 Nov)
               D2 pen drives blocked unless owner or staff approve (decided 12 Nov), scanned with Defender,
                  never run, access ends at logout; every approval logged. The prompt offers Block, Allow read-only,
-                 Allow read and write (decided 14 Nov).
+                 Allow read and write (decided 14 Nov).                                     BUILT (PR #28, 14 Nov)
+                 How: install/pendrives.ps1 tells Windows not to set up USB storage (USB\Class_08); the watchdog
+                 (pc/Cafe.Watchdog/PenDrives.cs) asks the counter every 5 s and puts an allowed drive on Windows' own
+                 allow list; read-only by Windows' WriteProtect. One drive per PC at a time; one answer per drive per
+                 visit; off in setup mode. Not covered: phones in file-transfer (MTP) mode, CD/DVD drives.
+                 Tests: server/Cafe.Tests/PenDriveTests.cs; lockdown D2.C1-C3, D2.W1, D2.F1, D2.I1.
          Rule (decided 12 Nov): every action by staff and owner is logged, the owner's included.
          E1 the remembered lock setting survives a reset (F4); Customer programs cannot open or rewrite
               the lock screen process (F14)                                                 DONE (PR #27, 14 Nov)
@@ -161,6 +166,15 @@ TEST PHASES ON REAL PCS (after the build)
     update pop-ups; every monitor covered; AppLocker with Riot, Epic, Steam and Riot Vanguard; the owner's
     allowed-folder dialog with real launcher folders; nothing breaks that runs from C:\ProgramData; time for the
     AppLocker rules to compile after install; the lock screen takes focus back when another window appears.
+    Pen drives (D2; CI has no USB, so all of this is only tested here), with a USB 2 stick, a USB 3 stick or
+    USB hard disk (UASP), and an SD card in a USB reader: plugged in during a visit, nothing opens and the counter
+    shows the prompt within 10 s; Block keeps it hidden; Allow read-only shows it and copying a file onto it fails;
+    Allow read and write lets a file be copied on and off; a program on it does not run; Defender's scan is in the
+    watchdog log; pulled out and back in keeps its answer; logout ends access within 10 s, also when the network
+    cable is out; a second drive allowed ends the first's access; a drive that was set up before the install must
+    still ask; USB mouse, keyboard, headset and controller still work when plugged in new; Windows shows the
+    "needs an OK from the counter" message. If read-only does not hold on a drive type, take read-only off the
+    prompt for that type before rollout.
 
 OWNER DECISIONS (10 Nov 2026)
     In the code: rate card 30 min Rs 40, 1 hour Rs 60, 1.5 hours Rs 100, then Rs 40 per 30 min (extra time past

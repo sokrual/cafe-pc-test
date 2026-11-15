@@ -39,6 +39,15 @@ else if (args.Contains("--test-check-offline-refresh", StringComparer.OrdinalIgn
     Console.WriteLine(result.Error ?? "offline unlock was not refused");
     Environment.ExitCode = result.Error is null ? 1 : 0;
 }
+else if (args.Contains("--test-pen-drive", StringComparer.OrdinalIgnoreCase))
+{
+    if (!args.Contains("--test-mode", StringComparer.OrdinalIgnoreCase)
+        || Environment.GetEnvironmentVariable("CAFE_TEST_MODE") != "1")
+        throw new InvalidOperationException("pen drive test mode is not enabled");
+    var keysIndex = Array.FindIndex(args, x => x.Equals("--keys", StringComparison.OrdinalIgnoreCase));
+    if (keysIndex < 0 || keysIndex + 1 >= args.Length) throw new InvalidOperationException("test keys folder is required");
+    Environment.ExitCode = PenDrives.SelfTest(args[keysIndex + 1]);
+}
 else if (args.Contains("--test-proxy", StringComparer.OrdinalIgnoreCase))
 {
     PcProxy.StartTest(args);

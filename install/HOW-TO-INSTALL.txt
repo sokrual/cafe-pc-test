@@ -38,6 +38,11 @@ To change the Customer account later (a new game shortcut, a Discord update):
 log in on the lock screen with your own phone number, open C:\Program Files\GamingCafe,
 double-click SETUP-MODE, then do steps B2 and B3 again.
 
+Pen drives: a customer's pen drive (or USB hard disk, or card reader) shows nothing until you or your staff
+answer on the counter screen: Block, Allow read-only, or Allow read and write. Every answer is saved with
+who gave it. Programs on a pen drive never run, and access ends when the customer logs out.
+In setup mode pen drives work normally, so you can use your own while you set the PC up.
+
 A new game: right-click it, choose "Run as administrator" and type the admin password. Do this once.
 It lets the game's anti-cheat set itself up. After that customers play it normally.
 

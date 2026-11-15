@@ -135,6 +135,7 @@ static class PcProxy
             _offline = new OfflineUnlockStore(Path.Combine(keysDirectory, "offline-unlock.bin"));
             _actionQueuePath = Path.Combine(keysDirectory, "pending-actions.json");
             _timeLockSettingPath = Path.Combine(keysDirectory, "time-lock-setting.json");
+            PenDrives.Init(keysDirectory);
             if (!File.Exists(_timeLockSettingPath)) WriteTimeLockSetting(false);
             firstPipe = NewPipe(clientSid); // proves the protected listener can actually be created
             _agentPath = resolvedAgentPath;
@@ -166,6 +167,7 @@ static class PcProxy
                             nextOfflineRefresh = DateTime.UtcNow.AddSeconds(30);
                         }
                         if (_offline?.PendingSales().Count == 0) SyncQueuedActions();
+                        if (_http is HttpClient http) PenDrives.Check(http, _log);
                     }
                     catch (Exception e) { _log("background sync error: " + e.Message); }
                     try { await Task.Delay(TimeSpan.FromSeconds(5), stop); }
@@ -465,6 +467,7 @@ static class PcProxy
                         return;
                     }
                     EnqueueAction(action.Path);
+                    if (action.Path == "/pc/logout") _ = Task.Run(() => PenDrives.EndAccess(_log));
                     _ = Task.Run(() =>
                     {
                         try
@@ -501,6 +504,7 @@ static class PcProxy
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(404, ""))).WaitAsync(TimeSpan.FromSeconds(2));
                     return;
                 }
+                if (request.Path.StartsWith("/pc/logout", StringComparison.Ordinal)) _ = Task.Run(() => PenDrives.EndAccess(_log));
                 using var message = new HttpRequestMessage(new HttpMethod(request.Method), request.Path);
                 if (request.Body is not null) message.Content = new StringContent(request.Body, Encoding.UTF8, "application/json");
                 using var requestTimeout = CancellationTokenSource.CreateLinkedTokenSource(stop);

@@ -2,7 +2,7 @@
 // Counter screen. Server values only ever go in as text (never HTML), so a name cannot run code here.
 const $ = id => document.getElementById(id);
 let token = sessionStorage.getItem("cafeToken"); // gone when the browser closes; Windows locks the PC when staff walk away
-let rows = [], selected = null, panelKey = "", poll = null, rate = null; // rate: the card in use, for the time choices
+let rows = [], selected = null, panelKey = "", penKey = "", poll = null, rate = null; // rate: the card in use, for the time choices
 
 function el(tag, props = {}, ...kids) {
   const e = Object.assign(document.createElement(tag), props);
@@ -44,6 +44,17 @@ async function refresh(forcePanel = false) {
     $("securityWarning").textContent = "";
     $("securityWarning").hidden = true;
   }
+  try {
+    const drives = await api("GET", "/staff/pen-drives");
+    const key = drives.map(d => d.id).join(",");
+    const answer = (d, access, text) => el("button", { textContent: text, className: access === "block" ? "danger" : "",
+      onclick: act(() => api("POST", "/staff/pen-drives/" + d.id, { access }), `${d.pc}: ${text}`) });
+    if (key !== penKey) $("penDrives").replaceChildren(...drives.map(d => el("div", { className: "pen-drive" },
+      el("b", { textContent: `${d.pc}: ${d.customer ?? "The customer"} plugged in a pen drive (${d.name})` }),
+      el("p", { className: "small", textContent: "Programs on it never run. Microsoft Defender checks it. Access ends at logout." }),
+      el("div", { className: "row" }, answer(d, "block", "Block"), answer(d, "read", "Allow read-only"), answer(d, "write", "Allow read and write")))));
+    penKey = key; // same prompts: the buttons stay, so a click is never lost to a redraw
+  } catch { penKey = ""; $("penDrives").replaceChildren(); }
   try {
     const alerts = await api("GET", "/staff/alerts");
     $("alerts").replaceChildren(...alerts.map(a => el("p", { textContent: "Alert: " + a })));

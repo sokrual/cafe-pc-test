@@ -107,6 +107,7 @@ if ($Uninstall) {
     Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force
     if (Test-Path "$app\applocker.ps1") { & "$app\applocker.ps1" -Mode Uninstall -DataPath $data }
     if (Test-Path "$app\levelA.ps1") { & "$app\levelA.ps1" -Mode Off }
+    if (Test-Path "$app\pendrives.ps1") { & "$app\pendrives.ps1" -Mode Off -DataPath $data }
     [Cafe.Lsa]::Store("DefaultPassword", $null)
     if (Test-Path "$data\before.json") { # put back each Windows setting exactly as it was before the first install
         $before = Get-Content "$data\before.json" -Raw | ConvertFrom-Json
@@ -148,7 +149,7 @@ foreach ($f in "Cafe.Watchdog.exe", "pc.token", "server.pin") {
 if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force }
 Get-Process Cafe.Watchdog, Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force -PassThru | Wait-Process -Timeout 30
 New-Item $app -ItemType Directory -Force | Out-Null   # inside Program Files: customers can read and run, not change
-foreach ($f in "Cafe.Watchdog.exe", "keep-running.txt", "install-pc.ps1", "levelA.ps1", "applocker.ps1", "SETUP-MODE.bat") {
+foreach ($f in "Cafe.Watchdog.exe", "keep-running.txt", "install-pc.ps1", "levelA.ps1", "applocker.ps1", "pendrives.ps1", "SETUP-MODE.bat") {
     if ($src -ne $app -and (Test-Path "$src\$f")) { Copy-WithRetry "$src\$f" $app }   # SETUP-MODE runs from $app itself
 }
 if ($src -ne $app -and (Test-Path -LiteralPath $agentRuntimeSource -PathType Container)) {
@@ -320,6 +321,7 @@ $profilePath = (Get-CimInstance Win32_UserProfile | Where-Object SID -eq (Get-Lo
 # Older installs have a file baseline but no clean registry-hive snapshot; run the owner's setup again before enabling resets.
 if ($Setup -or (-not (Test-Path $flag) -and (-not (Test-Path "$data\clean-profile") -or -not (Test-Path "$data\clean-profile-hive\NTUSER.DAT")))) {
     New-Item $flag -ItemType File -Force | Out-Null
+    & "$app\pendrives.ps1" -Mode Off -DataPath $data   # the owner may need a pen drive while setting the PC up
     Start-Service $svc
     Restart-Now "Step 1 is done.`n`nThe PC restarts now and signs in to the Customer account by itself (no lock screen yet).`nThere: install Discord, add the game shortcuts, set up the mouse, keyboard and headset apps.`nDo NOT sign in to Discord, Steam or any other app.`n`nThen double-click INSTALL-PC again (it asks for the admin password)."
     exit 0
@@ -388,6 +390,7 @@ if (Test-Path $flag) {
     if ($Ci) { $appLockerArgs.AllowFolders = "" }
     elseif ($allowFoldersWasSpecified) { $appLockerArgs.AllowFolders = $AllowFolders }
     & "$app\applocker.ps1" @appLockerArgs
+    & "$app\pendrives.ps1" -Mode Install -DataPath $data   # pen drives need an OK from the counter
     # Level A watch-only: nothing is blocked; Windows notes every program it would block, for the owner to review
     if (-not (Test-Path "$data\levelA-id.txt")) { & "$app\levelA.ps1" -Mode Audit }
     Remove-Item $flag -Force
@@ -400,5 +403,6 @@ $appLockerArgs = @{ Mode = "Install"; CustomerSid = (Get-LocalUser $user).SID.Va
 if ($Ci) { $appLockerArgs.AllowFolders = "" }
 elseif ($allowFoldersWasSpecified) { $appLockerArgs.AllowFolders = $AllowFolders }
 & "$app\applocker.ps1" @appLockerArgs
+& "$app\pendrives.ps1" -Mode Install -DataPath $data
 Start-Service $svc
 Say "The cafe program on this PC is updated."

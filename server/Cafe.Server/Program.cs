@@ -127,6 +127,10 @@ app.MapPost("/pc/offline-sales", (HttpContext c, OfflineSaleBody b) =>
 });
 app.MapPost("/pc/login", (HttpContext c, LoginBody b) => { var pc = Pc(c); var st = cafe.PcLogin(pc, b.Phone, b.Pin); Log($"{pc} login session {st.Session}"); return st; }).RequireRateLimiting("login");
 app.MapPost("/pc/selflock", (HttpContext c) => cafe.PcSelfLock(Pc(c)));
+app.MapPost("/pc/pen-drive", (HttpContext c, PenDriveBody b) => cafe.PcPenDrive(Pc(c), b.Device, b.Name));
+app.MapPost("/pc/pen-drive/{id:long}/scan", (HttpContext c, long id, PenDriveScanBody b) => { cafe.PcPenDriveScan(Pc(c), id, b.Threats); return Results.Ok(); });
+app.MapGet("/staff/pen-drives", (HttpContext c) => cafe.PenDriveRequests(Staff(c)));
+app.MapPost("/staff/pen-drives/{id:long}", (HttpContext c, long id, PenDriveAccessBody b) => { cafe.AnswerPenDrive(Staff(c), id, b.Access); return Results.Ok(); });
 app.MapPost("/pc/logout", (HttpContext c, long? ago) => { var pc = Pc(c); var bill = cafe.PcLogout(pc, ago ?? 0); Log($"{pc} logout session {bill.SessionId} used {bill.Used} (sent {ago ?? 0}s late)"); return bill; });
 
 app.MapPost("/staff/login", (HttpContext c, LoginBody b) =>
@@ -376,6 +380,9 @@ record StaffTwoStepBody(string Phone, string Secret, string Code);
 record OfflineSaleBody(string SaleId, string Phone, string Code, long Step, int Minutes, string Method, string? UpiLast4, long? Session);
 record PcBody(string Pc, string? Message);
 record TimeLockBody(bool Enabled);
+record PenDriveBody(string Device, string Name);
+record PenDriveScanBody(bool Threats);
+record PenDriveAccessBody(string Access);
 record OfflineUnlockLimitBody(int Minutes);
 record OfflineUnlockPersonBody(string Phone, bool Enabled);
 record EndPersonLoginsBody(string Phone);

@@ -105,6 +105,10 @@ public sealed partial class CafeCore : IDisposable
             CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, at TEXT NOT NULL, by_user INTEGER, action TEXT NOT NULL, detail TEXT);
             CREATE TABLE IF NOT EXISTS offline_sales(pc TEXT NOT NULL, sale_id TEXT NOT NULL, session_id INTEGER NOT NULL, staff_id INTEGER NOT NULL, step INTEGER NOT NULL, created TEXT NOT NULL, PRIMARY KEY(pc, sale_id));
             CREATE TABLE IF NOT EXISTS settings(name TEXT PRIMARY KEY, value TEXT NOT NULL);
+            -- pen drives asked about during a visit; access: NULL waiting, block, read, write (every answer is also in audit)
+            CREATE TABLE IF NOT EXISTS pen_drives(id INTEGER PRIMARY KEY, pc TEXT NOT NULL, session_id INTEGER NOT NULL REFERENCES sessions,
+                device TEXT NOT NULL, name TEXT NOT NULL, requested TEXT NOT NULL, last_seen TEXT NOT NULL, access TEXT, answered TEXT,
+                answered_by INTEGER, UNIQUE(pc, session_id, device));
             INSERT OR IGNORE INTO settings(name, value) VALUES('lock_when_time_runs_out', '0');
             INSERT OR IGNORE INTO settings(name, value) VALUES('max_offline_unlock_minutes', '180');
             CREATE TRIGGER IF NOT EXISTS ledger_no_update BEFORE UPDATE ON ledger BEGIN SELECT RAISE(ABORT, 'ledger is append-only'); END;
