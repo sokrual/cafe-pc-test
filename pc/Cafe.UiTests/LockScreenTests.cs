@@ -153,6 +153,55 @@ public sealed class LockScreenTests : IDisposable
             item.Contains("reported logout", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void E2_lock_screen_comes_back_after_being_minimised_and_stays_above_an_always_on_top_window()
+    {
+        Process? other = null;
+        try
+        {
+            _agent = _rig.StartAgent();
+            _app = Application.Attach(_agent.Id);
+            var handle = Window("LockScreen").Properties.NativeWindowHandle.Value;
+            Rig.ShowWindow(handle, 6); // SW_MINIMIZE: what Show desktop (Win+D) does to every window
+            Rig.WaitFor(() => !Rig.IsIconic(handle) && Rig.GetForegroundWindow() == handle, 2, "the minimised lock screen did not come back in front within 2 s",
+                () => $"minimised {Rig.IsIconic(handle)}; foreground '{Rig.ForegroundTitle()}'");
+
+            // an always-on-top window that never takes the focus (like a game overlay): only the lock screen's own
+            // re-ordering puts it back in front, as the lock screen stays the focused window throughout
+            other = Process.Start(new ProcessStartInfo("powershell.exe",
+                "-NoProfile -Command \"Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition 'public class F : System.Windows.Forms.Form { protected override bool ShowWithoutActivation { get { return true; } } protected override System.Windows.Forms.CreateParams CreateParams { get { var p = base.CreateParams; p.ExStyle |= 0x08000008; return p; } } }'; $f = New-Object F; $f.Text = 'TopMost-attempt'; $f.Width = 400; $f.Height = 300; [System.Windows.Forms.Application]::Run($f)\"")
+                { UseShellExecute = false, CreateNoWindow = true })!;
+            var top = IntPtr.Zero;
+            Rig.WaitFor(() => (top = Rig.FindWindow(null, "TopMost-attempt")) != IntPtr.Zero, 30, "the always-on-top test window never opened");
+            Thread.Sleep(2000);
+            // window handles only: UI Automation can time out while another program starts. Windows' own system dialogs
+            // sit in a layer above every program; E3 (the lock screen on its own desktop) is for those.
+            Assert.True(!Rig.Above(top, handle) && Rig.GetForegroundWindow() == handle,
+                $"an always-on-top window stayed above the lock screen (test window above: {Rig.Above(top, handle)}; foreground {Rig.Describe(Rig.GetForegroundWindow())})");
+            Assert.False(_agent.HasExited, "the PC program closed");
+        }
+        catch { Rig.Screenshot(); throw; }
+        finally { Rig.Kill(other); }
+    }
+
+    [Fact]
+    public async Task E2_a_membership_ending_soon_shows_on_the_customers_timer()
+    {
+        try
+        {
+            var owner = await _rig.OwnerToken();
+            await _rig.Post("/staff/membership-plans", new { name = "Day pass", days = 1, price = 5000 }, owner);
+            await _rig.Post("/staff/memberships", new { phone = "9000000003", plan = "Day pass", method = "cash" }, await _rig.StaffToken());
+            _agent = _rig.StartAgent();
+            _app = Application.Attach(_agent.Id);
+            LogIn("9000000003", "2222");
+            Rig.WaitFor(() => Hidden("LockScreen"), 10, "lock screen did not go away after login");
+            Rig.WaitFor(() => Text(Window("TimerWidget"), "Notice").StartsWith("Your Day pass membership ends on ", StringComparison.Ordinal), 15,
+                "the membership notice did not show on the timer", () => $"notice '{Text(Window("TimerWidget"), "Notice")}'");
+        }
+        catch { Rig.Screenshot(); throw; }
+    }
+
     // ---------------- helpers ----------------
 
     Window? Find(string id) => _app.GetAllTopLevelWindows(_rig.Ui).FirstOrDefault(w => w.Properties.AutomationId.ValueOrDefault == id);
@@ -183,6 +232,11 @@ public sealed class OfflineLockTests
         try
         {
             using var app = Application.Attach(agent.Id);
+            // E2: the owner uses 15-minute blocks; the offline rate card text and the price must follow
+            var owner = await rig.OwnerToken();
+            await rig.Post("/staff/rate-cards", new { name = "Quarter hours", rate = new { paise30 = 4000, paise60 = 6000, paise90 = 10000, extraBlockPaise = 4000,
+                graceMin = 5, minimumMin = 15, blockMin = 15, blockGraceMin = 5, carryOverDays = 7, carryOverMembersOnly = true } }, owner);
+            await rig.Post("/staff/rate-cards/use", new { name = "Quarter hours" }, owner);
             var secret = await rig.EnrollStaffTwoStep();
             var enrolledStep = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30;
             var cacheAfterSetup = DateTime.UtcNow;
@@ -205,6 +259,8 @@ public sealed class OfflineLockTests
             var lockScreen = LockWindow();
             Rig.WaitFor(() => !Part(LockWindow(), "StaffUnlock").IsOffscreen, 15, "offline staff unlock button did not appear");
             Part(lockScreen, "StaffUnlock").AsButton().Invoke();
+            Rig.WaitFor(() => Part(lockScreen, "OfflineRate").Name.StartsWith("Rate card: 15 min ₹40, 30 min ₹60, 45 min ₹100; then ₹40 per 15 min.", StringComparison.Ordinal),
+                10, "the offline rate card text does not follow the owner's block length", () => Part(lockScreen, "OfflineRate").Name);
             var code = Rig.AppCode(secret);
             Part(lockScreen, "StaffPhone").AsTextBox().Text = "9000000002";
             Part(lockScreen, "StaffCode").AsTextBox().Text = code;
@@ -232,7 +288,7 @@ public sealed class OfflineLockTests
             Rig.WaitFor(() => (session = rig.State(staff)["session"] is { } value && value.ToString() != "null"
                 ? long.Parse(value.ToString()!) : null) is not null, 60, "offline sale was not reconciled to a server session");
             var bill = rig.Bill(staff, session!.Value);
-            Assert.Equal(4000L, long.Parse(bill["paid"]!.ToString()!));
+            Assert.Equal(6000L, long.Parse(bill["paid"]!.ToString()!)); // 30 min = two 15-minute blocks
         }
         finally { Rig.Kill(agent); }
     }
@@ -833,7 +889,23 @@ sealed class Rig : IDisposable
     }
 
     public static void Screenshot() => FlaUI.Core.Capturing.Capture.Screen().ToFile(Path.Combine(Environment.GetEnvironmentVariable("GITHUB_WORKSPACE") ?? ".", $"screen-{DateTime.Now:HHmmss}.png"));
+    public static string Describe(IntPtr h)
+    {
+        var title = new System.Text.StringBuilder(256); GetWindowText(h, title, 256);
+        var cls = new System.Text.StringBuilder(256); GetClassName(h, cls, 256);
+        GetWindowThreadProcessId(h, out var pid);
+        string process; try { process = Process.GetProcessById((int)pid).ProcessName; } catch (ArgumentException) { process = "?"; }
+        return $"{h} '{title}' class {cls} process {process}";
+    }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int max);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint processId);
     public static string ForegroundTitle() { var sb = new System.Text.StringBuilder(256); GetWindowText(GetForegroundWindow(), sb, 256); return sb.ToString(); }
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int command);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string? className, string title);
+    // true when window a is in front of window b (Windows keeps top-level windows in one front-to-back list)
+    public static bool Above(IntPtr a, IntPtr b) { for (var h = GetWindow(b, 3 /*GW_HWNDPREV*/); h != IntPtr.Zero; h = GetWindow(h, 3)) if (h == a) return true; return false; }
+    [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint command);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int max);
 }

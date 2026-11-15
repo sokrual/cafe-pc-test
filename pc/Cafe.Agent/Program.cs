@@ -79,7 +79,7 @@ static class Program
     public static string Fmt(long sec) => sec >= 3600 ? $"{sec / 3600}:{sec / 60 % 60:00}:{sec % 60:00}" : $"{sec / 60:00}:{sec % 60:00}";
 }
 
-public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec, bool SelfLocked = false, bool LockWhenTimeRunsOut = false);
+public record PcState(bool Locked, string? Message, long? Session, string? Mode, long ElapsedSec, long? LeftSec, bool SelfLocked = false, bool LockWhenTimeRunsOut = false, string? Notice = null);
 record ErrorBody(string Error);
 record TimeLockSetting(bool LockWhenTimeRunsOut);
 record OfflineUnlockReply(bool Success, string? Error, long? Step);
@@ -369,7 +369,14 @@ sealed class LockScreen : Form
         };
         // anything that jumps in front (a popup, a hotkey we could not block) loses the foreground again within 0.5 s
         var keepFront = new System.Windows.Forms.Timer { Interval = 500 };
-        keepFront.Tick += (_, _) => { if (Visible && Native.GetForegroundWindow() != Handle) Native.TakeForeground(Handle); };
+        keepFront.Tick += (_, _) =>
+        {
+            if (!Visible) return;
+            if (WindowState == FormWindowState.Minimized) // Show desktop (Win+D) minimises windows
+            { WindowState = FormWindowState.Normal; Bounds = SystemInformation.VirtualScreen; }
+            Native.ToTop(Handle); // back above any newer always-on-top window, even one that did not take the focus
+            if (Native.GetForegroundWindow() != Handle) Native.TakeForeground(Handle);
+        };
         keepFront.Start();
     }
 
@@ -379,7 +386,7 @@ sealed class LockScreen : Form
         {
             var info = await new WatchdogPipeClient().GetFromJsonAsync<OfflineUnlockInfo>("/local/offline-unlock-info");
             _offlineRate.Text = info?.Rate is { } r
-                ? $"Rate card: 30 min ₹{r.Paise30 / 100m:0.##}, 60 min ₹{r.Paise60 / 100m:0.##}, 90 min ₹{r.Paise90 / 100m:0.##}; then ₹{r.ExtraBlockPaise / 100m:0.##} per {r.BlockMin} min. Maximum per offline unlock: {info.MaxOfflineUnlockMinutes} min."
+                ? $"Rate card: {r.BlockMin} min ₹{r.Paise30 / 100m:0.##}, {2 * r.BlockMin} min ₹{r.Paise60 / 100m:0.##}, {3 * r.BlockMin} min ₹{r.Paise90 / 100m:0.##}; then ₹{r.ExtraBlockPaise / 100m:0.##} per {r.BlockMin} min. Maximum per offline unlock: {info.MaxOfflineUnlockMinutes} min." // the owner sets the block length
                 : "Offline unlock is not set up on this PC yet.";
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
@@ -422,6 +429,8 @@ sealed class LockScreen : Form
 sealed class TimerWidget : Form
 {
     readonly Label _text = new() { Name = "TimerText", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Font = new Font("Segoe UI", 18, FontStyle.Bold), ForeColor = Color.White };
+    // the counter's note for this customer (for example: membership ends soon); hidden when there is none
+    readonly Label _notice = new() { Name = "Notice", Dock = DockStyle.Top, Height = 0, Font = new Font("Segoe UI", 8), ForeColor = Color.Gold, TextAlign = ContentAlignment.MiddleCenter };
     readonly NotifyIcon _tray = new() { Icon = SystemIcons.Application, Visible = true, Text = "Cafe timer" };
     readonly Func<(PcState state, long elapsed, long? left)> _now;
     readonly Action _timeExpired;
@@ -444,7 +453,7 @@ sealed class TimerWidget : Form
         away.Click += (_, _) => selfLock();
         bye.Click += (_, _) => logout();
         buttons.Controls.Add(away, 0, 0); buttons.Controls.Add(bye, 1, 0);
-        Controls.Add(_text); Controls.Add(buttons);
+        Controls.Add(_text); Controls.Add(_notice); Controls.Add(buttons);
         _tray.MouseClick += (_, _) => { _peekUntil = DateTime.UtcNow.AddSeconds(5); if (!_now().state.Locked) Visible = true; };
         var tick = new System.Windows.Forms.Timer { Interval = 1000 };
         tick.Tick += (_, _) => Tick();
@@ -459,6 +468,15 @@ sealed class TimerWidget : Form
         {
             _timeExpired();
             return;
+        }
+        if ((state.Notice ?? "") != _notice.Text)
+        {
+            _notice.Text = state.Notice ?? "";
+            _notice.Height = state.Notice is null ? 0 : 44;
+            Height = 84 + _notice.Height;
+            var wa = Screen.PrimaryScreen!.WorkingArea;
+            Location = new Point(wa.Right - Width - 12, wa.Bottom - Height - 12);
+            if (state.Notice is not null) _tray.ShowBalloonTip(8000, "From the counter", state.Notice, ToolTipIcon.Info);
         }
         var shown = left is long l ? (l > 0 ? Program.Fmt(l) + " left" : "Time over") : Program.Fmt(elapsed);
         _text.Text = shown; _tray.Text = "Cafe timer " + shown;
@@ -544,6 +562,9 @@ static class Native
         if (GetForegroundWindow() != h) { keybd_event(0x1B, 0, 0, 0); keybd_event(0x1B, 0, 2, 0); SetForegroundWindow(h); } // Escape down, up
     }
     [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, nuint extra);
+
+    public static void ToTop(IntPtr h) => SetWindowPos(h, new IntPtr(-1) /*HWND_TOPMOST*/, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010); // NOSIZE | NOMOVE | NOACTIVATE
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
 
     public static bool GameInFront(IntPtr self, out string className, out string processName)
     {

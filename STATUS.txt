@@ -74,6 +74,12 @@ B3  Lockdown and installers                                         BUILT - fina
               the lock screen process (F14)                                                 DONE (PR #27, 14 Nov)
          E2 show PcState.Notice; offline "30/60/90 min" text when the block changes; check the lock screen
               takes focus back when another program's window appears (seen once in CI: Win+D left wsl.exe in front)
+              BUILT 15 Nov: the counter's note shows on the customer's timer and as a balloon; the offline rate card
+              text uses the owner's block length; the lock screen un-minimises itself (Show desktop) and goes back
+              above newer always-on-top windows. UI tests: E2 membership notice; offline unlock with 15-min blocks;
+              E2 lock screen after minimise and under a non-focusing always-on-top window (proved to fail with
+              each fix off). DONE (PR #32, 15 Nov). Found: a Windows system dialog (PickerHost) can sit above the
+              lock screen; system dialogs are above all programs, so E3 (own desktop) is the fix.
          Before the Phase 0 build (decided 13 Nov): show the lock screen on its own Windows desktop (like the Windows
               sign-in screen), so games in exclusive fullscreen and NVIDIA/AMD overlays cannot draw over it on any
               hardware; switch off the Xbox Game Bar by policy. Today the lock screen is a TopMost window.
