@@ -39,6 +39,17 @@ else if (args.Contains("--test-check-offline-refresh", StringComparer.OrdinalIgn
     Console.WriteLine(result.Error ?? "offline unlock was not refused");
     Environment.ExitCode = result.Error is null ? 1 : 0;
 }
+else if (args.Length >= 2 && args[0] is "--wifi-networks" or "--wifi-apply" or "--wifi-off")
+{
+    // installer only (wifi.ps1, as admin): args[1] is the keys folder; --wifi-apply takes the cafe's network names after it
+    Console.OutputEncoding = System.Text.Encoding.UTF8;
+    Environment.ExitCode = args[0] switch
+    {
+        "--wifi-networks" => Wifi.Networks(),
+        "--wifi-apply" => Wifi.Apply(args[1], args[2..]),
+        _ => Wifi.Off(args[1]),
+    };
+}
 else if (args.Contains("--test-pen-drive", StringComparer.OrdinalIgnoreCase))
 {
     if (!args.Contains("--test-mode", StringComparer.OrdinalIgnoreCase)

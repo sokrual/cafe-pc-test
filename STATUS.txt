@@ -62,7 +62,12 @@ B3  Lockdown and installers                                         BUILT - fina
                  No USB tethering (decided 15 Nov): no new network adapter is set up (Windows' network class), so a
                  customer's phone or USB Wi-Fi/Ethernet stick cannot bypass the cafe network and its logs. Adapters
                  present at install keep working; a new one is added in setup mode. Wi-Fi stays (some cafes use it
-                 as backup, some have 2-3 networks); Wi-Fi network list: proposed 15 Nov, not decided.
+                 as backup, some have 2-3 networks).
+              D3 Wi-Fi (decided 15 Nov): only the cafe's own networks, picked by the owner at install from those in
+                 range (install/wifi.ps1, Windows' netsh wlan filters); the watchdog (pc/Cafe.Watchdog/Wifi.cs)
+                 records the routers seen for them and every 5 s disconnects any other router, with an owner alert
+                 on the counter; Mobile hotspot off; only an admin can save a Wi-Fi network for every account. Off in
+                 setup mode; updates keep the owner's choice. Lockdown D3.C1-C3, D3.W1, D3.F1, D3.I1.
                  Tests: server/Cafe.Tests/PenDriveTests.cs; lockdown D2.C1-C3, D2.W1, D2.F1, D2.I1.
          Rule (decided 12 Nov): every action by staff and owner is logged, the owner's included.
          E1 the remembered lock setting survives a reset (F4); Customer programs cannot open or rewrite
@@ -180,7 +185,12 @@ TEST PHASES ON REAL PCS (after the build)
     watchdog log; pulled out and back in keeps its answer; logout ends access within 10 s, also when the network
     cable is out; a second drive allowed ends the first's access; a drive that was set up before the install must
     still ask; an Android phone and an iPhone charge but show no files or photos, and no prompt appears;
-    USB tethering on both phones gives the PC no new network; Windows Update can still update the network driver
+    USB tethering on both phones gives the PC no new network;
+    Wi-Fi (D3), on a PC with a Wi-Fi card: install shows the nearby networks and keeps only the chosen ones (also a
+    name with spaces); the Customer sees no other network and Mobile hotspot is greyed out; a phone hotspot renamed
+    to the cafe's network name is disconnected within 5 s and the owner sees the alert, and note how often Windows
+    reconnects to it (if it keeps reconnecting, delete that saved network as well); a second cafe router or mesh unit
+    is recorded; setup mode lifts the limits and the next INSTALL-PC brings them back; Windows Update can still update the network driver
     or, if not, update it in setup mode;
     USB mouse, keyboard, headset and controller still work when plugged in new; Windows shows the
     "needs an OK from the counter" message. If read-only does not hold on a drive type, take read-only off the

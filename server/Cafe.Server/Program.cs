@@ -127,6 +127,7 @@ app.MapPost("/pc/offline-sales", (HttpContext c, OfflineSaleBody b) =>
 });
 app.MapPost("/pc/login", (HttpContext c, LoginBody b) => { var pc = Pc(c); var st = cafe.PcLogin(pc, b.Phone, b.Pin); Log($"{pc} login session {st.Session}"); return st; }).RequireRateLimiting("login");
 app.MapPost("/pc/selflock", (HttpContext c) => cafe.PcSelfLock(Pc(c)));
+app.MapPost("/pc/wifi-alert", (HttpContext c, WifiAlertBody b) => { cafe.PcWifiAlert(Pc(c), b.Network, b.Router); return Results.Ok(); });
 app.MapPost("/pc/pen-drive", (HttpContext c, PenDriveBody b) => cafe.PcPenDrive(Pc(c), b.Device, b.Name));
 app.MapPost("/pc/pen-drive/{id:long}/scan", (HttpContext c, long id, PenDriveScanBody b) => { cafe.PcPenDriveScan(Pc(c), id, b.Threats); return Results.Ok(); });
 app.MapGet("/staff/pen-drives", (HttpContext c) => cafe.PenDriveRequests(Staff(c)));
@@ -381,6 +382,7 @@ record OfflineSaleBody(string SaleId, string Phone, string Code, long Step, int 
 record PcBody(string Pc, string? Message);
 record TimeLockBody(bool Enabled);
 record PenDriveBody(string Device, string Name);
+record WifiAlertBody(string Network, string Router);
 record PenDriveScanBody(bool Threats);
 record PenDriveAccessBody(string Access);
 record OfflineUnlockLimitBody(int Minutes);

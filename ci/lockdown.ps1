@@ -141,6 +141,8 @@ $dohOriginal = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -Error
 $penKey = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions"
 $penStorageKey = "HKLM:\SYSTEM\CurrentControlSet\Control\StorageDevicePolicies"
 $penRestrictionsOriginal = Test-Path $penKey
+$hotspotKey = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Network Connections"
+$hotspotOriginal = (Get-ItemProperty $hotspotKey -ErrorAction SilentlyContinue).NC_ShowSharedAccessUI
 $writeProtectOriginal = (Get-ItemProperty $penStorageKey -ErrorAction SilentlyContinue).WriteProtect
 function Get-PenDriveBlock {
     $r = Get-ItemProperty $penKey -ErrorAction SilentlyContinue
@@ -374,6 +376,14 @@ try {
     $penCustomerExit = "$penCustomerExits"
     $penAfterCustomer = Get-PenDriveBlock
     Check "D2.C2" "Customer cannot switch the pen drive block off, allow a drive, or allow writing" ($penCustomerExit -eq "7 7 7" -and $penAfterCustomer.On -and $penAfterCustomer.AllowCount -eq 0 -and $penAfterCustomer.WriteProtect -eq 1) "CustomerPs exits for block, write setting, allow list: $penCustomerExit (7 = refused)"
+    # D3 Wi-Fi. A cloud machine has no Wi-Fi card: the Wi-Fi filters and the router check are tested in Phase 0.
+    $hotspot = (Get-ItemProperty $hotspotKey -ErrorAction SilentlyContinue).NC_ShowSharedAccessUI
+    Check "D3.C1" "Mobile hotspot and internet sharing off for everyone; a PC with no Wi-Fi card gets no Wi-Fi filters" ($hotspot -eq 0 -and -not (Test-Path "$data\keys\wifi.json") -and -not (Test-Path "$data\wifi-networks.txt")) "NC_ShowSharedAccessUI $hotspot; router list $(Test-Path "$data\keys\wifi.json")"
+    $hotspotCustomerExit = CustomerPs "try { Set-ItemProperty '$hotspotKey' NC_ShowSharedAccessUI 1 -ErrorAction Stop; exit 0 } catch { exit 7 }"
+    Check "D3.C2" "Customer cannot switch Mobile hotspot back on" ($hotspotCustomerExit -eq 7 -and (Get-ItemProperty $hotspotKey).NC_ShowSharedAccessUI -eq 0) "CustomerPs exit $hotspotCustomerExit (7 = refused)"
+    $wifiNetworks = cmd.exe /c "`"$app\Cafe.Watchdog.exe`" --wifi-networks `"$data\keys`" 2>&1"
+    $wifiNetworksExit = $LASTEXITCODE
+    Check "D3.W1" "Watchdog reads Wi-Fi through Windows and reports no Wi-Fi card cleanly" ($wifiNetworksExit -eq 3) "exit $wifiNetworksExit (3 = no Wi-Fi on this PC); output '$wifiNetworks'"
     Stop-Service CafeWatchdog -Force   # the service would correct the allow list during the self-test
     $penTestKeys = Join-Path $env:TEMP "cafe-pen-test-keys"; New-Item $penTestKeys -ItemType Directory -Force | Out-Null
     $env:CAFE_TEST_MODE = "1"
@@ -434,10 +444,14 @@ try {
     & "$stage\install-pc.ps1" -Ci -AllowFolders ""
     $migrationSetup = (Test-Path "$app\setup.flag") -and -not (Get-Process Cafe.Agent -ErrorAction SilentlyContinue)
     $penInSetup = Get-PenDriveBlock
+    $hotspotInSetup = (Get-ItemProperty $hotspotKey -ErrorAction SilentlyContinue).NC_ShowSharedAccessUI
     $penKeyInSetup = Test-Path $penKey
     Move-Item $heldHive "$data\clean-profile-hive"
     Remove-Item "$app\setup.flag" -Force -ErrorAction SilentlyContinue
     & "$app\pendrives.ps1" -Mode Install -DataPath $data   # what the owner's next INSTALL-PC run does after setup
+    & "$app\wifi.ps1" -Mode Install -Ask -AppPath $app -DataPath $data
+    $hotspotAfterSetup = (Get-ItemProperty $hotspotKey -ErrorAction SilentlyContinue).NC_ShowSharedAccessUI
+    Check "D3.C3" "Setup mode puts Mobile hotspot back as it was for the owner, and it is off again afterwards" ($hotspotInSetup -eq $hotspotOriginal -and $hotspotAfterSetup -eq 0) "before install '$hotspotOriginal'; in setup '$hotspotInSetup'; after '$hotspotAfterSetup'"
     $penAfterSetup = Get-PenDriveBlock
     Check "D2.C3" "Setup mode switches the pen drive block off for the owner, and it comes back on afterwards" (-not $penInSetup.On -and -not $penInSetup.Phones -and -not $penInSetup.NewNetwork -and $penKeyInSetup -eq $penRestrictionsOriginal -and $penAfterSetup.On -and $penAfterSetup.Phones -and $penAfterSetup.NewNetwork -and $penAfterSetup.WriteProtect -eq 1) "in setup: block $($penInSetup.On), policy key $penKeyInSetup (before install $penRestrictionsOriginal); after: block $($penAfterSetup.On), WriteProtect $($penAfterSetup.WriteProtect)"
     Restart-Service CafeWatchdog -Force
@@ -886,6 +900,9 @@ try {
     Invoke-RestMethod "https://127.0.0.1:5443/staff/pen-drives/$($penAsked.id)" -Method Post -Headers $ownerHeaders -ContentType "application/json" -Body (@{ access = "read" } | ConvertTo-Json) | Out-Null
     $penAnswered = Pc "/pc/pen-drive" @{ device = $penDevice; name = "CI stick" }
     $penPcAsStaff = try { Invoke-WebRequest "https://127.0.0.1:5443/staff/pen-drives" -Headers @{ "X-Pc-Token" = $token } -UseBasicParsing | Out-Null; "answered" } catch { [int]$_.Exception.Response.StatusCode }
+    Pc "/pc/wifi-alert" @{ network = "Cafe WiFi"; router = "a4:2b:b0:11:22:33" } | Out-Null
+    $wifiAlert = @(Invoke-RestMethod "https://127.0.0.1:5443/staff/alerts" -Headers $ownerHeaders | Where-Object { $_ -like "*PC1: Wi-Fi `"Cafe WiFi`" through a router the cafe did not set up (a4:2b:b0:11:22:33)*" })
+    Check "D3.F1" "A PC that disconnected an unknown Wi-Fi router shows it on the owner's alerts" ($wifiAlert.Count -eq 1) "alerts matching: $($wifiAlert.Count)"
     Check "D2.F1" "A pen drive the PC reports waits on the counter, the owner allows read-only, the PC gets that answer, and a PC key cannot answer" ($null -eq $penAsked.access -and $penWaiting.Count -eq 1 -and $penAnswered.access -eq "read" -and $penAnswered.id -eq $penAsked.id -and $penPcAsStaff -eq 401) "first answer '$($penAsked.access)'; on counter $($penWaiting.Count); after answer '$($penAnswered.access)'; PC key on staff page: $penPcAsStaff"
     # A fresh request is handled promptly; an unchanged active-session reason is logged only once across retries.
     $watchdogLog = Join-Path "$data\logs" "watchdog-$(Get-Date -Format yyyyMMdd).log"
@@ -1255,6 +1272,8 @@ try {
     Check "B3.I2c" "PC uninstall: browsers' secure DNS setting back as before" ((Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -ErrorAction SilentlyContinue).DnsOverHttpsMode -eq $dohOriginal) "before: '$dohOriginal'"
     Check "B3.I3" "PC uninstall: Level A off" (-not ((CiTool.exe --list-policies) -match "Cafe Level A")) ""
     $writeProtectAfter = (Get-ItemProperty $penStorageKey -ErrorAction SilentlyContinue).WriteProtect
+    $hotspotAfter = (Get-ItemProperty $hotspotKey -ErrorAction SilentlyContinue).NC_ShowSharedAccessUI
+    Check "D3.I1" "PC uninstall puts Mobile hotspot back as it was" ($hotspotAfter -eq $hotspotOriginal -and -not (Test-Path "$data\hotspot-before.txt")) "before '$hotspotOriginal', after '$hotspotAfter'"
     Check "D2.I1" "PC uninstall puts the pen drive settings back as they were" ((Test-Path $penKey) -eq $penRestrictionsOriginal -and $writeProtectAfter -eq $writeProtectOriginal) "restrictions key before $penRestrictionsOriginal, after $(Test-Path $penKey); WriteProtect before '$writeProtectOriginal', after '$writeProtectAfter'"
 
     $appLockerPolicyAfter = [xml](Get-AppLockerPolicy -Local -Xml)

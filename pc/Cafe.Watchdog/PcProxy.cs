@@ -20,6 +20,7 @@ static class PcProxy
     static OfflineUnlockStore? _offline;
     static string? _actionQueuePath;
     static string? _timeLockSettingPath;
+    static string _keysDirectory = "";
     static readonly object ActionQueueGate = new();
     static readonly object TimeLockSettingGate = new();
     static string? _lastTimeLockRefreshError;
@@ -136,6 +137,7 @@ static class PcProxy
             _actionQueuePath = Path.Combine(keysDirectory, "pending-actions.json");
             _timeLockSettingPath = Path.Combine(keysDirectory, "time-lock-setting.json");
             PenDrives.Init(keysDirectory);
+            _keysDirectory = keysDirectory;
             if (!File.Exists(_timeLockSettingPath)) WriteTimeLockSetting(false);
             firstPipe = NewPipe(clientSid); // proves the protected listener can actually be created
             _agentPath = resolvedAgentPath;
@@ -167,7 +169,7 @@ static class PcProxy
                             nextOfflineRefresh = DateTime.UtcNow.AddSeconds(30);
                         }
                         if (_offline?.PendingSales().Count == 0) SyncQueuedActions();
-                        if (_http is HttpClient http) PenDrives.Check(http, _log);
+                        if (_http is HttpClient http) { PenDrives.Check(http, _log); Wifi.Check(_keysDirectory, http, _log); }
                     }
                     catch (Exception e) { _log("background sync error: " + e.Message); }
                     try { await Task.Delay(TimeSpan.FromSeconds(5), stop); }

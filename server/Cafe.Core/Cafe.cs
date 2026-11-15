@@ -778,10 +778,11 @@ public sealed partial class CafeCore : IDisposable
         return list;
     });
 
+    /// The owner's alerts on the counter screen: offline unlocks, and PCs that joined a Wi-Fi router the cafe did not set up.
     public List<string> OfflineUnlockAlerts(long by) => Tx(() =>
     {
         RequireOwner(by);
-        using var r = Query("SELECT at, detail FROM audit WHERE action = 'offline_unlock_alert' ORDER BY id DESC LIMIT 10");
+        using var r = Query("SELECT at, detail FROM audit WHERE action IN ('offline_unlock_alert', 'wifi_alert') ORDER BY id DESC LIMIT 10");
         var list = new List<string>();
         while (r.Read()) list.Add($"{r.GetString(0)} {r.GetString(1)}");
         return list;
