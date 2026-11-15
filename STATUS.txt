@@ -83,6 +83,9 @@ B3  Lockdown and installers                                         BUILT - fina
          Before the Phase 0 build (decided 13 Nov): show the lock screen on its own Windows desktop (like the Windows
               sign-in screen), so games in exclusive fullscreen and NVIDIA/AMD overlays cannot draw over it on any
               hardware; switch off the Xbox Game Bar by policy. Today the lock screen is a TopMost window.
+              E3a Game Bar off (BUILT 15 Nov): Windows' policy AllowGameDVR=0 (game recording and Win+G overlay),
+                 and AppLocker refuses the Game Bar app (Microsoft.XboxGamingOverlay) to the Customer; the owner keeps
+                 it. Lockdown D1.C1b, E3.G1. Real Win+G check in Phase 0. E3b own desktop: next.
               Decided 14 Nov: record each PC's hardware at install and show it on the counter (B5.13 below).
     B5.13 PC hardware list and PC groups (decided 14 Nov): each PC reports its processor, graphics card, memory,
           Windows version and monitors at install; the counter lists them. The owner puts PCs into groups (e.g.

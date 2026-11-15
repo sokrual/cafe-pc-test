@@ -443,11 +443,15 @@ function Install-CustomerPolicy {
         $xml.Add("  </RuleCollection>")
     }
     # AppLocker requires an Appx rule collection whenever the Exe collection is enforced.
-    # Keep signed packaged apps available; D1 adds no packaged-app deny rules.
+    # Keep signed packaged apps available; the one exception is the Xbox Game Bar for the Customer (E3).
     $appxId = [guid]::NewGuid().ToString("D")
+    $gameBarId = [guid]::NewGuid().ToString("D")
     $xml.Add('  <RuleCollection Type="Appx" EnforcementMode="Enabled">')
     $xml.Add('    <FilePublisherRule Id="' + $appxId + '" Name="Cafe D1 allow Everyone - Appx" Description="Allow all signed packaged apps" UserOrGroupSid="S-1-1-0" Action="Allow">')
     $xml.Add('      <Conditions><FilePublisherCondition PublisherName="*" ProductName="*" BinaryName="*"><BinaryVersionRange LowSection="0.0.0.0" HighSection="*" /></FilePublisherCondition></Conditions>')
+    $xml.Add('    </FilePublisherRule>')
+    $xml.Add('    <FilePublisherRule Id="' + $gameBarId + '" Name="Cafe E3 deny Customer - Xbox Game Bar" Description="The Game Bar overlay draws over games and the lock screen" UserOrGroupSid="' + $CustomerSid + '" Action="Deny">')
+    $xml.Add('      <Conditions><FilePublisherCondition PublisherName="*" ProductName="Microsoft.XboxGamingOverlay" BinaryName="*"><BinaryVersionRange LowSection="0.0.0.0" HighSection="*" /></FilePublisherCondition></Conditions>')
     $xml.Add('    </FilePublisherRule>')
     $xml.Add('  </RuleCollection>')
     $xml.Add("</AppLockerPolicy>")
@@ -542,8 +546,10 @@ function Install-CustomerPolicy {
     }
     $appxCollection = @($applied.AppLockerPolicy.RuleCollection | Where-Object { $_.Type -eq "Appx" })
     $appxAllow = @($appxCollection[0].FilePublisherRule | Where-Object { $_.Action -eq "Allow" -and $_.UserOrGroupSid -eq "S-1-1-0" -and $_.Conditions.FilePublisherCondition.PublisherName -eq "*" -and $_.Conditions.FilePublisherCondition.ProductName -eq "*" -and $_.Conditions.FilePublisherCondition.BinaryName -eq "*" }).Count -gt 0
-    if ($appxCollection.Count -ne 1 -or -not $appxAllow) { throw "The required allow-only Appx rule collection was not applied." }
-    Write-Host "AppLocker D1 enforced for Customer in Exe, Msi, Script and Dll; signed packaged apps remain allowed."
+    $appxDenies = @($appxCollection[0].FilePublisherRule | Where-Object { $_.Action -eq "Deny" })
+    $gameBarDeny = $appxDenies.Count -eq 1 -and $appxDenies[0].UserOrGroupSid -eq $CustomerSid -and $appxDenies[0].Conditions.FilePublisherCondition.ProductName -eq "Microsoft.XboxGamingOverlay"
+    if ($appxCollection.Count -ne 1 -or -not $appxAllow -or -not $gameBarDeny) { throw "The Appx rule collection (allow signed packaged apps, deny the Game Bar to the Customer) was not applied." }
+    Write-Host "AppLocker D1 enforced for Customer in Exe, Msi, Script and Dll; signed packaged apps remain allowed except the Xbox Game Bar."
 }
 
 function Wait-ForService {

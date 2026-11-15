@@ -142,6 +142,7 @@ $penKey = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions"
 $penStorageKey = "HKLM:\SYSTEM\CurrentControlSet\Control\StorageDevicePolicies"
 $penRestrictionsOriginal = Test-Path $penKey
 $hotspotKey = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Network Connections"
+$gameDvrOriginal = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR" -ErrorAction SilentlyContinue).AllowGameDVR
 $hotspotOriginal = (Get-ItemProperty $hotspotKey -ErrorAction SilentlyContinue).NC_ShowSharedAccessUI
 $writeProtectOriginal = (Get-ItemProperty $penStorageKey -ErrorAction SilentlyContinue).WriteProtect
 function Get-PenDriveBlock {
@@ -493,9 +494,18 @@ try {
     $appxAllow = $false
     if ($appxCollection.Count -eq 1 -and $appxCollection[0].EnforcementMode -eq "Enabled") {
         $appxAllow = @($appxCollection[0].FilePublisherRule | Where-Object { $_.Action -eq "Allow" -and $_.UserOrGroupSid -eq "S-1-1-0" -and $_.Conditions.FilePublisherCondition.PublisherName -eq "*" -and $_.Conditions.FilePublisherCondition.ProductName -eq "*" -and $_.Conditions.FilePublisherCondition.BinaryName -eq "*" }).Count -gt 0
-        $appxAllow = $appxAllow -and @($appxCollection[0].FilePublisherRule | Where-Object { $_.Action -eq "Deny" }).Count -eq 0
+        $appxDenies = @($appxCollection[0].FilePublisherRule | Where-Object { $_.Action -eq "Deny" })
+        $appxAllow = $appxAllow -and $appxDenies.Count -eq 1 -and $appxDenies[0].Conditions.FilePublisherCondition.ProductName -eq "Microsoft.XboxGamingOverlay" -and $appxDenies[0].UserOrGroupSid -eq $u.SID.Value
     }
-    Check "D1.C1b" "Required Appx collection allows signed packaged apps without any deny rules" $appxAllow "Appx collection count $($appxCollection.Count)"
+    Check "D1.C1b" "Appx collection allows signed packaged apps; its only deny is the Xbox Game Bar, for the Customer" $appxAllow "Appx collection count $($appxCollection.Count)"
+    # E3: is the Game Bar really refused to the Customer, and other packaged apps still allowed? Windows' own AppLocker test answers per package.
+    $gameDvrPolicy = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR" -ErrorAction SilentlyContinue).AllowGameDVR
+    $gameBarPackage = @(Get-AppxPackage -AllUsers -Name Microsoft.XboxGamingOverlay -ErrorAction SilentlyContinue | Select-Object -First 1)
+    $otherPackage = @(Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue | Where-Object { -not $_.IsFramework -and $_.Name -ne "Microsoft.XboxGamingOverlay" -and $_.SignatureKind -eq "Store" } | Select-Object -First 1)
+    $d1PolicyFile = Join-Path $env:TEMP "cafe-applocker-now.xml"; Get-AppLockerPolicy -Effective -Xml | Set-Content $d1PolicyFile -Encoding UTF8
+    $gameBarDecision = if ($gameBarPackage) { (Test-AppLockerPolicy -XmlPolicy $d1PolicyFile -Packages $gameBarPackage -User Customer).PolicyDecision } else { "not installed on this machine" }
+    $otherDecision = if ($otherPackage) { (Test-AppLockerPolicy -XmlPolicy $d1PolicyFile -Packages $otherPackage -User Customer).PolicyDecision } else { "none found" }
+    Check "E3.G1" "Xbox Game Bar off: Windows' game recording policy off; AppLocker refuses the Game Bar to the Customer and still allows other packaged apps" ($gameDvrPolicy -eq 0 -and $gameBarDecision -in @("Denied", "DeniedByDefault", "not installed on this machine") -and "$otherDecision" -eq "Allowed") "AllowGameDVR $gameDvrPolicy; Game Bar: $gameBarDecision; $($otherPackage.Name): $otherDecision"
     $appIdNow = Get-CimInstance Win32_Service -Filter "Name='AppIDSvc'"
     Check "D1.C2" "Application Identity is automatic and running" ($appIdNow.StartMode -eq "Auto" -and $appIdNow.State -eq "Running") "start $($appIdNow.StartMode); state $($appIdNow.State)"
     $appLockerFilter = Get-CimInstance Win32_SystemDriver -Filter "Name='applockerfltr'" -ErrorAction SilentlyContinue
@@ -1272,6 +1282,8 @@ try {
     Check "B3.I2c" "PC uninstall: browsers' secure DNS setting back as before" ((Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -ErrorAction SilentlyContinue).DnsOverHttpsMode -eq $dohOriginal) "before: '$dohOriginal'"
     Check "B3.I3" "PC uninstall: Level A off" (-not ((CiTool.exe --list-policies) -match "Cafe Level A")) ""
     $writeProtectAfter = (Get-ItemProperty $penStorageKey -ErrorAction SilentlyContinue).WriteProtect
+    $gameDvrAfter = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR" -ErrorAction SilentlyContinue).AllowGameDVR
+    Check "E3.I1" "PC uninstall puts the game recording policy back as it was" ($gameDvrAfter -eq $gameDvrOriginal) "before '$gameDvrOriginal', after '$gameDvrAfter'"
     $hotspotAfter = (Get-ItemProperty $hotspotKey -ErrorAction SilentlyContinue).NC_ShowSharedAccessUI
     Check "D3.I1" "PC uninstall puts Mobile hotspot back as it was" ($hotspotAfter -eq $hotspotOriginal -and -not (Test-Path "$data\hotspot-before.txt")) "before '$hotspotOriginal', after '$hotspotAfter'"
     Check "D2.I1" "PC uninstall puts the pen drive settings back as they were" ((Test-Path $penKey) -eq $penRestrictionsOriginal -and $writeProtectAfter -eq $writeProtectOriginal) "restrictions key before $penRestrictionsOriginal, after $(Test-Path $penKey); WriteProtect before '$writeProtectOriginal', after '$writeProtectAfter'"

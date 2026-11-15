@@ -219,15 +219,19 @@ icacls "$data\wipe" /grant "*S-1-5-32-545:(OI)(CI)(W,RD)" | Out-Null
 
 # --- Windows settings: remember what they were, once, so uninstall can put them back ---
 $edge, $chrome, $firefox = "HKLM:\SOFTWARE\Policies\Microsoft\Edge", "HKLM:\SOFTWARE\Policies\Google\Chrome", "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\DNSOverHTTPS"
+$gameDvr = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR"
 $watched = @("$winlogon|AutoAdminLogon", "$winlogon|ForceAutoLogon", "$winlogon|DefaultUserName", "$winlogon|DefaultDomainName",
     "$machinePolicy|HideFastUserSwitching", "$edge|DnsOverHttpsMode", "$chrome|DnsOverHttpsMode", "$firefox|Enabled", "$firefox|Locked",
     "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters|NtpServer", "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters|Type",
-    "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpClient|SpecialPollInterval")
-if (-not (Test-Path "$data\before.json")) {
-    $before = [ordered]@{}
-    foreach ($w in $watched) { $k, $n = $w -split '\|'; $before[$w] = (Get-ItemProperty $k -Name $n -ErrorAction SilentlyContinue).$n }
-    $before | ConvertTo-Json | Set-Content "$data\before.json" -Encoding utf8
+    "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpClient|SpecialPollInterval", "$gameDvr|AllowGameDVR")
+$before = [ordered]@{}
+if (Test-Path "$data\before.json") { (Get-Content "$data\before.json" -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $before[$_.Name] = $_.Value } }
+$added = $false
+foreach ($w in $watched) { # a setting a newer version watches is remembered on its first update, before it is changed
+    if ($before.Contains($w)) { continue }
+    $k, $n = $w -split '\|'; $before[$w] = (Get-ItemProperty $k -Name $n -ErrorAction SilentlyContinue).$n; $added = $true
 }
+if ($added) { $before | ConvertTo-Json | Set-Content "$data\before.json" -Encoding utf8 }
 
 # --- the Customer account: a normal (not admin) account with a long random password nobody needs to know ---
 $rnd = New-Object byte[] 24; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($rnd)
@@ -247,6 +251,10 @@ Set-ItemProperty $winlogon DefaultUserName $user
 Set-ItemProperty $winlogon DefaultDomainName $env:COMPUTERNAME
 Key $machinePolicy
 Set-ItemProperty $machinePolicy HideFastUserSwitching 1 -Type DWord
+# Xbox Game Bar off (E3): Windows' policy switches off game recording and the Game Bar overlay (Win+G);
+# applocker.ps1 also stops the Customer opening the Game Bar app at all
+Key $gameDvr
+Set-ItemProperty $gameDvr AllowGameDVR 0 -Type DWord
 
 # --- forced DNS: every web address goes through the counter PC's internet filter (AdGuard Home), so customers
 #     cannot reach blocked sites by using another DNS server. Only switched on once the filter answers. ---
