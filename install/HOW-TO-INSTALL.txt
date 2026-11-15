@@ -41,7 +41,9 @@ double-click SETUP-MODE, then do steps B2 and B3 again.
 Pen drives: a customer's pen drive (or USB hard disk, or card reader) shows nothing until you or your staff
 answer on the counter screen: Block, Allow read-only, or Allow read and write. Every answer is saved with
 who gave it. Programs on a pen drive never run, and access ends when the customer logs out.
-Phones can charge but never transfer files. There is no prompt for phones.
+Phones can charge but never transfer files or share their internet (USB tethering). There is no prompt for phones.
+A new network adapter (for example a new Wi-Fi or Ethernet stick) works only if you plug it in during setup mode.
+Network adapters already in the PC when you installed keep working, including Wi-Fi.
 In setup mode pen drives and phones work normally, so you can copy your own game or Windows files.
 
 A new game: right-click it, choose "Run as administrator" and type the admin password. Do this once.
