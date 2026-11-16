@@ -134,6 +134,10 @@ sealed class Agent : ApplicationContext
             await ReplayUnacceptedActions();
             if (await _watchdog.GetFromJsonAsync<TimeLockSetting>("/local/time-lock-setting") is { } remembered)
                 _state = _state with { LockWhenTimeRunsOut = remembered.LockWhenTimeRunsOut };
+            // a poll answer is older than any state applied while it was on its way (a login, a logout): drop it then.
+            // CI caught one: the poll's "locked, no session" arrived just after the login, locked the PC again and
+            // would have asked for the clean-up of the customer who had just logged in
+            var asked = _changes;
             var serverState = await _watchdog.GetFromJsonAsync<PcState>("/pc/state");
             var offlineInfo = await _watchdog.GetFromJsonAsync<OfflineUnlockInfo>("/local/offline-unlock-info");
             if (offlineInfo?.PendingSales > 0)
@@ -142,9 +146,10 @@ sealed class Agent : ApplicationContext
                 _lock.SetOffline(false);
                 return; // never replay a logout or overwrite the local timer before the paid sale is reconciled
             }
-            if (_state.Session == -1 && serverState is not null)
+            if (_state.Session == -1 && serverState is not null && _changes == asked)
                 Apply(serverState); // the server decides whether the offline walk-in was accepted
-            if (await _watchdog.GetFromJsonAsync<PcState>("/pc/state") is { } s)
+            asked = _changes;
+            if (await _watchdog.GetFromJsonAsync<PcState>("/pc/state") is { } s && _changes == asked)
             {
                 Apply(s);
             }
@@ -160,8 +165,11 @@ sealed class Agent : ApplicationContext
         }
     }
 
+    int _changes;   // counts Apply calls (all on the UI thread)
+
     void Apply(PcState s)
     {
+        _changes++;
         if (WipePending()) s = s with { Locked = true, Message = WipeMessage() };
         _lock.SetBusy(WipePending());
         if (_state.Session is > 0 && s.Session is null) AskForWipe(); // a server session ended, here or at the counter
