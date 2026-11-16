@@ -70,6 +70,34 @@ public sealed class AccountTests : IDisposable
     }
 
     [Fact]
+    public void A_PC_on_an_older_build_keeps_working_until_it_gets_the_new_build_then_its_key_is_tied()
+    {
+        var file = Path.Combine(Path.GetTempPath(), $"cafe-oldpc-{Guid.NewGuid():N}.db");
+        try
+        {
+            string key;
+            using (var cafe = new CafeCore(file, "test-key-123", () => _clock)) key = cafe.AddPcsAtInstall(1)[0].Token;
+            using (var raw = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = file, Password = "test-key-123", Pooling = false }.ToString()))
+            {   // what a key made before the change looks like: no date
+                raw.Open();
+                using var undate = raw.CreateCommand(); undate.CommandText = "UPDATE pcs SET made = NULL"; undate.ExecuteNonQuery();
+            }
+            using (var cafe = new CafeCore(file, "test-key-123", () => _clock))
+            {
+                _clock = _clock.AddDays(30);
+                Assert.Equal("PC1", cafe.PcByToken(key, ""));                          // old build, no secret: still works
+                Assert.Equal("PC1", cafe.PcByToken(key, "pc1-new-build-secret"));      // new build: tied now
+                Assert.Null(cafe.PcByToken(key, ""));                                  // after that, no secret is refused
+                Assert.Null(cafe.PcByToken(key, "a-copy-elsewhere-secret"));
+                Assert.Equal("PC1", cafe.PcByToken(key, "pc1-new-build-secret"));
+                var fresh = cafe.AddPc(cafe.AddUser(null, Role.Owner, "Owner", "9000000001", "432100"), "PC2");
+                Assert.Null(cafe.PcByToken(fresh, ""));                                 // a new key always needs the secret
+            }
+        }
+        finally { SqliteConnection.ClearAllPools(); try { File.Delete(file); } catch (IOException) { } }
+    }
+
+    [Fact]
     public void Codes_match_the_published_test_values()
     {
         var key = Encoding.ASCII.GetBytes("12345678901234567890"); // RFC 6238 appendix B, last 6 digits
