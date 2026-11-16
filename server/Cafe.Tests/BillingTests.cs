@@ -491,8 +491,8 @@ public sealed class BillingTests : IDisposable
     {
         var token = _cafe.AddPc(_owner, "PC1");
         Assert.Throws<CafeException>(() => _cafe.AddPc(_staff, "PC2"));
-        Assert.Equal("PC1", _cafe.PcByToken(token));
-        Assert.Null(_cafe.PcByToken("made-up"));
+        Assert.Equal("PC1", _cafe.PcByToken(token, "this-pc-bind-secret"));
+        Assert.Null(_cafe.PcByToken("made-up", "this-pc-bind-secret"));
         var s = _cafe.StartPostpaid(_staff, "PC1", _cust);
         Wait(20);
         Assert.False(_cafe.StateOf("PC1").Locked);
@@ -590,7 +590,7 @@ public sealed class BillingTests : IDisposable
         {
             try
             {
-                var pc = _cafe.PcByToken(tokens[i % 15])!;
+                var pc = _cafe.PcByToken(tokens[i % 15], "this-pc-bind-secret")!;
                 _cafe.PcSeen(pc); _cafe.StateOf(pc);
                 _cafe.PlanMinutesLeft(_cust); _cafe.WalletBalance(_cust);
                 if (i % 50 == 0) { _cafe.Lock(_staff, pc, "x"); _cafe.Unlock(_staff, pc); }

@@ -14,7 +14,7 @@ static class PcProxy
     const uint PipeTypeByte = 0, PipeWait = 0, PipeRejectRemoteClients = 0x00000008;
     const int MaxRequestBytes = 65536;
     static volatile HttpClient? _http;   // replaced when the counter PC is found at a new address (FindCounter)
-    static string _pin = "", _token = "";
+    static string _pin = "", _token = "", _bind = "";
     static string? _agentPath;
     static Action<string> _log = message => Console.Error.WriteLine(message);
     static int _refusalLogged;
@@ -125,10 +125,10 @@ static class PcProxy
         NamedPipeServerStream? firstPipe = null;
         try
         {
-            _pin = pin; _token = token;
+            var keysDirectory = Path.GetDirectoryName(Path.GetFullPath(tokenFile))!;
+            _pin = pin; _token = token; _bind = ReadOrMakeBind(Path.Combine(keysDirectory, "pc.bind"));
             client = NewClient(serverUri);
             var resolvedAgentPath = Path.GetFullPath(agentPath);
-            var keysDirectory = Path.GetDirectoryName(Path.GetFullPath(tokenFile))!;
             _offline = new OfflineUnlockStore(Path.Combine(keysDirectory, "offline-unlock.bin"));
             _actionQueuePath = Path.Combine(keysDirectory, "pending-actions.json");
             _timeLockSettingPath = Path.Combine(keysDirectory, "time-lock-setting.json");
@@ -200,6 +200,7 @@ static class PcProxy
         };
         var client = new HttpClient(handler) { BaseAddress = server, Timeout = TimeSpan.FromSeconds(10) };
         client.DefaultRequestHeaders.Add("X-Pc-Token", _token);
+        client.DefaultRequestHeaders.Add("X-Pc-Bind", _bind);
         return client;
     }
 
@@ -300,6 +301,23 @@ static class PcProxy
             catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException)
             { _log("offline sale sync deferred: " + e.Message); break; }
         }
+    }
+
+    /// A secret this PC makes for itself once and keeps machine-protected next to its key. The counter ties the PC key
+    /// to it on first use, so a copy of the key file (spare key, lost pen drive) does not work from another device.
+    /// Losing this file means the counter refuses the PC: remove the PC on the counter screen and add it again.
+    static string ReadOrMakeBind(string path)
+    {
+        if (File.Exists(path)) return Encoding.UTF8.GetString(UnprotectToken(File.ReadAllBytes(path)));
+        var bind = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        var temp = path + ".new";
+        using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            stream.Write(OfflineUnlockStore.Protect(Encoding.UTF8.GetBytes(bind)));
+            stream.Flush(true);
+        }
+        ReplaceDurably(temp, path);
+        return bind;
     }
 
     static string ReadToken(string path, bool allowPlainText)

@@ -116,7 +116,7 @@ app.Use(async (ctx, next) => // rule breaks become a 400 with a plain message, b
 
 string TokenOf(HttpContext c) => c.Request.Headers.Authorization.ToString().Replace("Bearer ", "");
 long Owner(HttpContext c) { var u = Staff(c); return cafe.IsOwner(u) ? u : throw new CafeException("Only the owner can do this."); }
-string Pc(HttpContext c) => cafe.PcByToken(c.Request.Headers["X-Pc-Token"].ToString()) ?? throw new UnauthorizedAccessException();
+string Pc(HttpContext c) => cafe.PcByToken(c.Request.Headers["X-Pc-Token"].ToString(), c.Request.Headers["X-Pc-Bind"].ToString()) ?? throw new UnauthorizedAccessException();
 long Staff(HttpContext c)
 {
     return staffTokens.Check(TokenOf(c)) ?? throw new UnauthorizedAccessException();

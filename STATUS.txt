@@ -274,3 +274,9 @@ OWNER DECISIONS (10 Nov 2026)
               just logged in (pc-ui-tests, Offline_time_limit_locks... enabled, first run on the new repo). Poll answers
               are now dropped when any state was applied while they were on the way. No test makes this race happen on
               purpose; the UI test that caught it is the check.
+         Fix N1 (security re-check): a PC key is tied to the first PC that uses it. The watchdog makes its own secret
+              (keys\pc.bind, machine-encrypted, never on the pen drive) and sends it with every request; the counter
+              stores its hash on first use and refuses the key with any other secret. A key not used within 7 days stops
+              working. Keys made before this have no date and never expire unused. Losing pc.bind (or UNINSTALL-PC)
+              means a new key for that PC. Tests: AccountTests A_PC_key_works_only_from_the_first_PC_that_uses_it...,
+              lockdown B3.C4q.

@@ -201,7 +201,7 @@ try {
     Check "A.K3" "Counter install writes the address on the router side into the install folder for INSTALL-PC (not a virtual adapter's)" ($addressFile -and $routerSide -contains $addressFile.Trim()) "counter-address.txt '$addressFile'; router side: $($routerSide -join ', '); all: $($myAddresses -join ', ')"
     $keyNames = @(Get-ChildItem $stageA -Filter "PC*.token" -File | ForEach-Object BaseName | Sort-Object)
     $pc2Key = (Get-Content "$stageA\PC2.token" -Raw -ErrorAction SilentlyContinue)
-    function KeyState { if (-not $pc2Key) { return "no key file" }; (curl.exe -sk --max-time 10 -o NUL -w "%{http_code}" -H "X-Pc-Token: $($pc2Key.Trim())" https://127.0.0.1:5443/pc/state) -join "" }
+    function KeyState { if (-not $pc2Key) { return "no key file" }; (curl.exe -sk --max-time 10 -o NUL -w "%{http_code}" -H "X-Pc-Token: $($pc2Key.Trim())" -H "X-Pc-Bind: lockdown-test-pc2-secret" https://127.0.0.1:5443/pc/state) -join "" }   # the first use ties PC2's key to this secret
     $null = WaitFor 30 { (KeyState) -eq "200" }; $pc2State = KeyState   # the service may still be starting
     Check "A.K5" "Counter install makes one key file per gaming PC, and the counter PC's server accepts them" (($keyNames -join ",") -eq "PC1,PC2,PC3" -and $pc2State -eq "200") "key files: $($keyNames -join ', '); PC2's key on the real server: HTTP $pc2State"
     # run again (an update): the cafe data exists, so no new keys, and the keys made before still work
@@ -254,7 +254,9 @@ try {
     $server = Start-Process "$out\server\Cafe.Server.exe" -ArgumentList "--data $tdata --seed-test --seed-offline-secret-test" -PassThru -WindowStyle Hidden
     if (-not (WaitFor 30 { (Test-Path "$tdata\pc1.token") -and (Test-Path "$tdata\server.pin") })) { throw "test server did not start" }
     $token = (Get-Content "$tdata\pc1.token" -Raw).Trim()
-    function Pc($path, $body) { Invoke-RestMethod "https://127.0.0.1:5443$path" -Method Post -Headers @{ "X-Pc-Token" = $token } -ContentType "application/json" -Body ($body | ConvertTo-Json) }
+    # the test acts as PC1 next to its installed watchdog, so it sends the secret that watchdog made (pc.bind)
+    function PcBind { Add-Type -AssemblyName System.Security; [Text.Encoding]::UTF8.GetString([Security.Cryptography.ProtectedData]::Unprotect([IO.File]::ReadAllBytes("$data\keys\pc.bind"), $null, "LocalMachine")) }
+    function Pc($path, $body) { Invoke-RestMethod "https://127.0.0.1:5443$path" -Method Post -Headers @{ "X-Pc-Token" = $token; "X-Pc-Bind" = (PcBind) } -ContentType "application/json" -Body ($body | ConvertTo-Json) }
 
     # A real install starts with no accounts. The owner account is made on the counter PC itself, once.
     $freshData = Join-Path $env:TEMP "cafe-fresh-server"; Remove-Item $freshData -Recurse -Force -ErrorAction SilentlyContinue
@@ -1007,11 +1009,15 @@ try {
     Pc "/pc/login" @{ phone = "9000000003"; pin = "2222" } | Out-Null
     # D2: the PC reports a held-back pen drive; it waits on the counter; the owner's answer reaches the PC
     $penDevice = "USB\VID_0781&PID_5567\CAFECI0001"
+    $copyRefused = (curl.exe -sk --max-time 10 -o NUL -w "%{http_code}" -H "X-Pc-Token: $token" -H "X-Pc-Bind: a-copy-of-the-key-elsewhere" https://127.0.0.1:5443/pc/state) -join ""
+    $bindRead = CustomerPs "[IO.File]::ReadAllBytes('$data\keys\pc.bind') | Out-Null"
+    $bindPlain = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes("$data\keys\pc.bind")) -eq (PcBind)
+    Check "B3.C4q" "A copy of this PC's key does not work from another device: the counter tied it to this PC's own secret, which the Customer cannot read and which is stored encrypted" ($copyRefused -eq "401" -and $bindRead -ne 0 -and -not $bindPlain) "copy without the secret: HTTP $copyRefused; Customer read exit $bindRead; stored as plain text $bindPlain"
     $penAsked = Pc "/pc/pen-drive" @{ device = $penDevice; name = "CI stick" }
     $penWaiting = @(Invoke-RestMethod "https://127.0.0.1:5443/staff/pen-drives" -Headers $ownerHeaders | Where-Object { $_.id -eq $penAsked.id -and $_.pc -eq "PC1" -and $_.name -eq "CI stick" })
     Invoke-RestMethod "https://127.0.0.1:5443/staff/pen-drives/$($penAsked.id)" -Method Post -Headers $ownerHeaders -ContentType "application/json" -Body (@{ access = "read" } | ConvertTo-Json) | Out-Null
     $penAnswered = Pc "/pc/pen-drive" @{ device = $penDevice; name = "CI stick" }
-    $penPcAsStaff = try { Invoke-WebRequest "https://127.0.0.1:5443/staff/pen-drives" -Headers @{ "X-Pc-Token" = $token } -UseBasicParsing | Out-Null; "answered" } catch { [int]$_.Exception.Response.StatusCode }
+    $penPcAsStaff = try { Invoke-WebRequest "https://127.0.0.1:5443/staff/pen-drives" -Headers @{ "X-Pc-Token" = $token; "X-Pc-Bind" = (PcBind) } -UseBasicParsing | Out-Null; "answered" } catch { [int]$_.Exception.Response.StatusCode }
     Pc "/pc/wifi-alert" @{ network = "Cafe WiFi"; router = "a4:2b:b0:11:22:33" } | Out-Null
     $wifiAlert = @(Invoke-RestMethod "https://127.0.0.1:5443/staff/alerts" -Headers $ownerHeaders | Where-Object { $_ -like "*PC1: Wi-Fi `"Cafe WiFi`" through a router the cafe did not set up (a4:2b:b0:11:22:33)*" })
     Check "D3.F1" "A PC that disconnected an unknown Wi-Fi router shows it on the owner's alerts" ($wifiAlert.Count -eq 1) "alerts matching: $($wifiAlert.Count)"
@@ -1293,7 +1299,7 @@ try {
         }
     }
     $serverReady = WaitFor 90 {
-        $probe = Invoke-F12CurlJson @("-H", "X-Pc-Token: $token", "https://127.0.0.1:5443/pc/state")
+        $probe = Invoke-F12CurlJson @("-H", "X-Pc-Token: $token", "-H", "X-Pc-Bind: $(PcBind)", "https://127.0.0.1:5443/pc/state")
         $null -ne $probe
     }
     $staffLogin = $false

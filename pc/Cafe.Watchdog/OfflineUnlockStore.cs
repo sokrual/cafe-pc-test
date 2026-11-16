@@ -210,7 +210,7 @@ sealed class OfflineUnlockStore
         IntPtr prompt, uint flags, out DataBlob output);
     [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
 
-    static byte[] Protect(byte[] clear)
+    internal static byte[] Protect(byte[] clear)
     {
         var handle = GCHandle.Alloc(clear, GCHandleType.Pinned);
         try
