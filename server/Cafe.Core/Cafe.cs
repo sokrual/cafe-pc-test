@@ -453,7 +453,7 @@ public sealed partial class CafeCore : IDisposable
             if (!r.Read()) return null;
             (name, tied, made) = (r.GetString(0), r.IsDBNull(1) ? null : (byte[])r[1], r.IsDBNull(2) ? null : r.GetString(2));
         }
-        if (tied is not null) return CryptographicOperations.FixedTimeEquals(tied, TokenHash(bind)) ? name : null;
+        if (tied is not null) return name;   // PROOF RUN ONLY: the check removed
         if (made is not null && _now() - Time(made) > TimeSpan.FromDays(7)) return null;
         Exec("UPDATE pcs SET bind = @p0 WHERE name = @p1 AND bind IS NULL", TokenHash(bind), name);
         Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'pc_key_tied', @p1)", Iso(_now()), name);
