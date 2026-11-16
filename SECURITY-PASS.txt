@@ -1,3 +1,92 @@
+RE-CHECK, 16 Nov 2026, against main 7223511 (after B4-B5 parts, D1-D3, E1-E3a, the v0 changes S1-S5)
+Read-only, like the first pass. "Fixed" means the code and a named test show it; "Reduced" means the risk is smaller
+but not gone; "Open" means nothing changed. The first pass (12 Nov) follows below, unchanged, as the record.
+
+Findings F1-F17
+
+F1  HIGH   Customer can run unapproved software                    Reduced
+    Programs cannot run from any folder the Customer can write to, or from a pen drive (AppLocker, install/applocker.ps1,
+    lockdown D1.C1-D1.C4); pen drives need an OK from the counter (D2, lockdown D2.*); phones get no file transfer (D2b);
+    no USB tethering (D2c); Game Bar refused (E3a). Open: Level A (the allow-list, install/levelA.ps1) is still watch-only
+    (B3.E5); BIOS password and USB boot are a written step for the owner (HOW-TO-INSTALL.txt, SECURITY-GUIDE.txt), not set
+    or checked by the installer.
+F2  HIGH   Counter PC disk encryption                              Reduced
+    INSTALL-ADMIN warns when BitLocker is not on and points to SECURITY-GUIDE.txt part 1 (lockdown B3.A8). It does not turn
+    BitLocker on (decided: never enable it from the installer). Open until the owner turns it on.
+F3  HIGH   Offline unlock can grant time twice before reconciling  Reduced
+    Each offline grant is capped (default 180 min, owner setting) and a duplicate becomes a named owner alert
+    (AccountTests Offline_unlock_limit_is_owner_only_and_duplicate_sales_create_a_named_owner_alert). Two offline PCs can
+    still both accept one code; that cannot be prevented while they are offline.
+F4  HIGH   Profile reset erases the remembered time-lock setting   Fixed (PR E1, old #27; watchdog keeps it, UI test
+    Offline_time_limit_locks_only_when_the_last_owner_setting_is_on)
+F5  HIGH   One gaming PC holds every offline secret                Reduced
+    Only people with offline unlock switched on are sent to PCs (AccountTests
+    Offline_unlock_off_removes_the_person_from_PC_data_without_disabling_counter_login). Every PC still holds all of them.
+F6  HIGH   Lost phone cannot be revoked on an offline PC           Reduced
+    A PC that has not reached the counter for 7 days refuses offline unlock (OfflineUnlockStore.cs:121-125); LOST-PHONE.txt
+    has the owner's steps. Within 7 days an offline PC still accepts the old secret.
+F7  HIGH   PC key stored as clear text                             Fixed (DPAPI machine key, install-pc.ps1:249-259;
+    PR A, old #11)
+F8  HIGH   No tested backup and restore                            Open (B5.5 not started)
+F9  HIGH   Lost-phone response incomplete                          Reduced (LOST-PHONE.txt; "end all logins"
+    Accounts.cs:228, Program.cs:186; same 7-day limit as F6)
+F10 MED    Offline logout queue lost in a crash                    Fixed (queue kept by the watchdog, /local/queue-action;
+    PR A, old #11)
+F11 MED    Gaming PC network access broader than the filter        Reduced
+    Inbound SMB, NetBIOS, Remote Desktop and WinRM blocked between PCs (install-pc.ps1:339-348); DNS only to the filter;
+    no USB tethering; Wi-Fi only on the cafe's networks (D3). Open: general outbound traffic, DNS over HTTPS by any program
+    or direct IP connections are not limited (written in SECURITY-GUIDE.txt).
+F12 MED    Offline sale writes not flushed                         Fixed (Flush(true): OfflineUnlockStore.cs:68,
+    PcProxy.cs:214, 353)
+F13 MED    No certificate or PC key rotation                       Reduced (steps in HOW-TO-INSTALL.txt "Certificate
+    renewal" and LOST-PHONE.txt; LOST-PHONE.txt says the full key replacement has not been tested)
+F14 MED    Pipe check is path-based                                Fixed for Customer programs (lock screen process
+    DACL, Agent Program.cs:20-41; PR E1). A program running as admin or SYSTEM is out of scope.
+F15 MED    No power-cut test of the profile reset                  Open
+F16 LOW    Review queue has no alert                               Reduced (owner alerts on the counter screen,
+    Cafe.cs:804)
+F17 LOW    Counter logins have no idle expiry                      Reduced ("end all logins"; login kept in the browser
+    tab only, sessionStorage; Windows idle lock on the counter PC)
+
+Checklist items whose answer changed
+- XSS, clickjacking, security headers: there is now a counter web screen. It builds no HTML from data (no innerHTML),
+  and is served with a strict Content-Security-Policy, frame-ancestors 'none', nosniff, no-referrer and no-store
+  (server/Cafe.Server/Program.cs:244-251). Met.
+- CSRF and cookie flags: the screen sends a bearer token from sessionStorage, no cookies. Still not applicable.
+- CORS: no cross-origin policy is set, so browsers refuse cross-origin reads. Met for now.
+- Service discovery: gaming PCs now find the counter PC themselves when its address changes (S5, lockdown S5.1, S5.2).
+- Desktop anti-tamper: see F1 (Reduced).
+- Everything else marked Not met in the first pass is still not met: backups and restore, disaster recovery, power-cut
+  tests, load and 12-hour runs (B6), SBOM, signed builds, secret scanning, SAST/DAST, penetration test, monitoring and
+  alerts beyond the counter screen, rollback, request IDs, B4 privacy and the electronic register.
+
+New since the first pass
+
+N1  MED    Spare PC keys are full PC identities
+    INSTALL-ADMIN makes one key per gaming PC (S2). A key that is never used, or a pen drive lost before the PCs are
+    installed, works as that PC from the shop network for good. A PC key can read every enabled offline secret
+    (/pc/offline-unlock-data, Program.cs:126; see F5), so it can make valid offline codes. Fix: tell the owner to delete
+    left-over PC*.token files and remove unused PCs on the counter screen; or refuse offline data to a PC that has never
+    been installed. Not done.
+N2  LOW    Counter search (S5)
+    Any device on the shop network can answer "here". The gaming PC sends its key only after the TLS handshake shows the
+    pinned certificate, so an impostor learns nothing and is not used (lockdown S5.1). The search answer is smaller than
+    the question, so it cannot be used to amplify traffic. No change needed.
+N3  LOW    "Finish cafe setup" task (S4)
+    Runs as SYSTEM; the Customer may only start it; it does nothing outside setup mode; the Customer's only input (Wi-Fi
+    names) is checked against the networks in range and never echoed; its answers are read-only to the Customer
+    (lockdown S4.1-S4.3). If the restart wins the race, the task stays behind, harmless. No change needed.
+N4  LOW    Internet filter password (S3)
+    Random, kept in C:\ProgramData\Cafe\filter-password.txt (admins only), never in the install log; the filter's page
+    listens on the counter PC only (lockdown B3.A5, B3.A5b, B3.C4p). No change needed.
+N5  FIXED  A state poll answer older than a login re-locked the PC and would have asked for the new customer's
+    clean-up. Fixed in PR #2 (Agent Program.cs, Refresh); found by a UI test; no test forces the timing.
+
+Still true: this is a source review, not a penetration test, and it does not certify the system safe for real
+customers. Two independent reviewers are still due before the first cafe goes live (STATUS.txt).
+
+================================================================================================================
+
 SECURITY PASS - B1 to B3 and security changes
 Repository: sokrual/cafe-pc-test
 Branch: security/final-pass
