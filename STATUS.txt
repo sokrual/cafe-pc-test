@@ -280,3 +280,8 @@ OWNER DECISIONS (10 Nov 2026)
               working. Keys made before this have no date and never expire unused. Losing pc.bind (or UNINSTALL-PC)
               means a new key for that PC. Tests: AccountTests A_PC_key_works_only_from_the_first_PC_that_uses_it...,
               lockdown B3.C4q.
+         Old PCs keep working: a PC on a build from before the key tie sends no secret. Its key (made before, no date)
+              keeps working untied and is tied the first time that PC runs the new build, so the counter can be updated
+              first. Trade-off: until then a copy of such a key works as before. Keys made by the new build always need
+              the secret. Test: AccountTests A_PC_on_an_older_build_keeps_working_until_it_gets_the_new_build...
+              The pilot cafe (counter PC + 1 gaming PC on the v0 zip) finishes v0 testing before it gets this.

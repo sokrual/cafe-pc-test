@@ -444,16 +444,20 @@ public sealed partial class CafeCore : IDisposable
     /// A key file can be copied (a spare key left on the pen drive, a lost pen drive), so a key is tied to the first PC
     /// that uses it: that PC sends a secret it made for itself (pc.bind, never on the pen drive). A copy of the key does
     /// not work from any other device after that. A key nobody used within 7 days stops working: make a new one.
+    /// A PC still on a build from before this sends no secret: its key (made before this, so it has no date) keeps working
+    /// untied, and is tied the first time that PC runs the new build. So the counter can be updated before the PCs.
     public string? PcByToken(string token, string bind) => Tx(() =>
     {
-        if (bind.Length is < 16 or > 200) return null;
+        var oldBuild = bind.Length == 0;
+        if (!oldBuild && bind.Length is < 16 or > 200) return null;
         string name; byte[]? tied; string? made;
         using (var r = Query("SELECT name, bind, made FROM pcs WHERE token = @p0", TokenHash(token)))
         {
             if (!r.Read()) return null;
             (name, tied, made) = (r.GetString(0), r.IsDBNull(1) ? null : (byte[])r[1], r.IsDBNull(2) ? null : r.GetString(2));
         }
-        if (tied is not null) return CryptographicOperations.FixedTimeEquals(tied, TokenHash(bind)) ? name : null;
+        if (tied is not null) return !oldBuild && CryptographicOperations.FixedTimeEquals(tied, TokenHash(bind)) ? name : null;
+        if (oldBuild) return made is null ? name : null;
         if (made is not null && _now() - Time(made) > TimeSpan.FromDays(7)) return null;
         Exec("UPDATE pcs SET bind = @p0 WHERE name = @p1 AND bind IS NULL", TokenHash(bind), name);
         Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'pc_key_tied', @p1)", Iso(_now()), name);
