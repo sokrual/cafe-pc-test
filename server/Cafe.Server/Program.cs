@@ -56,6 +56,19 @@ async Task RefreshCounterBitLocker()
     Log($"Counter PC BitLocker status: {state}");
 }
 if (args.Contains("--seed-test")) Seed(cafe, data, args.Contains("--seed-offline-lock"), args.Contains("--seed-offline-secret-test"));
+// INSTALL-ADMIN, as admin on the counter PC, before the first start: one key file per gaming PC (PC1.token ...), then exit.
+// No network door for this: it runs only on this PC, and only while there is no account yet.
+if (Arg("--add-pcs") is string pcCount)
+{
+    var outDir = Arg("--out") ?? throw new ArgumentException("--add-pcs needs --out <folder>");
+    foreach (var (name, token) in cafe.AddPcsAtInstall(int.Parse(pcCount)))
+    {
+        File.WriteAllText(Path.Combine(outDir, $"{name}.token"), token);
+        Log($"key made at install for {name}");
+        Console.WriteLine(name);
+    }
+    return;
+}
 var cert = Cert(data);
 
 var builder = WebApplication.CreateBuilder();
@@ -138,6 +151,16 @@ app.MapPost("/staff/login", (HttpContext c, LoginBody b) =>
 {
     var user = cafe.StaffLogin(b.Phone, b.Pin, b.Code);
     return Results.Ok(new { token = staffTokens.Issue(user) }); // shortcut: in memory, so a server restart logs staff out
+}).RequireRateLimiting("login");
+// first start: the owner's account, typed on the counter PC itself (never from another PC on the network)
+app.MapGet("/setup", () => new { needsOwner = cafe.NeedsOwner() });
+app.MapPost("/setup/owner", (HttpContext c, UserBody b) =>
+{
+    if (c.Connection.RemoteIpAddress is not IPAddress from || !IPAddress.IsLoopback(from))
+        return Results.Json(new { error = "Make the owner account on the counter PC itself." }, statusCode: 403);
+    var id = cafe.AddUser(null, Role.Owner, b.Name, b.Phone, b.Pin);
+    Log($"owner account made from the counter PC (user {id})");
+    return Results.Ok(new { id });
 }).RequireRateLimiting("login");
 app.MapPost("/staff/logout", (HttpContext c) => { staffTokens.End(TokenOf(c)); return Results.Ok(); });
 app.MapPost("/staff/users", (HttpContext c, UserBody b) => new { id = cafe.AddUser(Staff(c), b.Role, b.Name, b.Phone, b.Pin) });
@@ -302,6 +325,26 @@ app.Lifetime.ApplicationStarted.Register(() => _ = Task.Run(async () =>
     }
     catch (OperationCanceledException) { }
 }));
+// S5: a gaming PC that lost the counter PC (the router gave it a new address) asks the shop network where the cafe
+// server is. The answer only says "here", never more than was asked; the PC then checks the certificate (server.pin).
+_ = Task.Run(async () =>
+{
+    try
+    {
+        using var udp = new System.Net.Sockets.UdpClient(new IPEndPoint(IPAddress.Any, 5442));
+        while (true)
+        {
+            try
+            {
+                var asked = await udp.ReceiveAsync();
+                if (ShopNetwork.Allows(asked.RemoteEndPoint.Address) && asked.Buffer.AsSpan().SequenceEqual("GAMINGCAFE-WHERE"u8))
+                    await udp.SendAsync("GAMINGCAFE-HERE"u8.ToArray(), asked.RemoteEndPoint);
+            }
+            catch (System.Net.Sockets.SocketException e) when (e.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset) { }   // Windows reports an earlier reply that found nobody listening
+        }
+    }
+    catch (Exception e) { Log($"counter search answers are off: {e.Message}"); }   // e.g. a second server on this PC (tests)
+});
 app.Run();
 
 static string Resource(string name)

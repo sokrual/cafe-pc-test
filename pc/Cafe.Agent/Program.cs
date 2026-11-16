@@ -105,7 +105,7 @@ sealed class Agent : ApplicationContext
     {
         _lock = new LockScreen(name, Login, OfflineUnlock);
         _timer = new TimerWidget(Now, () => Send("/pc/logout", lockNow: true), () => Send("/pc/selflock", lockNow: true), () => Apply(_state with { Locked = true, Message = "Time is up. Please ask at the counter." }));
-        KeyBlocker.Install(() => _lock.Visible);
+        KeyBlocker.Install(_lock);
         var poll = new System.Windows.Forms.Timer { Interval = 2000 };
         poll.Tick += async (_, _) =>
         {
@@ -510,17 +510,31 @@ static class KeyBlocker
 {
     delegate IntPtr HookProc(int code, IntPtr wParam, IntPtr lParam);
     static HookProc? _proc; // kept alive so the garbage collector cannot free the callback
-    static Func<bool> _active = () => false;
+    static volatile bool _on;
 
-    public static void Install(Func<bool> active)
+    // The hook gets its own thread and message loop. On the screen's thread, any slow moment there (taking the
+    // focus back, a redraw) delays every key; Windows lets a late key through and, after a few, drops the hook.
+    public static void Install(Form lockScreen)
     {
-        _active = active; _proc = Hook;
-        if (SetWindowsHookEx(13 /*WH_KEYBOARD_LL*/, _proc, GetModuleHandle(null), 0) == IntPtr.Zero) throw new InvalidOperationException("keyboard hook failed");
+        _on = lockScreen.Visible;
+        lockScreen.VisibleChanged += (_, _) => _on = lockScreen.Visible;
+        var ready = new ManualResetEventSlim();
+        var ok = false;
+        var thread = new Thread(() =>
+        {
+            _proc = Hook;
+            ok = SetWindowsHookEx(13 /*WH_KEYBOARD_LL*/, _proc, GetModuleHandle(null), 0) != IntPtr.Zero;
+            ready.Set();
+            if (ok) Application.Run(); // Windows calls the hook through this thread's message loop
+        }) { IsBackground = true, Name = "key blocker" };
+        thread.Start();
+        ready.Wait();
+        if (!ok) throw new InvalidOperationException("keyboard hook failed");
     }
 
     static IntPtr Hook(int code, IntPtr wParam, IntPtr lParam)
     {
-        if (code >= 0 && _active())
+        if (code >= 0 && _on)
         {
             var vk = Marshal.ReadInt32(lParam);
             var alt = (Marshal.ReadInt32(lParam, 8) & 0x20) != 0;
@@ -560,6 +574,9 @@ static class Native
         SetForegroundWindow(h);
         if (fg != me) AttachThreadInput(me, fg, false);
         if (GetForegroundWindow() != h) { keybd_event(0x1B, 0, 0, 0); keybd_event(0x1B, 0, 2, 0); SetForegroundWindow(h); } // Escape down, up
+        // a window that just opened (an updater, a console) can keep Windows from giving the focus back; a key press of
+        // our own lifts that, and a lone Alt does nothing else (the key blocker only stops Alt with Tab, Esc, F4, Space)
+        if (GetForegroundWindow() != h) { keybd_event(0x12, 0, 0, 0); SetForegroundWindow(h); keybd_event(0x12, 0, 2, 0); }
     }
     [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, nuint extra);
 

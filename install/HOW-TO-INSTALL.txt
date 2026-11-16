@@ -6,29 +6,31 @@ If something goes wrong, send a photo of the screen and the file install-log.txt
 
 A. THE COUNTER PC (once)
 The counter PC's Windows account must have a password or PIN; otherwise the 10-minute idle lock protects nothing.
-1. Make sure this PC always gets the same network address.
-   In the router's settings this is called "address reservation" or "static IP".
-   If you are not sure how, ask the person who set up your internet.
-2. Double-click INSTALL-ADMIN. Click "Yes" when Windows asks for permission.
-3. It shows this PC's address (for example 192.168.1.10). Write it down.
-4. Open http://127.0.0.1:3000 in the browser. This sets up the internet filter.
-   Where it asks about the "DNS server", choose "All interfaces" and port 53.
-   Choose a password and write it down.
-   Then open Settings, then General settings, and set "Query logs retention" to 180 days (4320 hours).
-   The law asks a cyber cafe to keep a list of the websites used for 180 days.
-5. A folder "for-gaming-PCs" appears next to INSTALL-ADMIN. Copy what is inside it,
-   and each PC's key file, into the install folder you take to the gaming PCs.
+Put this whole folder on a pen drive first. You take the same folder to every PC.
+The counter PC needs no fixed network address: if the router gives it a new one, the gaming PCs find it by themselves.
+1. Double-click INSTALL-ADMIN. Click "Yes" when Windows asks for permission.
+   It asks how many gaming PCs the cafe has. It then puts one key file per gaming PC
+   (PC1.token, PC2.token ...) and the counter PC's address into this folder.
+   It also sets up the internet filter by itself and keeps the list of websites used for 180 days
+   (the law asks a cyber cafe for 180 days).
+2. The counter screen (https://127.0.0.1:5443/staff/) opens in the browser by itself. The browser warns about the certificate the first
+   time: click "Advanced", then "Continue". Make your owner account (name, phone number, a 6 to 12 digit PIN).
+   This works only on the counter PC itself. Then sign in.
+   A gaming PC added later: open "Owner security", type its name under "PC keys" and click
+   "Add PC and show its key". Move the saved file (for example PC9.token) into this folder.
 
 B. EACH GAMING PC (two short visits)
 Do ONE gaming PC first and use it for a day. If all is well, do the others.
 
-1. Double-click INSTALL-PC. Type the counter PC's address when it asks.
+1. Plug in the pen drive and double-click INSTALL-PC. It takes the next free key file by itself
+   and tells you this PC's name (PC1, then PC2 ...). Put a label with that name on the PC.
    The PC restarts and opens the "Customer" account by itself. There is no lock screen yet.
 2. In the Customer account: install Discord, put the game shortcuts on the desktop,
-   and open the mouse, keyboard and headset apps once.
+   and open the mouse, keyboard and headset apps once. Join the cafe's Wi-Fi if this PC uses Wi-Fi.
    Do NOT sign in to Discord, Steam or any other app.
-3. Double-click INSTALL-PC again. It asks for the admin password.
-   It saves a clean copy of the Customer account and restarts. Now the lock screen is on.
+3. Double-click "Finish cafe setup" on the desktop. No password is needed. It asks which Wi-Fi networks
+   are the cafe's. It saves a clean copy of the Customer account and restarts. Now the lock screen is on.
+   After the restart the pen drive no longer opens on this PC: that is the pen drive block working.
 
 When a customer logs out, the PC closes everything they opened, removes their files and all
 their app logins (Discord, Steam, browsers, Epic, Riot), and puts the clean copy back.
@@ -36,7 +38,7 @@ This takes a few seconds. Nobody can log in until it is done.
 
 To change the Customer account later (a new game shortcut, a Discord update):
 log in on the lock screen with your own phone number, open C:\Program Files\GamingCafe,
-double-click SETUP-MODE, then do steps B2 and B3 again.
+double-click SETUP-MODE (it asks for the admin password), then do steps B2 and B3 again.
 
 Pen drives: a customer's pen drive (or USB hard disk, or card reader) shows nothing until you or your staff
 answer on the counter screen: Block, Allow read-only, or Allow read and write. Every answer is saved with
@@ -45,11 +47,11 @@ Phones can charge but never transfer files or share their internet (USB tetherin
 A new network adapter (for example a new Wi-Fi or Ethernet stick) works only if you plug it in during setup mode.
 Network adapters already in the PC when you installed keep working, including Wi-Fi.
 
-Wi-Fi: before the second INSTALL-PC run, join the cafe's Wi-Fi networks on the PC once. INSTALL-PC then shows the
+Wi-Fi: before "Finish cafe setup", join the cafe's Wi-Fi networks on the PC once. INSTALL-PC then shows the
 networks it can see; type the numbers of the cafe's own (or none). Customers then see only those networks, and
 Mobile hotspot is off. The PC remembers the cafe's routers: if it is ever connected through another router (for
 example a phone hotspot renamed to the cafe's network name), it disconnects at once and the counter screen shows
-an alert. New router, new mesh unit or new network: run SETUP-MODE on that PC, join it, then run INSTALL-PC again.
+an alert. New router, new mesh unit or new network: run SETUP-MODE on that PC, join it, then double-click "Finish cafe setup".
 In setup mode pen drives and phones work normally, so you can copy your own game or Windows files.
 
 A new game: right-click it, choose "Run as administrator" and type the admin password. Do this once.

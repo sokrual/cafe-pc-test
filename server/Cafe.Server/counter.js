@@ -353,9 +353,13 @@ async function showOwnerSecurity() {
         if (!name) { say("Type the PC name.", false); return; }
         try {
           const key = await api("POST", "/staff/pcs", { pc: name });
-          $("panel").append(el("p", { textContent: "Save this token now. It is shown only once." }),
-            el("pre", { textContent: "PC token: " + key.token + "\nServer pin: " + key.pin }));
-          say("New PC key created. Copy it into that PC's install setup.");
+          // a key file named after the PC: put it in the install folder; INSTALL-PC on that PC finds it by the name
+          const file = el("a", { textContent: "Save " + name + ".token", download: name + ".token",
+            href: URL.createObjectURL(new Blob([key.token], { type: "application/octet-stream" })) });
+          $("panel").append(el("p", { textContent: "Save the key file now. It is shown only once. Put it in the install folder (for example on your pen drive) and run INSTALL-PC on " + name + "." }),
+            file, el("pre", { textContent: "PC token: " + key.token + "\nServer pin: " + key.pin }));
+          file.click();
+          say("New PC key made: " + name + ".token. Put it in the install folder.");
         } catch (e) { say(e.message, false); }
       } }),
       el("button", { className: "quiet", textContent: "Close", onclick: () => { panelKey = ""; refresh(true); } }));
@@ -449,7 +453,20 @@ async function showOffers() {
   } catch (e) { say(e.message, false); }
 }
 $("offersBtn").onclick = () => showOffers();
-if (token) start(); else $("login").hidden = false;
+$("setup").onsubmit = async e => {
+  e.preventDefault();
+  if ($("spin").value !== $("spin2").value) { $("serr").textContent = "The two PINs are not the same."; return; }
+  try {
+    const r = await fetch("/setup/owner", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role: 0, name: $("sname").value.trim(), phone: $("sphone").value.trim(), pin: $("spin").value }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { $("serr").textContent = d.error || "Could not make the account."; return; }
+    $("lphone").value = $("sphone").value.trim(); $("spin").value = $("spin2").value = "";
+    $("setup").hidden = true; $("login").hidden = false; $("lerr").textContent = "Owner account made. Sign in with your phone number and PIN.";
+  } catch { $("serr").textContent = "The counter server is not answering."; }
+};
+if (token) start();
+else fetch("/setup").then(r => r.json()).then(s => { $(s.needsOwner ? "setup" : "login").hidden = false; }).catch(() => { $("login").hidden = false; });
 
 // Items: staff sell at the counter; the owner keeps the lists and prices and sees what sold today.
 async function showItems() {

@@ -1,5 +1,5 @@
 PROJECT STATUS - what is built, what is left
-Last updated: 14 Nov 2026. Version 0.3.0. Latest green test run: 43615677170 (all 8 jobs pass, lockdown 113/113, pull request #27).
+Last updated: 15 Nov 2026. Version 0.3.0. Latest green test run: 43615677170 (all 8 jobs pass, lockdown 113/113, pull request #27).
 
 Read README.txt for the layout, CHECKS.txt for the backend and security checks every phase must pass, and CLAUDE.md for the rules (commit as "Turyos Ventures" with an empty email,
 no AI signature anywhere, simple English in everything people see, smallest change that fully works).
@@ -70,6 +70,56 @@ B3  Lockdown and installers                                         BUILT - fina
                  setup mode; updates keep the owner's choice. Lockdown D3.C1-C3, D3.W1, D3.F1, D3.I1.
                  Tests: server/Cafe.Tests/PenDriveTests.cs; lockdown D2.C1-C3, D2.W1, D2.F1, D2.I1.
          Rule (decided 12 Nov): every action by staff and owner is logged, the owner's included.
+         R1 release package (15 Nov): CI zips the files the lockdown job tested (artifact "GamingCafe"); one folder
+              for the counter PC and every gaming PC. Found while packaging: a real install had no way to make the
+              first owner account (only the test seed did). Now the counter screen asks for it on a new install, from
+              the counter PC itself only (lockdown A.S1). The counter screen saves each PC's key as PC1.token and
+              INSTALL-PC finds it by name (A.K1). INSTALL-ADMIN puts server.pin in the same folder. The pen drive
+              block no longer takes out a plugged-in drive during install (the installer may run from it).
+              Also: the lock screen's key blocker runs on its own thread (CI on ARM once let Alt+Esc through to a
+              wsl.exe window; my guess, not proven: the screen's thread was busy and Windows let a late key pass).
+              It happened again after that (Alt+F4, a Terminal window in front), so the cause is more likely a window
+              that opens by itself on the ARM test machine and keeps the focus. The lock screen now also uses a lone
+              Alt key press to get the focus back. E3b (own desktop) is the full fix.
+         v0 simplifications (15 Nov), so the owner types almost nothing:
+              S1 INSTALL-ADMIN writes the counter's address into the folder (counter-address.txt); INSTALL-PC reads
+              it (A.K3, A.K4). CI showed the first version picked a Hyper-V adapter's 172.x address; it now takes the
+              address Windows uses towards the router (A.K3 checks the router side).
+              S2 INSTALL-ADMIN asks "how many gaming PCs" on a new install and makes PC1.token ... PCn.token
+              (Cafe.Server --add-pcs, on the counter PC only, only before the owner account exists; no network door).
+              INSTALL-PC takes the lowest-numbered key left and says "This PC is PC3" (AccountTests, A.K5, A.K6, A.K1).
+              Bug found: INSTALL-PC deleted server.pin from the folder, so a second gaming PC could not install from the
+              same folder. server.pin (public) now stays (A.K7). The zip sent on 15 Nov has this bug.
+              S3 INSTALL-ADMIN does the internet filter's first-start setup through its own API (no browser wizard):
+              page on 127.0.0.1:3000 only, DNS on port 53 for the shop network, website list kept 180 days, a random
+              password in C:\ProgramData\Cafe\filter-password.txt (admins only, never in the install log). Then it
+              opens the counter screen by itself (lockdown B3.A5, B3.A5b, B3.C4p).
+              S4 step 2 on a gaming PC needs no admin password: setup mode puts a "Finish cafe setup" icon on the
+              desktop. It asks the Wi-Fi question as Customer, then starts the scheduled task CafeFinishSetup, which
+              runs INSTALL-PC -Finish as SYSTEM. The Customer may only start the task (its rights: admins, Windows, Customer
+              start-only); the task does nothing outside setup mode; the Customer passes only the Wi-Fi names (checked
+              against the networks in range) and can only read what the task writes. Task, icon and sign-in check are
+              removed when step 2 is done. An error shows at the next sign-in (lockdown S4.1-S4.3).
+              Speed: run inside the task, step 2 took 13-15 min in CI (2-3 min as admin); stage times showed 11 min in
+              AppLocker. Task priority 4 and starting it as an ordinary SYSTEM program (kept) did not help. Cause found:
+              Set-Acl on C:\ rewrote the inherited rights of every file on the drive. The root's change is only in ACEs that
+              are not inherited, so it now sets that one folder's rights (SetFileSecurity), install and uninstall: that
+              stage went from 9-14 min to 1 s. Step 2 now takes 7-8 min in CI (run 43767316177): 5.5 min is AppLocker's
+              folder scan, which is slower as SYSTEM than as admin (about 1 min); not yet explained. The icon says 5-10 min.
+              Measured (run 43806633814, ARM): the scan walks 33,868 folders under Program Files and 25,847 under
+              Program Files (x86): 171 s and 96 s as SYSTEM, 61 s and 53 s in a later admin run on the same machine.
+              SYSTEM also followed C:\Documents and Settings (a link to C:\Users): 3,423 more folders. Changes: read each
+              folder's rights with .NET instead of Get-Acl, and skip links at the drive root.
+              Cause found (run 43809852174): not the SYSTEM account but a cold disk cache. The first scan on a machine
+              takes 150 s (x64, 39,323 folders); the same scan right after takes 7.8 s. .NET made the warm scan about 3x
+              faster (ARM 61 s to 20 s); the cold one stays disk-bound. Step 2 is now 6 min (ARM) and 7.1 min (x64): about
+              4 min cold scan, plus Windows' own AppLocker compile, a fixed 2 min. A real PC's SSD should be faster than
+              the CI machines' network disks (not measured); install-log.txt has the stage times.
+              S5 the counter PC needs no fixed address. When it has not answered for 30 s, the gaming PC's watchdog asks the
+              shop network (UDP broadcast, port 5442; Cafe.Server answers "here"), moves only to an address that shows the
+              pinned certificate and accepts the PC's key, saves it in watchdog.args and moves DNS there (dns.ps1, shared
+              with INSTALL-PC). Firewall: UDP 5442 from the shop network only (lockdown B3.A3b, S5.1 impostor refused,
+              S5.2 found, address saved, DNS moved, a website resolves through it).
          E1 the remembered lock setting survives a reset (F4); Customer programs cannot open or rewrite
               the lock screen process (F14)                                                 DONE (PR #27, 14 Nov)
          E2 show PcState.Notice; offline "30/60/90 min" text when the block changes; check the lock screen

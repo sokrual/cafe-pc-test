@@ -179,7 +179,7 @@ try {
             if ($v.ProtectionStatus -eq "On") { "On" } else { "Off" }
         }
     } catch { "Unknown" }
-    & "$stageA\install-admin.ps1" -Ci
+    & "$stageA\install-admin.ps1" -Ci -Pcs 3   # a new install: keys for 3 gaming PCs
     $adminInstallLog = Get-Content "$stageA\install-log.txt" -Raw
     $offBitLockerWarning = "Disk encryption (BitLocker) is off on this counter PC. If the PC or its disk is stolen, the cafe data can be read. Turn it on: see SECURITY-GUIDE.txt, part 1."
     $unavailableBitLockerWarning = "BitLocker is not available on this counter PC (Windows Home may not include it). See SECURITY-GUIDE.txt, part 1."
@@ -194,6 +194,21 @@ try {
         default { $adminInstallLog -match "BitLocker status: Unknown" -and $hasUnknownBitLockerWarning -and -not $hasOffBitLockerWarning -and -not $hasUnavailableBitLockerWarning }
     }
     Check "B3.A8" "Counter installer warns only when BitLocker is not confirmed On" $bitLockerCheck "runner state $bitLockerExpected; install log contains matching status and warning"
+    $addressFile = (Get-Content "$stageA\counter-address.txt" -ErrorAction SilentlyContinue | Select-Object -First 1)
+    $myAddresses = @(Get-NetIPAddress -AddressFamily IPv4 | ForEach-Object IPAddress)
+    # the right one is on the network adapter that leads to the router; the runners also have a Hyper-V adapter (172.x)
+    $routerSide = @(Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $defaultIfIndexes[0] | ForEach-Object IPAddress)
+    Check "A.K3" "Counter install writes the address on the router side into the install folder for INSTALL-PC (not a virtual adapter's)" ($addressFile -and $routerSide -contains $addressFile.Trim()) "counter-address.txt '$addressFile'; router side: $($routerSide -join ', '); all: $($myAddresses -join ', ')"
+    $keyNames = @(Get-ChildItem $stageA -Filter "PC*.token" -File | ForEach-Object BaseName | Sort-Object)
+    $pc2Key = (Get-Content "$stageA\PC2.token" -Raw -ErrorAction SilentlyContinue)
+    function KeyState { if (-not $pc2Key) { return "no key file" }; (curl.exe -sk --max-time 10 -o NUL -w "%{http_code}" -H "X-Pc-Token: $($pc2Key.Trim())" https://127.0.0.1:5443/pc/state) -join "" }
+    $null = WaitFor 30 { (KeyState) -eq "200" }; $pc2State = KeyState   # the service may still be starting
+    Check "A.K5" "Counter install makes one key file per gaming PC, and the counter PC's server accepts them" (($keyNames -join ",") -eq "PC1,PC2,PC3" -and $pc2State -eq "200") "key files: $($keyNames -join ', '); PC2's key on the real server: HTTP $pc2State"
+    # run again (an update): the cafe data exists, so no new keys, and the keys made before still work
+    & "$stageA\install-admin.ps1" -Ci -Pcs 5
+    $keyNamesAfter = @(Get-ChildItem $stageA -Filter "PC*.token" -File | ForEach-Object BaseName | Sort-Object)
+    $null = WaitFor 30 { (KeyState) -eq "200" }; $pc2After = KeyState
+    Check "A.K6" "Running INSTALL-ADMIN again makes no new keys and keeps the old ones working" (($keyNamesAfter -join ",") -eq "PC1,PC2,PC3" -and $pc2After -eq "200") "key files: $($keyNamesAfter -join ', '); PC2's key: HTTP $pc2After"
     Check "B3.A1" "Cafe server runs as a Windows service" ((Get-Service CafeServer).Status -eq "Running") (Get-Service CafeServer).StartType
     [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }   # the test only; PCs pin the certificate
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -212,9 +227,22 @@ try {
     if ($curl -ne "401") { cmd.exe /c "curl.exe -vk https://127.0.0.1:5443/pc/state 2>&1" | Write-Host }
     $rule = Get-NetFirewallRule -Group "Cafe counter" | Where-Object DisplayName -like "*cafe server*" | Get-NetFirewallAddressFilter
     Check "B3.A3" "Firewall lets only the shop network reach the server" ("$($rule.RemoteAddress)" -eq "LocalSubnet") "remote: $($rule.RemoteAddress)"
+    $findRule = Get-NetFirewallRule -Group "Cafe counter" | Where-Object DisplayName -like "*find the counter PC*"
+    $findPort = $findRule | Get-NetFirewallPortFilter; $findFrom = $findRule | Get-NetFirewallAddressFilter
+    Check "B3.A3b" "Firewall lets only the shop network ask where the counter PC is (UDP 5442)" ($findPort.Protocol -eq "UDP" -and "$($findPort.LocalPort)" -eq "5442" -and "$($findFrom.RemoteAddress)" -eq "LocalSubnet") "$($findPort.Protocol) $($findPort.LocalPort) from $($findFrom.RemoteAddress)"
     Check "B3.A4" "Internet filter (AdGuard Home) installed, checked and running" ((Get-Service AdGuardHome -ErrorAction SilentlyContinue).Status -eq "Running") "version pinned, SHA-256 checked"
-    $wiz = WaitFor 20 { try { (Invoke-WebRequest http://127.0.0.1:3000 -UseBasicParsing).StatusCode -eq 200 } catch { $false } }
-    Check "B3.A5" "Filter set-up page opens on the counter PC" $wiz "http://127.0.0.1:3000"
+    # S3: the installer did the filter's first-start setup; the owner never opens its wizard
+    $filterLine = Get-Content "$env:ProgramData\Cafe\filter-password.txt" -Raw -ErrorAction SilentlyContinue
+    $filterPw = if ($filterLine -match 'password (\S+)') { $Matches[1] } else { "" }
+    $filterAuth = @{ Authorization = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("owner:$filterPw")) }
+    $filterStatus = try { Invoke-RestMethod http://127.0.0.1:3000/control/status -Headers $filterAuth } catch { $null }
+    $filterLog = try { Invoke-RestMethod http://127.0.0.1:3000/control/querylog/config -Headers $filterAuth } catch { $null }
+    $noPassword = (curl.exe -s --max-time 10 -o NUL -w "%{http_code}" http://127.0.0.1:3000/control/status) -join ""
+    $lanSide = $routerSide | Select-Object -First 1
+    $fromLan = (curl.exe -s --max-time 5 -o NUL -w "%{http_code}" "http://${lanSide}:3000/") -join ""   # 000: nothing listens there
+    $dnsOnLan = WaitFor 30 { try { [bool](Resolve-DnsName example.com -Server $lanSide -DnsOnly -QuickTimeout -ErrorAction Stop) } catch { $false } }
+    Check "B3.A5" "Internet filter set up by the installer: DNS for the shop network on port 53, website list kept 180 days, its page on the counter PC only and behind a password" ($filterPw.Length -ge 24 -and $filterStatus.running -and $filterStatus.dns_port -eq 53 -and $filterLog.enabled -and [long]$filterLog.interval -eq 15552000000 -and $noPassword -in "401", "403" -and $fromLan -eq "000" -and $dnsOnLan) "password file $($filterPw.Length -ge 24); running $($filterStatus.running), DNS port $($filterStatus.dns_port); log on $($filterLog.enabled), kept $($filterLog.interval) ms; page without password HTTP $noPassword; page from $lanSide HTTP $fromLan; DNS answers on $lanSide $dnsOnLan"
+    Check "B3.A5b" "The filter password is never in the install log (the owner may send that file to someone)" ($filterPw -and -not $adminInstallLog.Contains($filterPw) -and -not (Get-Content "$stageA\install-log.txt" -Raw).Contains($filterPw)) "checked both install runs' log"
     Check "B3.A6" "Internet filter restarts by itself if it stops" ((sc.exe qfailure AdGuardHome) -match "RESTART") ""
     $idle = Get-ItemProperty $idleKey
     Check "B3.A7" "Windows locks the counter PC after 10 idle minutes" ($idle.InactivityTimeoutSecs -eq 600) "InactivityTimeoutSecs $($idle.InactivityTimeoutSecs)"
@@ -228,6 +256,26 @@ try {
     $token = (Get-Content "$tdata\pc1.token" -Raw).Trim()
     function Pc($path, $body) { Invoke-RestMethod "https://127.0.0.1:5443$path" -Method Post -Headers @{ "X-Pc-Token" = $token } -ContentType "application/json" -Body ($body | ConvertTo-Json) }
 
+    # A real install starts with no accounts. The owner account is made on the counter PC itself, once.
+    $freshData = Join-Path $env:TEMP "cafe-fresh-server"; Remove-Item $freshData -Recurse -Force -ErrorAction SilentlyContinue
+    $fresh = Start-Process "$out\server\Cafe.Server.exe" -ArgumentList "--data $freshData --port 5544" -PassThru -WindowStyle Hidden
+    # GET with curl: Windows PowerShell runs the test's trust-the-certificate callback on another thread for a GET,
+    # where it fails ("no Runspace available"), so Invoke-RestMethod never got an answer
+    function SetupState { $t = (curl.exe -sk --max-time 10 https://127.0.0.1:5544/setup) -join ""; try { $t | ConvertFrom-Json } catch { $null } }
+    $setupBefore = $null; $setupTries = 0
+    for ($i = 0; $i -lt 120 -and -not $setupBefore; $i++) { $setupTries++; $setupBefore = SetupState; if (-not $setupBefore) { Start-Sleep -Seconds 1 } }
+    $lanIp = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" } | Select-Object -First 1).IPAddress
+    $ownerBody = @{ role = 0; name = "Fresh Owner"; phone = "9100000001"; pin = "135790" } | ConvertTo-Json
+    function SetupOwner($hostName) { try { Invoke-RestMethod "https://${hostName}:5544/setup/owner" -Method Post -ContentType "application/json" -Body $ownerBody | Out-Null; "made" } catch { [int]$_.Exception.Response.StatusCode } }
+    $fromLan = SetupOwner $lanIp
+    $fromCounter = SetupOwner "127.0.0.1"
+    $again = SetupOwner "127.0.0.1"
+    $setupAfter = SetupState
+    $freshLogin = try { [bool](Invoke-RestMethod "https://127.0.0.1:5544/staff/login" -Method Post -ContentType "application/json" -Body (@{ phone = "9100000001"; pin = "135790" } | ConvertTo-Json)).token } catch { $false }
+    Stop-Process -Id $fresh.Id -Force -ErrorAction SilentlyContinue
+    Get-ChildItem "$freshData\logs" -File -ErrorAction SilentlyContinue | ForEach-Object { Get-Content $_.FullName | ForEach-Object { Write-Host "A.S1 server log: $_" } }
+    Check "A.S1" "A new install asks for the owner account first; only the counter PC itself can make it, only once; the owner can then sign in" ($setupBefore.needsOwner -eq $true -and $fromLan -eq 403 -and $fromCounter -eq "made" -and $again -eq 400 -and $setupAfter.needsOwner -eq $false -and $freshLogin) "asks first $($setupBefore.needsOwner) (after $setupTries tries); from another PC ($lanIp): $fromLan; from the counter PC: $fromCounter; again: $again; asks after $($setupAfter.needsOwner); sign-in $freshLogin"
+
     # ===== C. gaming PC, step 1 =====
     $ntpBefore = (Get-ItemProperty $ntpKey).NtpServer   # after the counter PC install, which sets the same clock settings
     $stage = Join-Path $env:TEMP "stage-pc"; New-Item $stage -ItemType Directory -Force | Out-Null
@@ -235,9 +283,13 @@ try {
     $agentRuntimeStage = Join-Path $stage "agent-runtime"
     New-Item -ItemType Directory -Path $agentRuntimeStage -Force | Out-Null
     Copy-Item "$out\agent\*" $agentRuntimeStage -Force
-    Copy-Item "$tdata\pc1.token" "$stage\pc.token"; Copy-Item "$tdata\server.pin" $stage
+    # the key files as INSTALL-ADMIN leaves them. PC9 holds the test server's key; PC10 is a decoy. The PC must take
+    # PC9 (lowest number), not PC10 (first by letters). PC10 then stays for the next gaming PC.
+    Copy-Item "$tdata\pc1.token" "$stage\PC9.token"; Set-Content "$stage\PC10.token" "not-a-real-key" -Encoding ascii
+    Copy-Item "$tdata\server.pin" $stage
+    Set-Content "$stage\counter-address.txt" "127.0.0.1" -Encoding ascii   # as INSTALL-ADMIN writes it; the test server is on this machine
     $secureBootExpected = try { if (Confirm-SecureBootUEFI -ErrorAction Stop) { "On" } else { "Off" } } catch { "Unknown" }
-    & "$stage\install-pc.ps1" -Server 127.0.0.1 -DnsServer $runnerDns -Ci -AllowFolders ""
+    & "$stage\install-pc.ps1" -DnsServer $runnerDns -Ci -AllowFolders ""   # the counter address comes from counter-address.txt
     $pcInstallLog = Get-Content "$stage\install-log.txt" -Raw
     $offSecureBootWarning = "Secure Boot is off on this gaming PC. Turn it on: see SECURITY-GUIDE.txt, part 2."
     $unknownSecureBootWarning = "Secure Boot could not be checked on this gaming PC. Check it: see SECURITY-GUIDE.txt, part 2."
@@ -251,6 +303,11 @@ try {
     Check "B3.C9" "Gaming PC installer warns only when Secure Boot is off or cannot be checked" $secureBootCheck "runner state $secureBootExpected; install log contains matching status and warning"
     $u = Get-LocalUser Customer
     $isAdmin = [bool]((net.exe localgroup (Get-LocalGroup -SID S-1-5-32-544).Name) -match '^Customer$')   # Get-LocalGroupMember breaks on unknown members
+    Check "A.K1" "INSTALL-PC takes the lowest-numbered key file (PC9, not PC10), names the PC, saves the key protected, and removes it from the install folder" ((Test-Path "$data\keys\pc.token") -and -not (Test-Path "$stage\PC9.token") -and (Test-Path "$stage\PC10.token") -and -not (Test-Path "$stage\pc.token") -and $pcInstallLog.Contains("This PC is PC9")) "saved $(Test-Path "$data\keys\pc.token"); left in folder: PC9.token $(Test-Path "$stage\PC9.token"), PC10.token $(Test-Path "$stage\PC10.token"), pc.token $(Test-Path "$stage\pc.token"); named PC9 $($pcInstallLog.Contains("This PC is PC9"))"
+    Check "A.K7" "The certificate fingerprint (server.pin) stays in the install folder for the next gaming PC" (Test-Path "$stage\server.pin") "server.pin in folder: $(Test-Path "$stage\server.pin")"
+    Remove-Item "$stage\PC10.token" -ErrorAction SilentlyContinue
+    $watchdogArgs = Get-Content "$env:ProgramFiles\GamingCafe\watchdog.args" -Raw -ErrorAction SilentlyContinue
+    Check "A.K4" "INSTALL-PC takes the counter address from counter-address.txt, with nothing typed" ($watchdogArgs -match '--server https://127\.0\.0\.1:5443') "watchdog.args: $watchdogArgs"
     Check "B3.C1" "Customer account made, not an admin" ($u.Enabled -and -not $isAdmin) "SID $($u.SID)"
     $wl = Get-ItemProperty $winlogon
     Check "B3.C2" "Automatic sign-in to Customer, password not in plain text" ($wl.AutoAdminLogon -eq "1" -and $wl.ForceAutoLogon -eq "1" -and $wl.DefaultUserName -eq "Customer" -and -not $wl.DefaultPassword) "AutoAdminLogon $($wl.AutoAdminLogon)"
@@ -262,7 +319,9 @@ try {
     Check "B3.C4" "Watchdog service: automatic, as SYSTEM, also in Safe Mode" ($s.StartMode -eq "Auto" -and $s.StartName -eq "LocalSystem" -and (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal\CafeWatchdog") -and (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Control\SafeBoot\Network\CafeWatchdog")) "$($s.State)"
     $tokenRead = CustomerPs "[IO.File]::ReadAllText('$data\keys\pc.token') | Out-Null"
     $pinRead = CustomerPs "[IO.File]::ReadAllText('$data\keys\server.pin') | Out-Null"
-    Check "B3.C4b" "Customer cannot read the PC token or certificate pin" ($tokenRead -ne 0 -and $pinRead -ne 0 -and -not (Test-Path "$app\pc.token") -and -not (Test-Path "$app\server.pin") -and -not (Test-Path "$stage\pc.token") -and -not (Test-Path "$stage\server.pin")) "token read exit $tokenRead, pin read exit $pinRead; source copies removed"
+    $filterPwRead = CustomerPs "[IO.File]::ReadAllText('$env:ProgramData\Cafe\filter-password.txt') | Out-Null"
+    Check "B3.C4p" "Customer cannot read the internet filter's password" ($filterPwRead -ne 0) "read exit $filterPwRead"
+    Check "B3.C4b" "Customer cannot read the PC token or certificate pin" ($tokenRead -ne 0 -and $pinRead -ne 0 -and -not (Test-Path "$app\pc.token") -and -not (Test-Path "$app\server.pin") -and -not (Test-Path "$stage\pc.token")) "token read exit $tokenRead, pin read exit $pinRead; key's source copy removed"
     $tokenDisk = [IO.File]::ReadAllBytes("$data\keys\pc.token")
     $tokenDiskText = [Text.Encoding]::UTF8.GetString($tokenDisk).Trim()
     $tokenClear = [Text.Encoding]::UTF8.GetString([CafeDpapiProbe]::Unprotect($tokenDisk)).Trim()
@@ -345,8 +404,51 @@ try {
     $cRootAclBefore = (Get-Acl -LiteralPath "$env:SystemDrive\").Sddl
     $d1InstallStarted = Get-Date
 
-    # ===== E. step 2 =====
-    & "$stage\install-pc.ps1" -Ci -AllowFolders ""
+    # ===== E. step 2, started by the Customer from the "Finish cafe setup" icon: no admin password (S4) =====
+    # what the icon (finish-setup.ps1) does, minus its windows: list the networks, write the choice, start the task.
+    # A file, because CustomerPs command lines must stay short.
+    $s4 = "$env:PUBLIC\cafe-s4-test.ps1"
+    Set-Content $s4 @'
+param($Mode, $Wifi)
+$o = "$env:ProgramData\GamingCafe\finish"
+$f = "HKCU:\Software\GamingCafe"
+function Written { (Get-Item "$o\nearby.txt" -ErrorAction SilentlyContinue).LastWriteTimeUtc }
+function Wait($test) { for ($i = 0; $i -lt 900 -and -not (& $test); $i++) { Start-Sleep 1 } }
+if ($Mode -eq "list") { Remove-Item $f -Recurse -Force -ErrorAction SilentlyContinue; $b = Written }
+else { New-Item $f -Force | Out-Null; Set-ItemProperty $f FinishWifi $Wifi; $r = (Get-Item "$o\result.txt" -ErrorAction SilentlyContinue).LastWriteTimeUtc }
+schtasks.exe /run /tn CafeFinishSetup | Out-Null
+if ($LASTEXITCODE) { exit 5 }
+if ($Mode -eq "list") { Wait { (Written) -ne $b } }
+elseif ($Mode -eq "bad") { Wait { (Get-Item "$o\result.txt" -ErrorAction SilentlyContinue).LastWriteTimeUtc -ne $r } }
+else { Wait { -not (Test-Path "$env:ProgramFiles\GamingCafe\setup.flag") } }   # setup closes this process on the way
+'@
+    $finishOut = "$data\finish"
+    $customerSid = $u.SID.Value
+    $iconThere = Test-Path "$env:PUBLIC\Desktop\Finish cafe setup.lnk"
+    $finishTaskDef = Get-ScheduledTask CafeFinishSetup -ErrorAction SilentlyContinue
+    $scheduler = New-Object -ComObject Schedule.Service; $scheduler.Connect()
+    $taskSd = try { $scheduler.GetFolder("\").GetTask("CafeFinishSetup").GetSecurityDescriptor(4) } catch { "" }
+    # Task Scheduler stores the rights in its own form: admins and Windows full; the Customer read and start (0x1200a9) only
+    $aces = @([regex]::Matches($taskSd, '\(A;;([^;]+);;;([^)]+)\)') | ForEach-Object { [pscustomobject]@{ Rights = $_.Groups[1].Value; Who = $_.Groups[2].Value } })
+    $taskRightsOk = $aces.Count -gt 0 -and @($aces | Where-Object { $_.Who -notin "BA", "SY", $customerSid }).Count -eq 0 -and
+        ((@($aces | Where-Object { $_.Who -eq $customerSid }).Rights -join ",") -in @("0x1200a9", "GRGX")) -and $taskSd -notmatch '\(D;|\(A;[^)]*;;;(WD|AU|BU|IU)\)'
+    $plant = CustomerPs "Set-Content '$finishOut\nearby.txt' planted"   # the Customer may only read the task's answers
+    $listRun = CustomerPs "& '$s4' list"
+    $nearbyFile = (Get-Content "$finishOut\nearby.txt" -Raw -ErrorAction SilentlyContinue)
+    Check "S4.1" "Setup mode puts a 'Finish cafe setup' icon on the desktop; its task runs as SYSTEM, only admins, Windows and the Customer (start only) may touch it; the Customer cannot write the task's answers; the first start lists the Wi-Fi networks and changes nothing else" ($iconThere -and $finishTaskDef.Principal.UserId -in "SYSTEM", "S-1-5-18" -and $taskRightsOk -and $plant -ne 0 -and $listRun -eq 0 -and $nearbyFile -and $nearbyFile -notmatch "planted" -and (Test-Path "$app\setup.flag")) "icon $iconThere; runs as $($finishTaskDef.Principal.UserId); rights $taskSd; Customer write exit $plant; list run exit $listRun; list '$("$nearbyFile".Trim())'; still in setup mode $(Test-Path "$app\setup.flag")"
+    $badRun = CustomerPs "& '$s4' bad 'Not-A-Cafe-Network'"
+    $badResult = Get-Content "$finishOut\result.txt" -Raw -ErrorAction SilentlyContinue
+    Check "S4.2" "A Wi-Fi choice that is not a network in range stops step 2, says why for the next sign-in, and leaves the PC in setup mode" ($badRun -eq 0 -and $badResult -match "not in range" -and (Test-Path "$app\setup.flag") -and -not (Test-Path "$data\clean-profile-hive\NTUSER.DAT")) "run exit $badRun; result '$("$badResult".Trim())'; setup mode $(Test-Path "$app\setup.flag")"
+    $finishRun = CustomerPs "& '$s4' finish ''"   # no Wi-Fi networks for customers
+    $finishStarted = Get-Date
+    $null = WaitFor 900 { -not (Test-Path "$app\setup.flag") -and -not (Get-ScheduledTask CafeFinishSetup -ErrorAction SilentlyContinue) }
+    $finishMinutes = [math]::Round(((Get-Date) - $finishStarted).TotalMinutes, 1)
+    $finishLog = Get-Content "$app\install-log.txt" -Raw -ErrorAction SilentlyContinue
+    $againRun = CustomerPs "schtasks.exe /run /tn CafeFinishSetup"
+    Check "S4.3" "The Customer's start finishes step 2 as SYSTEM; then the task, the icon and the sign-in check are gone, so the Customer cannot start anything again" (-not (Test-Path "$app\setup.flag") -and -not (Get-ScheduledTask CafeFinishSetup -ErrorAction SilentlyContinue) -and -not (Test-Path "$env:PUBLIC\Desktop\Finish cafe setup.lnk") -and -not (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -ErrorAction SilentlyContinue).CafeFinishSetup -and -not (Test-Path $finishOut) -and $finishLog -match "The finish-setup task and icon are removed" -and $againRun -ne 0) "setup mode $(Test-Path "$app\setup.flag"); task left $([bool](Get-ScheduledTask CafeFinishSetup -ErrorAction SilentlyContinue)); icon $(Test-Path "$env:PUBLIC\Desktop\Finish cafe setup.lnk"); answers folder $(Test-Path $finishOut); ran to the end $($finishLog -match 'task and icon are removed'); start again exit $againRun (Customer run exit $finishRun); took $finishMinutes min"
+    if (Test-Path "$app\setup.flag") { Write-Host "S4 step 2 log:"; Write-Host $finishLog }
+    else { "$finishLog" -split "`r?`n" | Where-Object { $_ -match '^\d\d:\d\d:\d\d ' } | ForEach-Object { Write-Host "S4 step 2 time: $_" } }
+    Remove-Item $s4 -Force -ErrorAction SilentlyContinue
 
     $compiledPolicyNames = @("Exe.AppLocker", "Dll.AppLocker", "Msi.AppLocker", "Script.AppLocker", "Appx.AppLocker")
     $compiledPolicyFresh = $true
@@ -1258,6 +1360,35 @@ try {
         $why2 = try { $x = AsCustomer "$app\Cafe.Watchdog.exe"; $x.WaitForExit(); "it ran" } catch { $_.Exception.Message }
         Check "B3.H3" "Level A: the cafe program is allowed" ($why2 -eq "it ran") $why2
     } finally { & "$app\levelA.ps1" -Mode Off }
+
+    # ===== S5. the router gives the counter PC a new address; the gaming PC finds it by itself =====
+    $argsFile = "$app\watchdog.args"; $argsBefore = Get-Content $argsFile -Raw
+    $gone = "192.0.2.1"   # TEST-NET-1, nobody answers there: like the counter's old address after the router moved it
+    function WatchdogLog { (Get-ChildItem "$data\logs" -Filter "watchdog-*.log" -ErrorAction SilentlyContinue | Get-Content -ErrorAction SilentlyContinue) -join "`n" }
+    Stop-Service CafeWatchdog
+    Set-Content $argsFile ($argsBefore.Trim() -replace '--server\s+https://[^\s"]+', "--server https://${gone}:5443") -Encoding ascii
+    Set-Content "$data\dns-server.txt" $gone -Encoding ascii   # DNS went to the counter's old address too
+    # first an impostor answers the search: another cafe server with its own certificate
+    Stop-Process -Id $server.Id -Force
+    $impostorData = Join-Path $env:TEMP "cafe-impostor"; Remove-Item $impostorData -Recurse -Force -ErrorAction SilentlyContinue
+    $impostor = Start-Process "$out\server\Cafe.Server.exe" -ArgumentList "--data $impostorData --seed-test" -PassThru -WindowStyle Hidden
+    $null = WaitFor 30 { Test-Path "$impostorData\server.pin" }
+    Start-Service CafeWatchdog
+    $impostorSeen = WaitFor 150 { (WatchdogLog) -match "counter search: \S+ failed the certificate" }
+    $argsWithImpostor = Get-Content $argsFile -Raw
+    Check "S5.1" "A server with another certificate that answers the search is not used" ($impostorSeen -and $argsWithImpostor -match [regex]::Escape($gone)) "refusal logged $impostorSeen; address kept: $($argsWithImpostor -match [regex]::Escape($gone))"
+    Stop-Process -Id $impostor.Id -Force -ErrorAction SilentlyContinue
+    $server = Start-Process "$out\server\Cafe.Server.exe" -ArgumentList "--data $tdata --seed-test" -PassThru -WindowStyle Hidden
+    $moved = WaitFor 150 { (Get-Content $argsFile -Raw) -notmatch [regex]::Escape($gone) }
+    $argsAfter = Get-Content $argsFile -Raw
+    $newHost = if ($argsAfter -match '--server https://([0-9.]+):5443') { $Matches[1] } else { "" }
+    function NicDns { @((Get-DnsClientServerAddress -InterfaceIndex $defaultIfIndexes[0] -AddressFamily IPv4).ServerAddresses) }
+    $dnsMoved = WaitFor 180 { "$(Get-Content "$data\dns-server.txt" -Raw)".Trim() -eq $newHost -and (NicDns) -contains $newHost }
+    $nicDns = NicDns
+    $resolves = WaitFor 30 { try { [bool](Resolve-DnsName example.com -DnsOnly -QuickTimeout -ErrorAction Stop) } catch { $false } }   # through the filter at the new address
+    Check "S5.2" "The gaming PC finds the counter at its new address by itself, checks its certificate and key, saves the address, and moves DNS there" ($moved -and $myAddresses -contains $newHost -and $argsAfter -match [regex]::Escape("`"$app\Cafe.Agent.exe`"") -and $dnsMoved -and $nicDns -contains $newHost -and $resolves -and (WatchdogLog) -match "counter PC found at $([regex]::Escape($newHost))") "moved $moved to '$newHost'; watchdog.args: $("$argsAfter".Trim()); dns-server.txt moved $dnsMoved; adapter DNS $($nicDns -join ','); a website resolves $resolves"
+    if (-not $moved -or -not $dnsMoved -or $nicDns -notcontains $newHost) { (WatchdogLog) -split "`n" | Where-Object { $_ -match "counter|DNS" } | Select-Object -Last 30 | ForEach-Object { Write-Host "S5 watchdog log: $_" } }
+    & "$app\dns.ps1" -DnsServer $runnerDns -DataPath $data | Out-Null   # back to the test machine's own DNS
 
     # ===== I. uninstall =====
     Remove-Item "$app\test-wipe-mode.flag" -Force -ErrorAction SilentlyContinue

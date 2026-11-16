@@ -28,7 +28,9 @@ function Remove-KnownUsbStorage {
         pnputil.exe /remove-device "$($device.InstanceId)" /subtree | Out-Null
         Write-Host "USB network adapter not plugged in taken out of Windows: $($device.FriendlyName) ($($device.InstanceId)), exit $LASTEXITCODE"
     }
-    foreach ($device in @(Get-PnpDevice -Class USB -ErrorAction SilentlyContinue)) {
+    # USB storage: only the drives not plugged in now. A plugged-in drive may be the one this installer runs from
+    # (its log is written there); the watchdog takes it out within seconds of starting, once the install is done.
+    foreach ($device in @(Get-PnpDevice -Class USB -ErrorAction SilentlyContinue | Where-Object Status -eq "Unknown")) {
         $service = (Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName DEVPKEY_Device_Service -ErrorAction SilentlyContinue).Data
         if ($service -notin @("USBSTOR", "UASPStor")) { continue }
         pnputil.exe /remove-device "$($device.InstanceId)" /subtree | Out-Null

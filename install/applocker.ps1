@@ -13,6 +13,24 @@ $serviceBackup = Join-Path $DataPath "appidsvc-before.json"
 $logBackup = Join-Path $DataPath "applocker-logs-before.json"
 $reportPath = Join-Path $DataPath "customer-writable-folders.txt"
 $channels = @("Microsoft-Windows-AppLocker/EXE and DLL", "Microsoft-Windows-AppLocker/MSI and Script")
+# The drive root's rights change only in ACEs that are not inherited, so nothing below needs rewriting. Set-Acl rewrites
+# the inherited rights of every folder and file on the drive anyway: run as SYSTEM (the finish-setup icon), which can
+# open all of them, that took 14 minutes in CI, and far longer on a PC full of games.
+if (-not ("CafeRootAcl" -as [type])) {
+    Add-Type @'
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class CafeRootAcl
+{
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool SetFileSecurityW(string name, int information, byte[] descriptor);
+    public static void SetDacl(string path, byte[] descriptor) // DACL_SECURITY_INFORMATION, this folder only
+    {
+        if (!SetFileSecurityW(path, 4, descriptor)) throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+}
+'@
+}
 
 function Set-AppIdStartupMode([string]$Mode) {
     $scMode = switch ($Mode) {
@@ -38,7 +56,7 @@ function Restore-OriginalState {
         $originalRootSddl = Get-Content -LiteralPath $rootAclBackup -Raw
         $rootAcl = Get-Acl -LiteralPath $systemDriveRoot
         $rootAcl.SetSecurityDescriptorSddlForm($originalRootSddl)
-        Set-Acl -LiteralPath $systemDriveRoot -AclObject $rootAcl
+        [CafeRootAcl]::SetDacl($systemDriveRoot, $rootAcl.GetSecurityDescriptorBinaryForm())
         Write-Host "Restored original ACL on $systemDriveRoot from the install-time SDDL backup."
     }
     if (Test-Path -LiteralPath $logBackup) {
@@ -64,17 +82,23 @@ function Restore-OriginalState {
     Write-Host "AppLocker policy restored; Application Identity service state restoration attempted."
 }
 
+# The scan reads tens of thousands of folder ACLs (CI: 60,000 under Program Files). .NET reads one several times faster
+# than Get-Acl; same sections as Get-Acl (owner, group, DACL), so the report's SDDL is unchanged.
+$aclSections = [Security.AccessControl.AccessControlSections]"Access, Owner, Group"
+function Read-FolderAcl([string]$Path) { [IO.Directory]::GetAccessControl($Path, $aclSections) }
+
 function Get-CustomerWritableDirectoryTree([string]$Root, [string[]]$PrincipalSids) {
     # Stop at the first writable folder on each branch; descendants inherit the same access.
     $found = New-Object System.Collections.Generic.List[object]
     if (-not (Test-Path -LiteralPath $Root -PathType Container)) { return @() }
     $pending = New-Object System.Collections.Generic.Stack[object]
     $pending.Push([pscustomobject]@{ Path = $Root; ParentAccess = $null })
+    $visited = 0; $clock = [Diagnostics.Stopwatch]::StartNew()
     while ($pending.Count -gt 0) {
-        $item = $pending.Pop()
+        $item = $pending.Pop(); $visited++
         $current = $item.Path
         try {
-            $acl = Get-Acl -LiteralPath $current -ErrorAction Stop
+            $acl = Read-FolderAcl $current
             $explicitRules = @($acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]))
             $currentOwnerSid = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
             if ($null -ne $item.ParentAccess -and $explicitRules.Count -eq 0 -and
@@ -110,12 +134,13 @@ function Get-CustomerWritableDirectoryTree([string]$Root, [string[]]$PrincipalSi
             Write-Warning "Could not inspect '$current'; not changed (scan inaccessible): $($_.Exception.Message)"
         }
     }
+    Write-Host "$(Get-Date -Format HH:mm:ss) scanned $Root : $visited folders in $([math]::Round($clock.Elapsed.TotalSeconds, 1)) s"
     return $found.ToArray()
 }
 
 function Get-CustomerDirectoryAccess([string]$Path, [string[]]$PrincipalSids, $Acl = $null) {
     try {
-        if ($null -eq $Acl) { $Acl = Get-Acl -LiteralPath $Path -ErrorAction Stop }
+        if ($null -eq $Acl) { $Acl = Read-FolderAcl $Path }
         $acl = $Acl
         $allowMask = [int64]0
         $denyMask = [int64]0
@@ -147,7 +172,7 @@ function Get-CustomerDirectoryAccess([string]$Path, [string[]]$PrincipalSids, $A
             Writable = (($effectiveMask -band $writeMask) -ne 0)
             Executable = (($effectiveMask -band $executeMask) -ne 0)
             OwnerSid = $ownerSid
-            Sddl = $acl.Sddl
+            Sddl = $acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All)
         }
     } catch {
         throw "Could not inspect Customer access on ACL path '$Path': $($_.Exception.Message)"
@@ -216,7 +241,7 @@ function Install-CustomerPolicy {
             }
         }
     }
-    Set-Acl -LiteralPath $systemDriveRoot -AclObject $systemRootAcl
+    [CafeRootAcl]::SetDacl($systemDriveRoot, $systemRootAcl.GetSecurityDescriptorBinaryForm())
     $remainingRootCreateRights = @($systemRootAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) |
         Where-Object { @("S-1-5-11", "S-1-5-32-545") -contains $_.IdentityReference.Value -and
             $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
@@ -226,7 +251,7 @@ function Install-CustomerPolicy {
     if ($remainingRootCreateRights.Count -gt 0) {
         throw "Could not remove the CreateDirectories right for Authenticated Users and BUILTIN\Users on $systemDriveRoot."
     }
-    Write-Host "Removed the CreateDirectories (directory AppendData) right for Authenticated Users and BUILTIN\Users on $systemDriveRoot only; original ACL saved for uninstall."
+    Write-Host "$(Get-Date -Format HH:mm:ss) Removed the CreateDirectories (directory AppendData) right for Authenticated Users and BUILTIN\Users on $systemDriveRoot only; original ACL saved for uninstall."
 
     $programFiles = $env:ProgramFiles
     $programFilesX86 = $env:ProgramFiles + " (x86)"
@@ -329,6 +354,7 @@ function Install-CustomerPolicy {
                     if ($rootAccess.Executable) { $unlistedWritableExecute.Add($driveRoot); $allWritableExecute.Add($driveRoot) }
                 } else {
                     foreach ($child in [IO.Directory]::GetDirectories($driveRoot)) {
+                        if (([IO.File]::GetAttributes($child) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }   # a link to a folder scanned or covered elsewhere (C:\Documents and Settings: C:\Users)
                         $isCovered = @($coveredRoots | Where-Object { $_ -and $child.TrimEnd('\') -ieq $_.TrimEnd('\') }).Count -gt 0
                         if (-not $isCovered) { $scanRoots += $child }
                     }
@@ -505,9 +531,12 @@ function Install-CustomerPolicy {
     Start-AppLockerFilter
 
     $policyInstallStarted = Get-Date
+    Write-Host "$(Get-Date -Format HH:mm:ss) AppLocker policy import starts"
     Set-AppLockerPolicy -XmlPolicy $policyPath
+    Write-Host "$(Get-Date -Format HH:mm:ss) AppLocker policy imported; Group Policy refresh starts"
     & "$env:WINDIR\System32\gpupdate.exe" /target:computer /force /wait:60 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Computer Group Policy refresh failed after applying AppLocker (gpupdate exit $LASTEXITCODE)." }
+    Write-Host "$(Get-Date -Format HH:mm:ss) Group Policy refreshed; waiting for the compiled policy"
 
     # No scheduled-task or converter invocation is used.
     $compiled = Wait-ForCompiledPolicy $policyInstallStarted

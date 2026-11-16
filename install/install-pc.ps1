@@ -5,9 +5,19 @@
 # -Server: the counter PC's address (asked once, kept after that). -DnsServer: the internet filter's address (normally the
 # counter PC; only for tests). -Setup: open the Customer account for changes again.
 # -Uninstall: take everything off this PC. -Ci: unattended test run (no pop-ups, no restart).
+# -Finish: the 2nd time, started by the "Finish cafe setup" icon (finish-setup.ps1) through the scheduled task
+#          CafeFinishSetup, which Windows runs as SYSTEM: no admin password. It works only in setup mode.
 #Requires -RunAsAdministrator
-param([string]$Server, [string]$DnsServer, [switch]$Setup, [switch]$Uninstall, [switch]$Ci, [AllowEmptyString()][string]$AllowFolders)
+param([string]$Server, [string]$DnsServer, [switch]$Setup, [switch]$Uninstall, [switch]$Ci, [switch]$Finish, [switch]$Detached, [AllowEmptyString()][string]$AllowFolders)
 $ErrorActionPreference = "Stop"
+if ($Finish -and -not $Detached) {
+    # Windows runs a scheduled task's program at background speed (CI: step 2 took 14 minutes instead of 2, even at task
+    # priority 4). Start the same run as an ordinary program, same SYSTEM account and fixed arguments, and let the task end.
+    $run = "`"$PSHOME\powershell.exe`" -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Finish -Detached" + $(if ($Ci) { " -Ci" } else { "" })
+    $started = Invoke-CimMethod Win32_Process -MethodName Create -Arguments @{ CommandLine = $run }
+    if ($started.ReturnValue) { throw "Could not start the setup (error $($started.ReturnValue))." }
+    exit 0
+}
 $allowFoldersWasSpecified = $PSBoundParameters.ContainsKey("AllowFolders")
 $src = $PSScriptRoot
 $app = "$env:ProgramFiles\GamingCafe"     # program files: only admins can change them
@@ -17,12 +27,21 @@ $user = "Customer"
 $svc = "CafeWatchdog"
 $winlogon = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
 $machinePolicy = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+$finishTask = "CafeFinishSetup"
+$finishOut = "$data\finish"   # what the task tells the icon (Wi-Fi networks in range, the result); the Customer can only read it
+$finishIcon = "$env:PUBLIC\Desktop\Finish cafe setup.lnk"
+$finishCheck = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
 function Say($text) {
-    if ($Ci) { Write-Host $text; return }
+    if ($Ci -or $Finish) { Write-Host $text; return }   # -Finish runs as SYSTEM: no screen to show a window on
     Add-Type -AssemblyName System.Windows.Forms
     [System.Windows.Forms.MessageBox]::Show($text, "Gaming Cafe setup") | Out-Null
 }
-trap { Say "Setup stopped:`n$_`n`nRun it again. If it stops again, take a photo of this window. Send the photo and the file install-log.txt (in this folder) on Discord to the person who gave you this software."; break }
+trap {
+    if ($Finish) { # the icon cannot show it now (setup closed the Customer's apps): shown at the next sign-in, after a restart
+        Set-Content "$finishOut\result.txt" "$_" -Encoding utf8 -ErrorAction SilentlyContinue
+        if (-not $Ci) { Restart-Computer -Force }
+    }
+    Say "Setup stopped:`n$_`n`nRun it again. If it stops again, take a photo of this window. Send the photo and the file install-log.txt (in this folder) on Discord to the person who gave you this software."; break }
 if (-not $Uninstall) {
     Start-Transcript "$src\install-log.txt" -Append | Out-Null   # what happened, step by step: send this file on Discord if setup stops
     # Firmware protection is the owner's job; warn only and keep the installer running.
@@ -100,6 +119,11 @@ function Restore-Dns {
 }
 function Key($k) { if (-not (Test-Path $k)) { New-Item $k -Force | Out-Null } }   # New-Item -Force on an existing key would wipe its values
 function Restart-Now($text) { if ($Ci) { Write-Host "$text (CI: no restart)" } else { Say $text; Restart-Computer -Force } }
+function Remove-FinishIcon {
+    Unregister-ScheduledTask $finishTask -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-Item $finishIcon -Force -ErrorAction SilentlyContinue
+    Remove-ItemProperty $finishCheck CafeFinishSetup -ErrorAction SilentlyContinue
+}
 
 if ($Uninstall) {
     if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force; sc.exe delete $svc | Out-Null }
@@ -117,6 +141,7 @@ if ($Uninstall) {
             if ($null -eq $p.Value) { Remove-ItemProperty $key $name -ErrorAction SilentlyContinue } else { Set-ItemProperty $key $name $p.Value }
         }
     }
+    Remove-FinishIcon
     Remove-NetFirewallRule -Group "Cafe PC" -ErrorAction SilentlyContinue
     if (Test-Path "$data\dns-before.json") { Restore-Dns }
     $u = Get-LocalUser $user -ErrorAction SilentlyContinue
@@ -130,8 +155,29 @@ if ($Uninstall) {
     exit 0
 }
 
+# --- the "Finish cafe setup" icon asked for step 2 ---
+$finishWifi = $null
+if ($Finish) {
+    if (-not (Test-Path $flag)) { Write-Host "Not in setup mode: nothing to finish."; exit 0 }
+    $sid = (Get-LocalUser $user).SID.Value
+    $wanted = "Registry::HKEY_USERS\$sid\Software\GamingCafe"   # the icon writes the owner's Wi-Fi choice there
+    $nearby = @(& "$app\Cafe.Watchdog.exe" --wifi-networks "$data\keys")
+    $noWifi = $LASTEXITCODE -eq 3
+    if (-not $noWifi -and $LASTEXITCODE) { throw "Could not read the Wi-Fi networks (error $LASTEXITCODE)." }
+    $choice = (Get-ItemProperty $wanted -ErrorAction SilentlyContinue).FinishWifi
+    if ($null -eq $choice) { # first call: tell the icon which networks are in range, then wait for the owner's choice
+        Set-Content "$finishOut\nearby.txt" $(if ($noWifi) { "NO-WIFI" } else { $nearby }) -Encoding utf8
+        exit 0
+    }
+    Remove-Item $wanted -Recurse -Force   # not into the clean copy of the account
+    $finishWifi = @($choice -split "`n" | ForEach-Object Trim | Where-Object { $_ })
+    foreach ($n in $finishWifi) { if ($nearby -notcontains $n) { throw "A Wi-Fi network you chose is not in range now. Double-click Finish cafe setup again." } }   # never repeated: it came from the Customer account
+    Remove-Item "$finishOut\result.txt", "$finishOut\nearby.txt" -Force -ErrorAction SilentlyContinue
+}
+
 # --- the counter PC's address and this PC's keys ---
 if (-not $Server -and (Test-Path "$app\watchdog.args")) { $Server = ((Get-Content "$app\watchdog.args" -Raw) -split '--server https://')[1] -replace '(?s):5443.*', '' }
+if (-not $Server -and (Test-Path "$src\counter-address.txt")) { $Server = (Get-Content "$src\counter-address.txt" -Raw).Trim() }   # written by INSTALL-ADMIN
 if (-not $Server -and -not $Ci) { Add-Type -AssemblyName Microsoft.VisualBasic; $Server = [Microsoft.VisualBasic.Interaction]::InputBox("Type the counter PC's address (for example 192.168.1.10):", "Gaming Cafe setup") }
 if ($Server -notmatch '^[A-Za-z0-9.-]{1,63}$') { throw "The counter PC's address '$Server' is not valid. Use its address, for example 192.168.1.10." }
 $agentRuntimeSource = Join-Path $src "agent-runtime"
@@ -139,6 +185,19 @@ $agentExeSource = Join-Path $agentRuntimeSource "Cafe.Agent.exe"
 if (-not (Test-Path -LiteralPath $agentExeSource)) { $agentExeSource = Join-Path $src "Cafe.Agent.exe" }
 if (-not (Test-Path -LiteralPath $agentExeSource) -and -not (Test-Path -LiteralPath "$app\Cafe.Agent.exe")) {
     throw "Cafe.Agent.exe and its runtime files are missing. Copy the agent-runtime folder into this installer folder."
+}
+# key files are named after the PC (PC1.token, PC2.token, made by INSTALL-ADMIN or saved from the counter screen):
+# this PC takes the lowest-numbered one left in the folder, so the same folder goes to every gaming PC with no question
+$pcName = $null
+if (-not (Test-Path "$src\pc.token") -and -not (Test-Path "$app\pc.token") -and -not (Test-Path "$data\keys\pc.token")) {
+    $keyFile = Get-ChildItem $src -Filter "*.token" -File | Where-Object Name -ne "pc.token" |
+        Sort-Object { $n = ($_.BaseName -replace ' \(\d+\)$', '') -replace '\D', ''; if ($n) { [double]$n } else { [double]::MaxValue } }, Name |
+        Select-Object -First 1
+    if ($keyFile) {
+        $pcName = $keyFile.BaseName -replace ' \(\d+\)$', ''   # " (1)": the browser saved the same file twice
+        Move-Item $keyFile.FullName "$src\pc.token"   # used once: removed from the folder after it is saved on this PC
+        Write-Host "This PC is $pcName"
+    }
 }
 foreach ($f in "Cafe.Watchdog.exe", "pc.token", "server.pin") {
     if (-not (Test-Path "$src\$f") -and -not (Test-Path "$app\$f") -and -not (Test-Path "$data\keys\$f")) {
@@ -150,7 +209,7 @@ foreach ($f in "Cafe.Watchdog.exe", "pc.token", "server.pin") {
 if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force }
 Get-Process Cafe.Watchdog, Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force -PassThru | Wait-Process -Timeout 30
 New-Item $app -ItemType Directory -Force | Out-Null   # inside Program Files: customers can read and run, not change
-foreach ($f in "Cafe.Watchdog.exe", "keep-running.txt", "install-pc.ps1", "levelA.ps1", "applocker.ps1", "pendrives.ps1", "wifi.ps1", "SETUP-MODE.bat") {
+foreach ($f in "Cafe.Watchdog.exe", "keep-running.txt", "install-pc.ps1", "levelA.ps1", "applocker.ps1", "pendrives.ps1", "wifi.ps1", "dns.ps1", "finish-setup.ps1", "SETUP-MODE.bat") {
     if ($src -ne $app -and (Test-Path "$src\$f")) { Copy-WithRetry "$src\$f" $app }   # SETUP-MODE runs from $app itself
 }
 if ($src -ne $app -and (Test-Path -LiteralPath $agentRuntimeSource -PathType Container)) {
@@ -210,7 +269,9 @@ foreach ($f in "pc.token", "server.pin") {
             [CafeAtomicMove]::Replace($tempToken, "$keys\pc.token")
         }
     }
-    if ($src -ne $app -and (Test-Path "$src\$f")) { Remove-Item "$src\$f" -Force }
+    # the key is this PC's alone: off the folder. server.pin stays: it is public (the counter's certificate fingerprint)
+    # and the next gaming PC needs it from the same folder
+    if ($f -eq "pc.token" -and $src -ne $app -and (Test-Path "$src\$f")) { Remove-Item "$src\$f" -Force }
     Remove-Item "$app\$f" -Force -ErrorAction SilentlyContinue
 }
 # the one place the lock screen (running as Customer) may write: a "please clean up" note for the watchdog
@@ -263,37 +324,14 @@ if (-not $DnsServer) { $DnsServer = $Server }
 $dnsOk = $false
 if ($DnsServer -as [ipaddress]) { try { Resolve-DnsName "example.com" -Server $DnsServer -DnsOnly -QuickTimeout -ErrorAction Stop | Out-Null; $dnsOk = $true } catch { } }
 if ($dnsOk) {
-    # Enumerate adapters individually; Get-NetIPConfiguration can fail to construct its NetAdapter CIM property
-    # when a Windows runner exposes multiple adapters.
-    $nics = @(Get-NetAdapter | Where-Object { $_.Status -eq "Up" } | ForEach-Object {
-        $adapter = $_
-        if (Get-NetRoute -InterfaceIndex $adapter.ifIndex -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue) {
-            [pscustomobject]@{ InterfaceIndex = $adapter.ifIndex; NetAdapter = $adapter }
-        }
-    })
-    if (-not (Test-Path "$data\dns-before.json")) {
-        @($nics | ForEach-Object { # "servers" empty = the address came automatically from the router
-            $static = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($_.NetAdapter.InterfaceGuid)").NameServer
-            [pscustomobject]@{ index = $_.InterfaceIndex; servers = "$static" }
-        }) | ConvertTo-Json | Set-Content "$data\dns-before.json" -Encoding utf8
-    }
     Remove-NetFirewallRule -Group "Cafe PC" -ErrorAction SilentlyContinue
-    $DnsServer | Set-Content "$data\dns-server.txt" -Encoding ascii
-    foreach ($n in $nics) { Set-DnsClientServerAddress -InterfaceIndex $n.InterfaceIndex -ServerAddresses $DnsServer }
-    # block DNS (53) and private DNS (853) to every address except the filter; all of IPv6
-    $b = ([ipaddress]$DnsServer).GetAddressBytes(); [array]::Reverse($b); $n = [BitConverter]::ToUInt32($b, 0)
-    function Ip($v) { $x = [BitConverter]::GetBytes([uint32]$v); [array]::Reverse($x); ([ipaddress]$x).ToString() }
-    $others = @("::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")
-    if ($n -gt 0) { $others += "0.0.0.0-$(Ip ($n - 1))" }
-    if ($n -lt [uint32]::MaxValue) { $others += "$(Ip ($n + 1))-255.255.255.255" }
-    New-NetFirewallRule -Group "Cafe PC" -DisplayName "Cafe: web addresses only through the counter PC (UDP)" -Direction Outbound -Action Block -Profile Any -Protocol UDP -RemotePort 53, 853 -RemoteAddress $others | Out-Null
-    New-NetFirewallRule -Group "Cafe PC" -DisplayName "Cafe: web addresses only through the counter PC (TCP)" -Direction Outbound -Action Block -Profile Any -Protocol TCP -RemotePort 53, 853 -RemoteAddress $others | Out-Null
+    & "$app\dns.ps1" -DnsServer $DnsServer -DataPath $data   # the watchdog runs it again if the counter PC moves
     # browsers must not go around it with their own secure DNS
     foreach ($k in $edge, $chrome) { Key $k; Set-ItemProperty $k DnsOverHttpsMode "off" }
     Key $firefox; Set-ItemProperty $firefox Enabled 0 -Type DWord; Set-ItemProperty $firefox Locked 1 -Type DWord
     Clear-DnsClientCache
 } elseif (-not (Get-NetFirewallRule -Group "Cafe PC" -ErrorAction SilentlyContinue)) {   # an existing lock stays as it is
-    Say "Note: the internet filter on the counter PC ($DnsServer) did not answer. Website filtering is NOT on for this PC yet.`nFinish the filter setup on the counter PC, then run INSTALL-PC again. Everything else works."
+    Say "Note: the internet filter on the counter PC ($DnsServer) did not answer. Website filtering is NOT on for this PC yet.`nCheck that the counter PC is on and INSTALL-ADMIN finished there, then run INSTALL-PC again. Everything else works."
 }
 
 # --- block inbound Windows sharing and remote administration on every gaming PC ---
@@ -330,28 +368,45 @@ $profilePath = (Get-CimInstance Win32_UserProfile | Where-Object SID -eq (Get-Lo
 # Older installs have a file baseline but no clean registry-hive snapshot; run the owner's setup again before enabling resets.
 if ($Setup -or (-not (Test-Path $flag) -and (-not (Test-Path "$data\clean-profile") -or -not (Test-Path "$data\clean-profile-hive\NTUSER.DAT")))) {
     New-Item $flag -ItemType File -Force | Out-Null
+    # the "Finish cafe setup" icon: the Customer may start step 2 (as SYSTEM) while the PC is in setup mode, nothing else
+    New-Item $finishOut -ItemType Directory -Force | Out-Null
+    $customerSid = (Get-LocalUser $user).SID.Value
+    icacls $finishOut /inheritance:r /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*${customerSid}:(OI)(CI)RX" | Out-Null
+    $taskArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$app\install-pc.ps1`" -Finish" + $(if ($Ci) { " -Ci" } else { "" })
+    Register-ScheduledTask $finishTask -Force -Action (New-ScheduledTaskAction -Execute "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument $taskArgs) `
+        -Principal (New-ScheduledTaskPrincipal -UserId "S-1-5-18" -RunLevel Highest) `
+        -Settings (New-ScheduledTaskSettingsSet -Priority 4 -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries) | Out-Null   # the task only starts the real run (see -Detached)
+    $scheduler = New-Object -ComObject Schedule.Service; $scheduler.Connect()
+    $scheduler.GetFolder("\").GetTask($finishTask).SetSecurityDescriptor("D:P(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGX;;;$customerSid)", 0)   # Customer: start it only
+    $shell = New-Object -ComObject WScript.Shell; $lnk = $shell.CreateShortcut($finishIcon)
+    $lnk.TargetPath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
+    $lnk.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$app\finish-setup.ps1`""
+    $lnk.IconLocation = "$env:WINDIR\System32\shell32.dll,294"; $lnk.Save()
+    Set-ItemProperty $finishCheck CafeFinishSetup "`"$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe`" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$app\finish-setup.ps1`" -Check"
     & "$app\pendrives.ps1" -Mode Off -DataPath $data   # the owner may need a pen drive while setting the PC up
     & "$app\wifi.ps1" -Mode Off -AppPath $app -DataPath $data   # and any Wi-Fi network
     Start-Service $svc
-    Restart-Now "Step 1 is done.`n`nThe PC restarts now and signs in to the Customer account by itself (no lock screen yet).`nThere: install Discord, add the game shortcuts, set up the mouse, keyboard and headset apps.`nDo NOT sign in to Discord, Steam or any other app.`n`nThen double-click INSTALL-PC again (it asks for the admin password)."
+    $nameNote = if ($pcName) { "This PC is $pcName. Put a label with $pcName on it: the counter screen uses that name.`n`n" } else { "" }
+    Restart-Now "$($nameNote)Step 1 is done.`n`nThe PC restarts now and signs in to the Customer account by itself (no lock screen yet).`nThere: install Discord, add the game shortcuts, set up the mouse, keyboard and headset apps.`nDo NOT sign in to Discord, Steam or any other app.`n`nThen double-click 'Finish cafe setup' on the desktop (no password needed)."
     exit 0
 }
 if ((Test-Path $flag) -and -not $profilePath) { Start-Service $svc; Say "Restart the PC first. It signs in to the Customer account by itself. Set it up, then run INSTALL-PC again."; exit 1 }
 
 if (Test-Path $flag) {
     # --- step 2: save the clean copy and lock the Customer account down ---
+    Write-Host "$(Get-Date -Format HH:mm:ss) step 2 starts"
     Close-Customer-Apps
     Start-Sleep -Seconds 2
     # caches the graphics card driver builds stay between customers (games load faster); everything else is copied
     robocopy $profilePath "$data\clean-profile" /MIR /XJ /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.* UsrClass.dat* /XD NVIDIA AMD D3DSCache | Out-Null
-    if ($LASTEXITCODE -ge 8) { throw "Could not save the clean copy of the Customer account (error $LASTEXITCODE). Restart the PC and run INSTALL-PC again." }
+    if ($LASTEXITCODE -ge 8) { throw "Could not save the clean copy of the Customer account (error $LASTEXITCODE). Restart the PC and try again." }
 
     $sid = (Get-LocalUser $user).SID.Value
     $hive = "Registry::HKEY_USERS\$sid"
     $loaded = Test-Path $hive
     if (-not $loaded) { # Windows may still be closing the account's settings file just after a sign-out: try for 20 s
         for ($i = 0; $i -lt 10; $i++) { cmd.exe /c "reg load HKU\CafeCustomer `"$profilePath\NTUSER.DAT`" >nul 2>&1"; if (-not $LASTEXITCODE) { break }; Start-Sleep -Seconds 2 }
-        if ($LASTEXITCODE) { throw "Could not open the Customer account's settings (error $LASTEXITCODE). Restart the PC and run INSTALL-PC again." }
+        if ($LASTEXITCODE) { throw "Could not open the Customer account's settings (error $LASTEXITCODE). Restart the PC and try again." }
         $hive = "Registry::HKEY_USERS\CafeCustomer"
     }
     try {
@@ -399,14 +454,23 @@ if (Test-Path $flag) {
     $appLockerArgs = @{ Mode = "Install"; CustomerSid = $sid; DataPath = $data }
     if ($Ci) { $appLockerArgs.AllowFolders = "" }
     elseif ($allowFoldersWasSpecified) { $appLockerArgs.AllowFolders = $AllowFolders }
+    Write-Host "$(Get-Date -Format HH:mm:ss) clean copy saved; AppLocker starts"
     & "$app\applocker.ps1" @appLockerArgs
+    Write-Host "$(Get-Date -Format HH:mm:ss) AppLocker done"
     & "$app\pendrives.ps1" -Mode Install -DataPath $data   # pen drives need an OK from the counter
-    & "$app\wifi.ps1" -Mode Install -Ask -AppPath $app -DataPath $data   # the owner picks the cafe's Wi-Fi networks
+    if ($Finish) { & "$app\wifi.ps1" -Mode Install -Networks $finishWifi -AppPath $app -DataPath $data }   # chosen on the icon
+    else { & "$app\wifi.ps1" -Mode Install -Ask -AppPath $app -DataPath $data }   # the owner picks the cafe's Wi-Fi networks
     # Level A watch-only: nothing is blocked; Windows notes every program it would block, for the owner to review
     if (-not (Test-Path "$data\levelA-id.txt")) { & "$app\levelA.ps1" -Mode Audit }
     Remove-Item $flag -Force
+    Remove-Item $finishOut -Recurse -Force -ErrorAction SilentlyContinue
     Start-Service $svc
+    if (-not $Finish) { Remove-FinishIcon }
     Restart-Now "All done. The PC restarts now and shows the lock screen.`n`nTo change the Customer account later (new game shortcut, Discord update): double-click SETUP-MODE in C:\Program Files\GamingCafe."
+    # last: the restart may win the race. shortcut: then the task stays; harmless, it does nothing outside setup mode
+    # and the next setup mode replaces it
+    Remove-FinishIcon
+    Write-Host "The finish-setup task and icon are removed."
     exit 0
 }
 

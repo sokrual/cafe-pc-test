@@ -110,6 +110,23 @@ jobs:
       - name: B3 lockdown - install, logout wipe, customer limits, Level A, uninstall
         shell: powershell
         run: .\ci\lockdown.ps1
+      - name: Make the software zip for a cafe (only from a run where this job passed; the same files it tested)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $pkg = "GamingCafe"; New-Item "$pkg/agent-runtime" -ItemType Directory -Force | Out-Null
+          Copy-Item install/* $pkg -Recurse   # with the licences folder
+          Copy-Item out/server/Cafe.Server.exe, out/watchdog/Cafe.Watchdog.exe $pkg
+          Copy-Item out/agent/* "$pkg/agent-runtime"
+          Copy-Item SECURITY-GUIDE.txt, LOST-PHONE.txt $pkg
+          "Built from commit $env:GITHUB_SHA, test run $env:GITHUB_RUN_ID" | Set-Content "$pkg/VERSION.txt"
+          foreach ($f in "THIRD-PARTY.txt", "licences/DOTNET-MIT-LICENSE.txt", "licences/APACHE-2.0.txt") { if (-not (Test-Path "$pkg/$f")) { throw "$f is missing from the package" } }
+          Compress-Archive "$pkg/*" GamingCafe.zip
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'windows-latest'
+        with:
+          name: GamingCafe
+          path: GamingCafe.zip
       - uses: actions/upload-artifact@v4
         if: always()
         with:

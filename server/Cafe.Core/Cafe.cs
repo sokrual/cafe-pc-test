@@ -176,6 +176,10 @@ public sealed partial class CafeCore : IDisposable
 
     // ---------------- people ----------------
 
+    /// A new install has no accounts: the counter screen then asks for the owner's account first (Program.cs allows
+    /// that only from the counter PC itself). AddUser refuses an owner once any account exists.
+    public bool NeedsOwner() => Tx(() => Scalar<long>("SELECT count(*) FROM users") == 0);
+
     public long AddUser(long? by, Role role, string name, string phone, string pin)
     {
         // staff and owner logins work from any PC on the network, so their PINs must be much harder to guess
@@ -413,6 +417,25 @@ public sealed partial class CafeCore : IDisposable
         Exec("INSERT INTO pcs(name, token, locked) VALUES(@p0, @p1, 0)", name, TokenHash(token));
         Audit(by, "add_pc", name);
         return token;
+    });
+
+    /// INSTALL-ADMIN makes the keys for PC1..PCn before anyone has an account, so the owner never makes them by hand.
+    /// Only while there is no account yet; names that exist keep their key (a PC may already use it).
+    public List<(string Name, string Token)> AddPcsAtInstall(int count) => Tx(() =>
+    {
+        if (count is < 1 or > 200) throw new CafeException("The number of gaming PCs must be 1 to 200.");
+        if (Scalar<long>("SELECT count(*) FROM users") > 0) throw new CafeException("The owner account exists: add PCs on the counter screen.");
+        var made = new List<(string, string)>();
+        for (var i = 1; i <= count; i++)
+        {
+            var name = $"PC{i}";
+            if (Scalar<long>("SELECT count(*) FROM pcs WHERE name = @p0", name) > 0) continue;
+            var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+            Exec("INSERT INTO pcs(name, token, locked) VALUES(@p0, @p1, 0)", name, TokenHash(token));
+            Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'add_pc_at_install', @p1)", Iso(_now()), name);
+            made.Add((name, token));
+        }
+        return made;
     });
 
     /// Which PC this token belongs to, or null.

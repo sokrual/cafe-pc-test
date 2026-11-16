@@ -26,6 +26,30 @@ public sealed class AccountTests : IDisposable
     string AppCode(string secret, long step) => CafeCore.Totp(CafeCore.FromBase32(secret), step);
 
     [Fact]
+    public void Counter_install_makes_PC_keys_only_before_the_owner_account_and_keeps_existing_ones()
+    {
+        var file = Path.Combine(Path.GetTempPath(), $"cafe-install-{Guid.NewGuid():N}.db");
+        try
+        {
+            using (var fresh = new CafeCore(file, "test-key-123", () => _clock))
+            {
+                var first = fresh.AddPcsAtInstall(2);
+                Assert.Equal(new[] { "PC1", "PC2" }, first.Select(p => p.Name));
+                Assert.Equal("PC2", fresh.PcByToken(first[1].Token));
+                var more = fresh.AddPcsAtInstall(3);                     // INSTALL-ADMIN run again: only the new one
+                Assert.Equal(new[] { "PC3" }, more.Select(p => p.Name));
+                Assert.Equal("PC1", fresh.PcByToken(first[0].Token));    // a key a PC may already use still works
+                Assert.Throws<CafeException>(() => fresh.AddPcsAtInstall(0));
+                Assert.Throws<CafeException>(() => fresh.AddPcsAtInstall(201));
+                fresh.AddUser(null, Role.Owner, "Owner", "9000000001", "432100");
+                Assert.Throws<CafeException>(() => fresh.AddPcsAtInstall(5)); // after that, only the owner adds PCs
+                Assert.Null(fresh.PcByToken("not-a-key"));
+            }
+        }
+        finally { SqliteConnection.ClearAllPools(); try { File.Delete(file); } catch (IOException) { } }
+    }
+
+    [Fact]
     public void Codes_match_the_published_test_values()
     {
         var key = Encoding.ASCII.GetBytes("12345678901234567890"); // RFC 6238 appendix B, last 6 digits

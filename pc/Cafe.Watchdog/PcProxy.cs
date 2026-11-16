@@ -13,7 +13,8 @@ static class PcProxy
     const uint PipeAccessDuplex = 0x00000003, FileFlagOverlapped = 0x40000000;
     const uint PipeTypeByte = 0, PipeWait = 0, PipeRejectRemoteClients = 0x00000008;
     const int MaxRequestBytes = 65536;
-    static HttpClient? _http;
+    static volatile HttpClient? _http;   // replaced when the counter PC is found at a new address (FindCounter)
+    static string _pin = "", _token = "";
     static string? _agentPath;
     static Action<string> _log = message => Console.Error.WriteLine(message);
     static int _refusalLogged;
@@ -124,13 +125,8 @@ static class PcProxy
         NamedPipeServerStream? firstPipe = null;
         try
         {
-            var handler = new HttpClientHandler
-            {
-                ServerCertificateCustomValidationCallback = (_, cert, _, _) =>
-                    cert is not null && Convert.ToHexString(SHA256.HashData(cert.RawData)).Equals(pin, StringComparison.OrdinalIgnoreCase)
-            };
-            client = new HttpClient(handler) { BaseAddress = serverUri, Timeout = TimeSpan.FromSeconds(10) };
-            client.DefaultRequestHeaders.Add("X-Pc-Token", token);
+            _pin = pin; _token = token;
+            client = NewClient(serverUri);
             var resolvedAgentPath = Path.GetFullPath(agentPath);
             var keysDirectory = Path.GetDirectoryName(Path.GetFullPath(tokenFile))!;
             _offline = new OfflineUnlockStore(Path.Combine(keysDirectory, "offline-unlock.bin"));
@@ -172,6 +168,15 @@ static class PcProxy
                         if (_http is HttpClient http) { PenDrives.Check(http, _log); Wifi.Check(_keysDirectory, http, _log); }
                     }
                     catch (Exception e) { _log("background sync error: " + e.Message); }
+                    try   // on its own: the steps above fail while the counter PC is away, which is when this matters
+                    {
+                        if (_http is HttpClient current && FindCounter.Check(current, NewClient, _log) is HttpClient moved)
+                        {
+                            _http = moved;   // the old client may still serve a request in flight; left to the GC
+                            FindCounter.Save(moved.BaseAddress!, current.BaseAddress!, Path.GetDirectoryName(_keysDirectory)!, _log);
+                        }
+                    }
+                    catch (Exception e) { _log("counter search error: " + e.Message); }
                     try { await Task.Delay(TimeSpan.FromSeconds(5), stop); }
                     catch (OperationCanceledException) { break; }
                 }
@@ -183,6 +188,19 @@ static class PcProxy
             client?.Dispose();
             throw;
         }
+    }
+
+    /// The only way this PC talks to the counter: its pinned certificate (server.pin) and this PC's key.
+    static HttpClient NewClient(Uri server)
+    {
+        var handler = new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback = (_, cert, _, _) =>
+                cert is not null && Convert.ToHexString(SHA256.HashData(cert.RawData)).Equals(_pin, StringComparison.OrdinalIgnoreCase)
+        };
+        var client = new HttpClient(handler) { BaseAddress = server, Timeout = TimeSpan.FromSeconds(10) };
+        client.DefaultRequestHeaders.Add("X-Pc-Token", _token);
+        return client;
     }
 
     static void WriteTimeLockSetting(bool enabled)

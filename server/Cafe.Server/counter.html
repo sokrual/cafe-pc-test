@@ -39,8 +39,8 @@
   .pen-drive { margin: 12px 16px; padding: 12px; border: 1px solid var(--act); border-radius: 8px; }
   .security-warning { margin: 12px 16px; padding: 12px; border: 1px solid var(--warn); border-radius: 8px; color: var(--warn); }
   #msg.err { color: var(--bad); } #msg.ok { color: var(--ok); }
-  #login { max-width: 360px; margin: 10vh auto; background: var(--card); padding: 24px; border-radius: 12px; }
-  #login input { width: 100%; }
+  #login, #setup { max-width: 360px; margin: 10vh auto; background: var(--card); padding: 24px; border-radius: 12px; }
+  #login input, #setup input { width: 100%; }
   hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
   ul { padding-left: 18px; margin: 8px 0; }
   .check { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 15px; margin: 6px 12px 0 0; }
@@ -48,6 +48,16 @@
 </style>
 </head>
 <body>
+<form id="setup" hidden>
+  <h1>Make the owner account</h1>
+  <p class="small">This is a new install. Only the owner's account is made here, once. Staff accounts are added later on the counter screen.</p>
+  <label for="sname">Your name</label><input id="sname" maxlength="60" required>
+  <label for="sphone">Your phone number</label><input id="sphone" inputmode="numeric" autocomplete="username" required>
+  <label for="spin">PIN, 6 to 12 digits</label><input id="spin" type="password" inputmode="numeric" autocomplete="new-password" required>
+  <label for="spin2">The same PIN again</label><input id="spin2" type="password" inputmode="numeric" autocomplete="new-password" required>
+  <div class="row"><button type="submit">Make the owner account</button></div>
+  <p id="serr" class="small" role="alert"></p>
+</form>
 <form id="login" hidden>
   <h1>Counter sign in</h1>
   <label for="lphone">Phone number</label><input id="lphone" inputmode="numeric" autocomplete="username" required>
