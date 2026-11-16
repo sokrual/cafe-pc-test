@@ -84,7 +84,7 @@ public sealed partial class CafeCore : IDisposable
         _db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Password = key, Pooling = false }.ToString());
         _db.Open();
         // schema version: a newer program adds its changes as version 2, 3... and never reads a newer database by mistake
-        const int SchemaVersion = 6; // 2: owner two-step login; 3: time-expiry setting; 4: offline sales; 5: separate offline secrets and per-person replay; 6: offline unlock controls and sale minutes
+        const int SchemaVersion = 7; // 2: owner two-step login; 3: time-expiry setting; 4: offline sales; 5: separate offline secrets and per-person replay; 6: offline unlock controls and sale minutes; 7: PC key tied to the first PC that uses it
         if (Scalar<long>("PRAGMA user_version") > SchemaVersion) { _db.Dispose(); throw new CafeException("The cafe data comes from a newer version of this program. Install the newer version."); }
         Exec("""
             PRAGMA foreign_keys = ON;
@@ -125,6 +125,8 @@ public sealed partial class CafeCore : IDisposable
             Exec("ALTER TABLE users ADD COLUMN offline_totp BLOB; CREATE UNIQUE INDEX IF NOT EXISTS offline_sales_person_step ON offline_sales(staff_id, step);");
         if (Scalar<long>("PRAGMA user_version") < 6)
             Exec("ALTER TABLE users ADD COLUMN offline_unlock_enabled INTEGER NOT NULL DEFAULT 1; ALTER TABLE offline_sales ADD COLUMN minutes INTEGER NOT NULL DEFAULT 0;");
+        if (Scalar<long>("PRAGMA user_version") < 7) // keys made before this have no "made" time, so they never expire unused
+            Exec("ALTER TABLE pcs ADD COLUMN bind BLOB; ALTER TABLE pcs ADD COLUMN made TEXT;");
         Exec($"PRAGMA user_version = {SchemaVersion}");
         _ready = true;
         LoadRateCards();
@@ -414,7 +416,7 @@ public sealed partial class CafeCore : IDisposable
         if (name.Length is < 1 or > 20 || !name.All(c => char.IsAsciiLetterOrDigit(c) || c is ' ' or '-')) throw new CafeException("A PC name has 1 to 20 letters, numbers, spaces or dashes.");
         if (Scalar<long>("SELECT count(*) FROM pcs WHERE name = @p0", name) > 0) throw new CafeException("A PC with this name already exists.");
         var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-        Exec("INSERT INTO pcs(name, token, locked) VALUES(@p0, @p1, 0)", name, TokenHash(token));
+        Exec("INSERT INTO pcs(name, token, locked, made) VALUES(@p0, @p1, 0, @p2)", name, TokenHash(token), Iso(_now()));
         Audit(by, "add_pc", name);
         return token;
     });
@@ -431,7 +433,7 @@ public sealed partial class CafeCore : IDisposable
             var name = $"PC{i}";
             if (Scalar<long>("SELECT count(*) FROM pcs WHERE name = @p0", name) > 0) continue;
             var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-            Exec("INSERT INTO pcs(name, token, locked) VALUES(@p0, @p1, 0)", name, TokenHash(token));
+            Exec("INSERT INTO pcs(name, token, locked, made) VALUES(@p0, @p1, 0, @p2)", name, TokenHash(token), Iso(_now()));
             Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'add_pc_at_install', @p1)", Iso(_now()), name);
             made.Add((name, token));
         }
@@ -439,8 +441,24 @@ public sealed partial class CafeCore : IDisposable
     });
 
     /// Which PC this token belongs to, or null.
-    public string? PcByToken(string token) => Tx(() =>
-        Scalar<string?>("SELECT name FROM pcs WHERE token = @p0", TokenHash(token)));
+    /// A key file can be copied (a spare key left on the pen drive, a lost pen drive), so a key is tied to the first PC
+    /// that uses it: that PC sends a secret it made for itself (pc.bind, never on the pen drive). A copy of the key does
+    /// not work from any other device after that. A key nobody used within 7 days stops working: make a new one.
+    public string? PcByToken(string token, string bind) => Tx(() =>
+    {
+        if (bind.Length is < 16 or > 200) return null;
+        string name; byte[]? tied; string? made;
+        using (var r = Query("SELECT name, bind, made FROM pcs WHERE token = @p0", TokenHash(token)))
+        {
+            if (!r.Read()) return null;
+            (name, tied, made) = (r.GetString(0), r.IsDBNull(1) ? null : (byte[])r[1], r.IsDBNull(2) ? null : r.GetString(2));
+        }
+        if (tied is not null) return CryptographicOperations.FixedTimeEquals(tied, TokenHash(bind)) ? name : null;
+        if (made is not null && _now() - Time(made) > TimeSpan.FromDays(7)) return null;
+        Exec("UPDATE pcs SET bind = @p0 WHERE name = @p1 AND bind IS NULL", TokenHash(bind), name);
+        Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'pc_key_tied', @p1)", Iso(_now()), name);
+        return name;
+    });
 
     /// Owner or staff lock a PC at any time (stop play, come to the counter). A running session is paused,
     /// so locked time is not charged; Unlock resumes it.

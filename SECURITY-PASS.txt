@@ -67,7 +67,9 @@ N1  MED    Spare PC keys are full PC identities
     installed, works as that PC from the shop network for good. A PC key can read every enabled offline secret
     (/pc/offline-unlock-data, Program.cs:126; see F5), so it can make valid offline codes. Fix: tell the owner to delete
     left-over PC*.token files and remove unused PCs on the counter screen; or refuse offline data to a PC that has never
-    been installed. Not done.
+    been installed. FIXED in PR #3 (16 Nov): a key is tied to the first PC that uses it (that PC's own secret, pc.bind)
+    and an unused key ends after 7 days (AccountTests A_PC_key_works_only_from_the_first_PC..., lockdown B3.C4q; both
+    proved to fail with the check removed, run 43843026751).
 N2  LOW    Counter search (S5)
     Any device on the shop network can answer "here". The gaming PC sends its key only after the TLS handshake shows the
     pinned certificate, so an impostor learns nothing and is not used (lockdown S5.1). The search answer is smaller than

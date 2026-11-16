@@ -18,6 +18,9 @@ The counter PC needs no fixed network address: if the router gives it a new one,
    This works only on the counter PC itself. Then sign in.
    A gaming PC added later: open "Owner security", type its name under "PC keys" and click
    "Add PC and show its key". Move the saved file (for example PC9.token) into this folder.
+   A key works only on the first gaming PC that uses it, and only if it is used within 7 days.
+   A left-over key on the pen drive is harmless after 7 days. To reinstall a PC after UNINSTALL-PC,
+   or when a key is too old: remove that PC on the counter screen, add it again, and use the new key.
 
 B. EACH GAMING PC (two short visits)
 Do ONE gaming PC first and use it for a day. If all is well, do the others.

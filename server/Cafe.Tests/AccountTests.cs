@@ -35,18 +35,38 @@ public sealed class AccountTests : IDisposable
             {
                 var first = fresh.AddPcsAtInstall(2);
                 Assert.Equal(new[] { "PC1", "PC2" }, first.Select(p => p.Name));
-                Assert.Equal("PC2", fresh.PcByToken(first[1].Token));
+                Assert.Equal("PC2", fresh.PcByToken(first[1].Token, "this-pc-bind-secret"));
                 var more = fresh.AddPcsAtInstall(3);                     // INSTALL-ADMIN run again: only the new one
                 Assert.Equal(new[] { "PC3" }, more.Select(p => p.Name));
-                Assert.Equal("PC1", fresh.PcByToken(first[0].Token));    // a key a PC may already use still works
+                Assert.Equal("PC1", fresh.PcByToken(first[0].Token, "this-pc-bind-secret"));    // a key a PC may already use still works
                 Assert.Throws<CafeException>(() => fresh.AddPcsAtInstall(0));
                 Assert.Throws<CafeException>(() => fresh.AddPcsAtInstall(201));
                 fresh.AddUser(null, Role.Owner, "Owner", "9000000001", "432100");
                 Assert.Throws<CafeException>(() => fresh.AddPcsAtInstall(5)); // after that, only the owner adds PCs
-                Assert.Null(fresh.PcByToken("not-a-key"));
+                Assert.Null(fresh.PcByToken("not-a-key", "this-pc-bind-secret"));
             }
         }
         finally { SqliteConnection.ClearAllPools(); try { File.Delete(file); } catch (IOException) { } }
+    }
+
+    [Fact]
+    public void A_PC_key_works_only_from_the_first_PC_that_uses_it_and_an_unused_key_ends_after_7_days()
+    {
+        var token = _cafe.AddPc(_owner, "PC1");
+        Assert.Null(_cafe.PcByToken(token, ""));                                   // no PC secret: refused, not tied
+        Assert.Null(_cafe.PcByToken(token, "short"));
+        Assert.Equal("PC1", _cafe.PcByToken(token, "the-real-pc-secret"));         // first use ties the key
+        Assert.Equal("PC1", _cafe.PcByToken(token, "the-real-pc-secret"));
+        Assert.Null(_cafe.PcByToken(token, "a-copy-on-another-device"));          // a copied key file does not work
+        _clock = _clock.AddDays(30);
+        Assert.Equal("PC1", _cafe.PcByToken(token, "the-real-pc-secret"));         // a tied key does not expire
+
+        var spare = _cafe.AddPc(_owner, "PC2");                                    // made, never installed
+        _clock = _clock.AddDays(7).AddMinutes(1);
+        Assert.Null(_cafe.PcByToken(spare, "whoever-found-the-key"));
+        var late = _cafe.AddPc(_owner, "PC3");
+        _clock = _clock.AddDays(6);
+        Assert.Equal("PC3", _cafe.PcByToken(late, "installed-on-day-six"));        // within 7 days it still works
     }
 
     [Fact]
@@ -427,18 +447,18 @@ public sealed class AccountTests : IDisposable
         Assert.Throws<CafeException>(() => _cafe.AddPc(_owner, "PC1"));            // same name
         Assert.Throws<CafeException>(() => _cafe.AddPc(_owner, "PC'; DROP"));      // odd characters
         Assert.Throws<CafeException>(() => _cafe.AddPc(_staff, "PC2"));            // owner only
-        Assert.Equal("PC1", _cafe.PcByToken(token));
+        Assert.Equal("PC1", _cafe.PcByToken(token, "this-pc-bind-secret"));
         _cafe.PcLogin("PC1", "9000000003", "2222");
         Assert.True(_cafe.Pcs(_staff).Single().InUse);
         Assert.Throws<CafeException>(() => _cafe.RemovePc(_owner, "PC1"));         // in use
         _cafe.PcLogout("PC1", 0);
         _cafe.RemovePc(_owner, "PC1");
-        Assert.Null(_cafe.PcByToken(token));                                        // its key stops working
+        Assert.Null(_cafe.PcByToken(token, "this-pc-bind-secret"));                                        // its key stops working
         Assert.Empty(_cafe.Pcs(_staff));
         var replacement = _cafe.AddPc(_owner, "PC1");
         Assert.NotEqual(token, replacement);
-        Assert.Null(_cafe.PcByToken(token));
-        Assert.Equal("PC1", _cafe.PcByToken(replacement));
+        Assert.Null(_cafe.PcByToken(token, "this-pc-bind-secret"));
+        Assert.Equal("PC1", _cafe.PcByToken(replacement, "this-pc-bind-secret"));
     }
 
     [Fact]
