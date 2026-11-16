@@ -1,0 +1,312 @@
+SECURITY PASS - B1 to B3 and security changes
+Repository: sokrual/cafe-pc-test
+Branch: security/final-pass
+Base: main at 163f4d7df8e7005d68a3e150919720e20896811c (merge of PR #9)
+Scope: final read-only review. No application code changed.
+
+SUMMARY
+
+The core server, watchdog, lock screen, and installers have useful security controls. They are not yet safe to expose to real customers without addressing the High findings below.
+
+Most important findings:
+- HIGH: Level A is still watch-only. A Customer can run programs the owner has not approved. The gaming PC installer also does not set firmware/USB boot protections.
+- HIGH: the counter installer does not enable or verify BitLocker. A stolen counter PC or disk can expose the database and its DPAPI machine keys if the attacker can get offline access.
+- HIGH: each offline PC can accept the same person's same authenticator step while disconnected. The server rejects the duplicate later, but both PCs have already granted play time.
+- HIGH: a profile reset restores the original Customer registry hive and can erase the most recently remembered time-lock setting. An offline PC can then fail to lock at zero after a customer changeover.
+- HIGH: offline authenticator secrets are copied to every PC. A PC administrator/SYSTEM compromise exposes every owner's and staff member's offline secret, not just one person's.
+- HIGH: a lost phone's offline authenticator cannot be revoked on PCs that remain disconnected. Those PCs keep the old secret until they next refresh.
+- HIGH: the PC token is a clear-text file. Its folder ACL protects it from the normal Customer account, but the secret is not encrypted at rest.
+- HIGH: there is no counter database backup and restore process.
+- HIGH: the customer app-control policy is not enforcing an allow-list; it is deliberately in audit/watch-only mode.
+- MEDIUM: offline logout actions are queued in Agent memory and are lost if Agent or Windows stops before reconnection.
+- MEDIUM: offline sale state is replaced atomically but is not explicitly flushed to stable storage before success is returned. A sudden power loss can lose the latest sale or replay marker.
+- MEDIUM: shop-network protection is not full network segmentation. Gaming PCs can make other outbound connections; the DNS rules do not stop arbitrary apps using DNS-over-HTTPS or direct IPs.
+- MEDIUM: no certificate or PC-token rotation procedure is present.
+- HIGH: B4 privacy and legal controls are not built. CHECKS.txt says these privacy checks apply in full; this report does not start B4.
+
+WHAT I READ AND WHAT I RAN
+
+Read the current main versions of:
+- CHECKS.txt and STATUS.txt
+- server/Cafe.Core/Cafe.cs and Accounts.cs
+- server/Cafe.Server/Program.cs
+- pc/Cafe.Watchdog/Program.cs, PcProxy.cs, OfflineUnlockStore.cs and Wipe.cs
+- pc/Cafe.Agent/Program.cs and WatchdogPipeClient.cs (the lock screen and timer are in Program.cs)
+- install/install-admin.ps1 and install/install-pc.ps1
+- ci/lockdown.ps1
+- server/Cafe.Tests/BillingTests.cs and AccountTests.cs
+- pc/Cafe.UiTests/LockScreenTests.cs
+
+This was a read-only source review. I did not run a live attack, unplug a real cafe PC, remove a disk, boot from USB, or run a 12-hour soak test. I checked the repository's test names and lockdown check IDs. The latest recorded green PR #9 workflow was run #131 on commit 0c46381d89c0159ff5cec56e3558503a2e74f4e2; its eight jobs completed successfully. That is build/test evidence, not proof that the untested attacks in this report are safe.
+
+CHECKLIST RESULTS
+
+Status meanings:
+- Met: code or a named test provides direct evidence.
+- Not met: the required control is missing or the test/evidence is not present.
+- Accepted risk: not applicable to the current API-only stage, or deliberately deferred; it must be checked again before the related feature is released.
+
+PART 1 - THE 58 MUST CHECKS
+
+Security (11)
+- Met - rate limiting. Server per-IP login limit is 10 attempts/minute (server/Cafe.Server/Program.cs:27-35); per-account lockout is in Cafe.cs:153-181 and AccountTests.cs:Three_wrong_PINs_lock_every_role_for_ten_minutes; UI test Login_guessing_is_cut_off_after_10_tries_a_minute.
+- Not met - secrets management. DPAPI and LSA protect several secrets, but pc.token remains a plain-text file in the admin-only keys folder (install/install-pc.ps1:113-123; PcProxy.cs:105-108). See finding F7.
+- Not met - encryption at rest. SQLite is encrypted and db.key is DPAPI-protected (Cafe.Server/Program.cs:166-187; BillingTests.cs:Database_file_is_unreadable_without_the_key), but the counter installer does not enable or verify BitLocker (install/install-admin.ps1:39-73). See F2.
+- Met - encryption in transit. Server listens on HTTPS (server/Cafe.Server/Program.cs:22-26); PCs pin the server certificate (PcProxy.cs:103-122).
+- Met - SQL injection. Database values are passed as SQLite parameters (Cafe.cs:755-766); no user-supplied SQL fragments were found in the reviewed request paths.
+- Met - IAM roles. Owner/staff/customer checks are in Cafe.cs:134-149, 184-213 and 704-707; server endpoints require PC or staff tokens (server/Cafe.Server/Program.cs:63-69, 71-133). Tests include Roles_who_can_add_whom and A_customer_PIN_does_not_open_the_counter_pages.
+- Met - TLS. HTTPS is required and the PC validates the SHA-256 certificate fingerprint (server/Cafe.Server/Program.cs:22-26; PcProxy.cs:103-122); lockdown B3.A2 and B3.A2b.
+- Accepted risk - XSS. The reviewed service is a JSON API and has no cafe-owned HTML page yet. Recheck when the counter web screen is built.
+- Not met - session/token rotation. Staff tokens are random and end at logout or server restart (Accounts.cs:185-199), and removing a PC revokes its token (Accounts.cs:27-34), but there is no scheduled rotation or recovery procedure for a copied PC token.
+- Accepted risk - CORS. No browser front end is in this build; add a strict origin policy before a browser-based counter screen is released.
+- Accepted risk - CSRF. The current staff API uses bearer tokens, not browser cookies. Recheck if cookie-based browser login is introduced.
+
+Reliability (13)
+- Met - timeouts. HTTP, pipe reads and request handling have bounded timeouts (PcProxy.cs:121, 257-284, 303-324).
+- Met - retries. Watchdog retries failed proxy start; offline secret refresh and sale sync retry (Watchdog/Program.cs:67-79; PcProxy.cs:140-149, 159-194).
+- Not met - exponential backoff. Several retry loops use fixed 2-second, 5-second or 30-second intervals, not exponential backoff (Agent/Program.cs:79-87; Watchdog/Program.cs:77-78, 121-124; PcProxy.cs:146).
+- Met - idempotency for offline sales. Sale ID is checked before posting and is unique per PC; a unique person/step index prevents a second accepted sale (Cafe.cs:483-502; AccountTests.cs:Offline_sales_ignore_counter_login_order_and_are_unique_per_person_and_step_across_PCs).
+- Not met - dead letter queue for every offline action. Refused sales go to the review audit, but the Agent logout queue is memory-only (Agent/Program.cs:69, 116-121, 223-229). See F10.
+- Met - failover for PC timing. Agent advances time locally when the server cannot be reached (Agent/Program.cs:93-97, 132-136); UI tests T1_1_to_T1_6_escape_login_locks_offline_logout and Offline_time_limit_locks_only_when_the_last_owner_setting_is_on.
+- Met - health checks/heartbeats. Server updates PC last_seen from /pc/state (server/Program.cs:71; Cafe.cs:568-569).
+- Met - liveness. Watchdog restarts the Agent and Windows service recovery is configured (Watchdog/Program.cs:8-26; install/install-pc.ps1:201-206); UI test T1_2_killed_pc_program_is_back_within_5_seconds_and_locked.
+- Not met - backups with restore test. No backup job or restore test is present; STATUS.txt lists B5.5 as not started. See F8.
+- Not met - disaster recovery to new hardware. No documented or tested counter-PC restore process; STATUS.txt lists it as outstanding.
+- Not met - chaos tests for power loss. Network-offline tests exist, but no abrupt power-cut or disk-loss test was found.
+- Met - network partitions. Offline timer and offline sale paths are covered by the UI tests above and AccountTests.cs:Offline_sales_are_verified_once_and_extend_or_start_a_session.
+- Accepted risk - clock skew. NIC/NPL hourly NTP is configured (install/install-admin.ps1:67-73; install/install-pc.ps1:193-199; lockdown B3.C8), but offline TOTP and local timers use the PC wall clock (OfflineUnlockStore.cs:134; Agent/Program.cs:96-97). No drift test across a long outage was found.
+
+Data (8)
+- Met - indexing. Session and ledger indexes plus the unique offline person/step index exist (Cafe.cs:108-110, 114-116).
+- Not met - query optimisation. No query-plan or representative data-volume benchmark was found.
+- Not met - N+1 query checks. No test or measurement for this was found.
+- Met - migrations. Schema version checks and additive migrations are in Cafe.cs:81-117; AccountTests.cs: A_database_from_a_newer_version_is_refused.
+- Met - schema versioning. Cafe.cs:81-83, 112-117.
+- Met - eventual consistency for offline sales. Pending sales are retried and reconciled (PcProxy.cs:172-194); AccountTests.cs:Offline_sales_are_verified_once_and_extend_or_start_a_session.
+- Met - CAP availability choice. The PC continues timing offline and queues sales; see the network partition tests above.
+- Not met - optimistic locking. The database serializes work on one connection, but there is no version check for competing edits to a record (Cafe.cs:740-752).
+
+Caching (2)
+- Not met - measured latency. No counter unlock or API latency target/measurement was found.
+- Not met - measured cold-start time. Services start automatically, but no cold-start target or measurement is recorded.
+
+Architecture (5)
+- Not met - durable message queue per PC for all events. Offline sales persist, but logout events do not (Agent/Program.cs:69, 223-229).
+- Not met - WebSockets. The Agent polls every two seconds (Agent/Program.cs:79-87).
+- Not met - API versioning. Routes have no version prefix (server/Cafe.Server/Program.cs:71-133).
+- Met - service discovery. Gaming PCs are configured with the fixed counter address (install/install-pc.ps1:93-111).
+- Not met - cron jobs for backups, one-year purge, expiry and reports. Only time expiry and watchdog loops are present (server/Program.cs:136-149).
+
+Code (5)
+- Met - race-condition coverage for key money/session operations. Tests cover stop twice/same moment and many PCs/staff at once (BillingTests.cs:Stop_twice_or_at_the_same_moment_bills_once; Many_pcs_and_staff_at_once_never_break_the_database).
+- Accepted risk - deadlocks. A shared database lock and nested transaction mechanism exist (Cafe.cs:740-752), but no deadlock/long-contention test was found.
+- Met - thread safety for shared database and offline store. Cafe.cs:740-752; OfflineUnlockStore.cs:95-97 and 160-171.
+- Not met - 12-hour memory-leak soak test. STATUS.txt lists B6 as not started.
+- Accepted risk - garbage collection. The application uses normal .NET managed memory; no memory-pressure or soak evidence exists.
+
+Scaling (2)
+- Met - setup scripts for both PC types. install/install-admin.ps1 and install/install-pc.ps1.
+- Not met - DNS forced for every program. Browser DoH policies and DNS port blocks exist (install/install-pc.ps1:160-190), but a program can use DoH over HTTPS or connect directly by IP. Level A is also watch-only (B3.E5).
+
+Release (5)
+- Met - CI/CD checks. The Windows workflow runs server, UI, lockdown and kit jobs; PR #9 run #131 completed 8/8 successfully.
+- Accepted risk - canary. The Phase 0 kit is planned, but no real-cafe canary result is recorded (STATUS.txt).
+- Not met - rollback. Installers update files in place and no tested previous-version rollback is described.
+- Met - semantic versioning. STATUS.txt records version 0.3.0.
+- Not met - dependency control as a complete process. CI checks known-vulnerable packages and AdGuard has a pinned version/hash (install/install-admin.ps1:84-104), but no full SBOM, checksum and licence report for all shipped dependencies was found.
+
+Observability (7)
+- Met - logs. Server, Agent and watchdog write logs; reviewed code does not log PINs or authenticator codes (server/Program.cs:14, 33; Agent/Program.cs:25-30; Watchdog/Program.cs:162-165).
+- Not met - live monitoring/dashboard.
+- Not met - CPU/RAM and service metrics with targets.
+- Not met - owner alerts for tamper, offline PCs, failed backups and disk full.
+- Met - bills can be explained from the append-only ledger and audit (Cafe.cs:95-107, 721-726; BillingTests.cs:Money_rows_cannot_be_edited_or_deleted_even_directly).
+- Not met - on-call procedure.
+- Not met - documented paper fallback and incident procedure.
+
+PART 2 - THE MUST CHECKS THAT APPLY TO B1-B3 OR THE SECURITY CHANGES
+
+Access and identity
+- Met - object, function and property authorisation for current endpoints: PC token, staff token and owner checks are applied (server/Program.cs:63-69, 71-133; Cafe.cs:704-707).
+- Met - roles model: Cafe.cs:8, 134-149, 704-707.
+- Met - password/PIN storage: PBKDF2-SHA256 with per-PIN salt and fixed-time comparison (Cafe.cs:728-735).
+- Not met - multi-factor login as a mandatory control. Two-step is supported, but StaffLogin accepts a staff/owner account with no TOTP when totp is null (Cafe.cs:185-195). The setup feature is tested in AccountTests.cs:Owner_can_enroll_separate_counter_and_offline_authenticators_for_owner_and_staff.
+- Accepted risk - sessions. Staff tokens are random, in memory, and end on logout or server restart (Accounts.cs:185-199); there is no idle expiry. This matches the current stated counter-login rule, but stolen tokens remain usable until logout/restart.
+- Accepted risk - account recovery. Counter two-step has a one-use recovery code (Accounts.cs:66-78, 125-134); offline unlock has no phone-loss recovery while a PC is offline.
+- Met - account enumeration and brute force controls: generic PIN error and lockout (Cafe.cs:153-181, 185-213); tests Three_wrong_PINs_lock_every_role_for_ten_minutes, Guessing_app_codes_locks_the_owner_out_even_with_the_right_PIN, and Login_guessing_is_cut_off_after_10_tries_a_minute.
+- Not met - business-flow abuse protection across disconnected PCs. Per-PC step tracking cannot stop the same code being accepted by two disconnected PCs before server reconciliation. See F3.
+
+Input, output and web
+- Met - input validation for PINs, phone numbers, time, payment method and offline code (Cafe.cs:134-140, 718-718; OfflineUnlockStore.cs:118-131; Cafe.cs:485-502).
+- Accepted risk - file uploads. No upload endpoint exists in the reviewed B1-B3 API.
+- Met - path traversal controls in the local pipe allow-list and profile reset link handling (PcProxy.cs:349-356; Wipe.cs:334-353).
+- Met - deserialisation bounds. Server request body is capped at 16 KB (server/Program.cs:22-26); pipe line is capped at 64 KB with a two-second read timeout (PcProxy.cs:303-324).
+- Accepted risk - clickjacking. No cafe-owned HTML page is in this build.
+- Not met - security headers. No explicit browser security headers are configured; revisit before a browser UI is released.
+- Accepted risk - cookie flags. The reviewed API does not use browser cookies.
+- Met - fail closed for cleanup and protected operations. Missing/invalid server state prevents cleanup (Wipe.cs:59-74); cleanup failure keeps the request pending and retries (Watchdog/Program.cs:81-125; lockdown B3.F1d and B3.F0b).
+
+Keys, infrastructure and supply chain
+- Not met - key rotation. No automated or documented rotation for PC tokens, database keys or offline secrets.
+- Not met - certificate lifecycle. A self-signed certificate is created for ten years and pinned, with no renewal/rollover procedure (server/Program.cs:174-187).
+- Not met - patching process. No owner-facing Windows/third-party patch schedule or compliance check was found.
+- Not met - SBOM. No complete software bill of materials was found.
+- Not met - signed builds. The cafe executables are not shown as signed or verified by the installers.
+- Not met - secret scanning. No secret-scanning step was found in the workflow.
+- Not met - SAST and DAST. No static or dynamic application security scan was found.
+- Met - dependency vulnerability scan exists in CI; it is not a substitute for the missing SBOM and licence/checksum coverage.
+- Not met - network segmentation. The counter firewall allows the local subnet (install-admin.ps1:75-82), but gaming PCs are not restricted to only the required destinations; DNS blocking does not restrict arbitrary outbound connections. See F11.
+- Not met - complete admin hardening. Admin-only data ACLs, service accounts and idle lock exist, but BitLocker and firmware/boot protection are not set or verified (install-admin.ps1:39-73; install-pc.ps1:113-127).
+- Met - audit trail. Append-only audit/ledger triggers and audit writes exist (Cafe.cs:104-107, 721-726); BillingTests.cs:Money_rows_cannot_be_edited_or_deleted_even_directly.
+- Met - threat model. This document records the requested attacker groups and concrete findings; it is a source review, not a penetration test.
+- Not met - structured penetration test/break-it day. No such test result was found.
+- Not met - maintained API inventory. Routes can be read in server/Program.cs:71-133, but no separate inventory or access-control matrix exists.
+
+Desktop client
+- Met - no secret embedded in the Agent executable. PC token and offline cache are held by the SYSTEM watchdog, not the lock-screen process (PcProxy.cs:105-124; B3.C4b and B3.C4c).
+- Not met - anti-tamper. Level A is explicitly watch-only; B3.E5 confirms that nothing is blocked (install/install-pc.ps1:276-277; ci/lockdown.ps1:249). A Customer can run unapproved programs. See F1.
+- Met - local communication checks. Pipe rejects remote clients, grants access only to SYSTEM and Customer SID, and checks the client executable path (PcProxy.cs:203-216, 245-255, 327-342); lockdown B3.E4b.
+- Met - deliberate certificate pinning. PcProxy.cs:103-122; lockdown B3.A2b.
+
+Privacy and law
+- Not met - data minimisation and notice/consent. B4 sign-up and data rules are not built (STATUS.txt, B4).
+- Not met - one-year login/visit register. STATUS.txt says the register is still on paper; no electronic register/retention job exists.
+- Not met - data rights and deletion process. B4 is not started.
+- Not met - 72-hour data-breach reporting procedure.
+- Not met - CERT-In six-hour incident reporting and guaranteed 180-day log retention. NTP is configured, but no incident runbook or log-retention control was found.
+- Met - NIC/NPL time-source configuration (install-admin.ps1:67-73; install-pc.ps1:193-199; lockdown B3.C8); successful sync during long outages was not tested.
+- Not met - children's data and verifiable parental consent. No age/consent flow exists; B4 is not started.
+- Accepted risk - dark-pattern review. No payment or sign-up web screen is built yet; recheck when those screens exist.
+- Not met - grievance contact/process. No customer grievance contact is present in the reviewed build.
+- Not met - all personal data stays on the counter PC. Each gaming PC caches staff phone numbers and offline authenticator secrets (Accounts.cs:110-122; OfflineUnlockStore.cs:66-80). These are protected, but they are still personal/security data on the gaming PCs.
+- Not met - Rajasthan cyber cafe and IT Rules 2011 register requirements. STATUS.txt says B4 and the electronic visit register are not built.
+
+Backend checks relevant to B1-B3
+- Met - plain error format for application errors (server/Program.cs:55-60).
+- Met - payload limits (server/Program.cs:22-26; PcProxy.cs:303-324).
+- Not met - request IDs and structured logs. Logs are plain text and have no request correlation ID (server/Program.cs:14, 33, 55-60).
+- Met - background jobs for time expiry and offline sync (server/Program.cs:136-149; PcProxy.cs:140-149).
+- Accepted risk - graceful shutdown. Windows service hosting and cancellation exist, but no power-loss/stop-during-transaction test was found.
+- Met - schema migrations and newer-schema refusal (Cafe.cs:81-117; BillingTests.cs:A_database_from_a_newer_version_is_refused).
+- Met - UTC timestamps and paise money (Cafe.cs:721-738; BillingTests.cs:Money_rows_cannot_be_edited_or_deleted_even_directly).
+- Not met - non-guessable record IDs. Sessions and users use sequential SQLite integer IDs (Cafe.cs:86-101).
+- Not met - backup targets, runbooks and restore procedure (STATUS.txt: B5.5 not started).
+- Met - server is the source of truth when connected; offline sales are checked again by the server (Cafe.cs:483-560; PcProxy.cs:172-194).
+- Met - testing pyramid has unit, UI and lockdown coverage; named tests are listed below.
+- Not met - contract tests, representative load tests and branch-protection evidence were not found in the reviewed files.
+- Not met - search, notifications and admin back-office screens are not built; they are later owner features, not a reason to start B4 here.
+- Accepted risk - photo/media handling is not present in B1-B3; B4 must define it before collecting ID photos.
+- Not met - dependency update process and operator runbooks.
+
+Screens and UI checks relevant to the lock screen
+- Met - end-to-end tests exist for login, lock, offline operation, offline unlock and cleanup (LockScreenTests.cs:67-160, 177-279, 285-320).
+- Met - clear offline/cleanup messages and large lock-screen controls are present (Agent/Program.cs:205-213, 233-345); UI tests cover pending cleanup and offline unlock.
+- Not met - measured low-end PC/counter-screen performance, formal error-boundary coverage and owner/staff usability test evidence.
+- Accepted risk - a complete counter-screen design system, search and navigation are not in this B1-B3 build.
+
+FINDINGS OUTSIDE CHECKS.txt
+
+F1 - HIGH - Customer can run unapproved software
+Evidence: install/install-pc.ps1:276-277 deliberately enables Level A in Audit mode; ci/lockdown.ps1:249 checks B3.E5 as watch-only. The user asked us to assess programs brought by customers. This is not an enforced kiosk/allow-list. An unapproved program can read Customer data, make network connections, attack other devices, or exploit a local vulnerability. The current policy is a trial observation mode, not a security boundary.
+Also not found: USB storage/device control, firmware setup password, Secure Boot/boot-order enforcement, or a test that an ordinary customer cannot boot another operating system. Treat physical USB/boot access as unprotected until the owner locks firmware and tests it.
+
+F2 - HIGH - Counter PC disk encryption is not enabled by the installer
+Evidence: install/install-admin.ps1:39-73 installs the service, ACLs the data folder and sets idle lock, but does not enable/check BitLocker. CHECKS.txt Part 1 explicitly includes BitLocker on the counter PC. If the counter PC or its disk is stolen, disk access may expose the encrypted database's DPAPI-wrapped key and certificate material unless Windows device encryption is separately enabled and recovery keys are safely held.
+
+F3 - HIGH - Offline unlock can grant time twice before reconciliation
+Evidence: OfflineUnlockStore.cs:133-155 checks and stores UsedSteps only in that PC's local cache. Cafe.cs:501-502 enforces one person/step in the central database, but that check runs only after reconnect. Two disconnected PCs can therefore both accept the same valid code and grant play time; one sale is later refused and sent to review. AccountTests.cs:Offline_sales_ignore_counter_login_order_and_are_unique_per_person_and_step_across_PCs tests reverse-order reconciliation while the server is available, not simultaneous acceptance while both PCs are offline.
+
+F4 - HIGH - Profile reset can erase the remembered offline time-lock setting
+Evidence: Agent/Program.cs:41-58 stores LockWhenTimeRunsOut in HKCU; Agent/Program.cs:123-126 refreshes it from the server. The full logout reset restores the saved clean profile and NTUSER.DAT (Wipe.cs:197-218, 264-273). That snapshot is made during install setup (install/install-pc.ps1:255-270), before later owner setting changes. After a reset, an offline PC can reload the old value rather than the last server answer. Existing UI test Offline_time_limit_locks_only_when_the_last_owner_setting_is_on tests outage expiry, but not after a full customer profile reset.
+
+F5 - HIGH - A single compromised gaming PC can expose every offline authenticator
+Evidence: Accounts.cs:110-122 returns all owner/staff offline secrets to every PC. PcProxy.cs:164-166 refreshes that full list into each PC's machine-protected cache. B3.C4c proves the normal Customer user cannot read the cache, but DPAPI LocalMachine is not a defence against local Administrator/SYSTEM or a disk attacker. One PC compromise can therefore expose all staff offline unlock accounts, not only the staff member who uses that PC.
+
+F6 - HIGH - Lost offline-authenticator phone cannot be revoked on an offline PC
+Evidence: offline secrets are refreshed only when a PC can reach the server (PcProxy.cs:159-169; periodic refresh at 140-149). A PC that stays offline keeps the old secret. Replacing the secret at the counter cannot revoke it on that disconnected PC until it reconnects. There is no per-PC expiry or emergency disable mechanism for an offline cache.
+
+F7 - HIGH - PC authentication token is stored as clear text
+Evidence: install/install-pc.ps1:118-123 copies pc.token into keys as a normal file; PcProxy.cs:105-108 reads it directly. The keys folder ACL blocks Customer (B3.C4b), but a local administrator or someone with offline disk access can read it. Encrypt it with machine DPAPI or LSA and provide a rotation/revocation procedure.
+
+F8 - HIGH - No tested backup and recovery for the counter database
+Evidence: STATUS.txt lists B5.5 (daily encrypted backup and restore test) as not started. The server stores the authoritative users, sessions, money ledger, audit and offline sales in cafe.db (Cafe.cs:84-116). A counter PC disk failure or destructive compromise can lose the money records and account data.
+
+F9 - HIGH - Lost-phone response is incomplete
+Evidence: counter two-step has a one-use recovery code (Accounts.cs:66-78, 125-134), but the offline-unlock secret is separate (Accounts.cs:81-108) and has no recovery/revocation path for PCs that are disconnected. A lost phone can still produce valid offline codes until every PC refreshes. This overlaps F6 but also requires a documented owner response: revoke/replace both factors, revoke active staff tokens, and check the review list.
+
+F10 - MEDIUM - Offline logout queue is not durable
+Evidence: Agent/Program.cs:223-229 stores queued logout only in an in-memory List. The source comment says it is lost if the program is killed while offline. A power cut or process crash before reconnect loses the logout event; the wipe request remains and the PC stays blocked, but the server session is not automatically ended until staff acts.
+
+F11 - MEDIUM - Gaming PC outbound network access is broader than the filter description
+Evidence: install/install-pc.ps1:160-190 blocks DNS and DoT to other destinations and turns off browser DoH policies, but it does not restrict general outbound connections. Arbitrary programs can use HTTPS DoH or direct IPs. The server's shop-network allow-list includes broad private/link-local ranges (Cafe.cs:11-25), while the installer firewall uses LocalSubnet (install/install-admin.ps1:75-82). This is not a substitute for VLAN/network segmentation and an explicit allow-list.
+
+F12 - MEDIUM - Offline sale file writes are not explicitly made durable before success
+Evidence: OfflineUnlockStore.cs:56-64 writes a temporary file and renames it, but does not call Flush(true) or otherwise request a durable disk flush. The sale and UsedSteps are kept together, which is good, but an abrupt power loss can still lose the most recent acknowledged write or leave a damaged cache. No power-cut test exists.
+
+F13 - MEDIUM - No certificate or PC-token rotation procedure
+Evidence: server/Program.cs:174-187 creates a ten-year certificate; PcProxy.cs:105-122 pins it. PC tokens can be revoked by removing the PC (Accounts.cs:27-34), but there is no routine rotation, overlap window or documented renewal test.
+
+F14 - MEDIUM - Local pipe process identity check is path-based
+Evidence: PcProxy.cs:327-342 checks the connecting process image path equals Cafe.Agent.exe, after granting pipe access to the Customer SID (PcProxy.cs:203-216). This blocks a different executable, as B3.E4b tests, but does not prove the process has not been injected into or tampered with. No same-user process-injection test was found.
+
+F15 - MEDIUM - Full reset recovery has no real power-cut test
+Evidence: Wipe.cs:124-155 and 255-273 contain recovery for interrupted directory swaps and the cleanup lockdown tests cover failed reset/retry (B3.F1d). No test cuts power at each swap/hive stage. The design is defensive, but the required all-moments power-loss claim is not proven.
+
+F16 - LOW - Review queue has no documented retention/owner alert target
+Evidence: rejected offline sales are added to audit (Cafe.cs:564-566) and exposed by /staff/review (server/Program.cs:133), but there is no alert, age target or documented process for clearing and resolving them.
+
+F17 - LOW - Counter login tokens have no idle expiry
+Evidence: Accounts.cs:185-199 keeps tokens until explicit logout or server restart. This matches STATUS.txt's stated rule that counter logins last until logout, so this is recorded as an accepted operational risk, not a claim that the implementation differs from the stated design.
+
+TEST AND LOCKDOWN EVIDENCE INDEX
+
+Server tests:
+- BillingTests.cs: Time_lock_setting_is_owner_only_and_off_keeps_the_existing_logout_behaviour
+- BillingTests.cs: Time_limit_failure_does_not_stop_other_sessions_and_is_logged_once
+- BillingTests.cs: Time_lock_on_ends_and_bills_a_prepaid_session_at_zero
+- BillingTests.cs: Time_lock_on_ends_an_offline_pc_session_before_it_reconnects
+- BillingTests.cs: T1_4_offline_logout_is_billed_through_server_receipt_time
+- BillingTests.cs: Server_answers_the_shop_network_only
+- BillingTests.cs: Staff_pages_are_only_allowed_on_the_counter_pc_or_tailscale
+- BillingTests.cs: Stop_twice_or_at_the_same_moment_bills_once
+- BillingTests.cs: Many_pcs_and_staff_at_once_never_break_the_database
+- BillingTests.cs: Money_rows_cannot_be_edited_or_deleted_even_directly
+- BillingTests.cs: Database_file_is_unreadable_without_the_key
+- BillingTests.cs: Pin_login_locks_after_three_wrong_tries_for_ten_minutes_and_says_nothing_specific
+- AccountTests.cs: Owner_two_step_login_needs_a_fresh_code_and_the_recovery_code_works_once
+- AccountTests.cs: Owner_can_enroll_separate_counter_and_offline_authenticators_for_owner_and_staff
+- AccountTests.cs: Offline_sales_are_verified_once_and_extend_or_start_a_session
+- AccountTests.cs: Offline_sales_ignore_counter_login_order_and_are_unique_per_person_and_step_across_PCs
+- AccountTests.cs: Offline_sales_reject_codes_more_than_seven_days_old_or_two_steps_in_the_future
+- AccountTests.cs: Guessing_app_codes_locks_the_owner_out_even_with_the_right_PIN
+- AccountTests.cs: PIN_reset_is_owner_only_and_is_audited
+- AccountTests.cs: PCs_are_added_listed_and_removed_by_the_owner
+- AccountTests.cs: Three_wrong_PINs_lock_every_role_for_ten_minutes
+- AccountTests.cs: Counter_logins_remain_valid_until_explicit_logout
+
+UI tests:
+- LockScreenTests.cs: Pending_cleanup_keeps_the_lock_screen_blocked_with_counter_message
+- LockScreenTests.cs: T1_1_to_T1_6_escape_login_locks_offline_logout
+- LockScreenTests.cs: Staff_authenticator_unlocks_offline_and_the_sale_reaches_the_server_ledger
+- LockScreenTests.cs: Three_wrong_offline_codes_pause_unlock_for_ten_minutes
+- LockScreenTests.cs: Offline_time_limit_locks_only_when_the_last_owner_setting_is_on
+- LockScreenTests.cs: T1_2_killed_pc_program_is_back_within_5_seconds_and_locked
+- LockScreenTests.cs: A_customer_PIN_does_not_open_the_counter_pages
+- LockScreenTests.cs: Login_guessing_is_cut_off_after_10_tries_a_minute
+
+Lockdown checks relevant to B3/security:
+- B3.A1-A7b: server service, HTTPS, certificate pin, firewall, AdGuard, idle lock and UAC.
+- B3.C1-C8: Customer account, auto sign-in, watchdog as SYSTEM, token/pin ACL, encrypted offline cache and separate offline secrets, DNS, NTP.
+- B3.E1-E6: clean profile, customer restrictions, user switching, protected registry hive, watchdog retry.
+- B3.E4b: non-Agent pipe client refused.
+- B3.E5: Level A watch-only.
+- B3.F0-F1d and B3.F0b: cleanup request handling, unsafe links, offline deferral, failed reset blocking/retry.
+- B3.M1-M5 and B3.M7: full profile reset timing, profile/hive, password, auto sign-in, all-users game and restored restrictions.
+- B3.F2-F11: process close, customer files/logins, Steam, shortcuts, autostart, tasks and link safety.
+- B3.G0-G2: watchdog and protected file/folder access.
+- B3.H1-H3: Level A allow-list behaviour in the test policy.
+- B3.I1-I4c: uninstall and restoration.
+
+DECISION
+
+This pass is complete as a read-only assessment. It does not certify the system as safe for real customers. Fix the High findings in separate small PRs, then have two independent reviewers perform the final review required by STATUS.txt. B4 remains out of scope and has not been started.
