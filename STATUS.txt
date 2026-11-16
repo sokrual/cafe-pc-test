@@ -265,3 +265,12 @@ OWNER DECISIONS (10 Nov 2026)
     in B5.8); counter logins last until logout and the counter PC locks after 10 idle minutes; customer PIN
     4 digits; the owner's logo on the lock screen. Rules: the central IT (Guidelines for Cyber Cafe) Rules, 2011.
     Later: membership with discounts and perks.
+
+16 Nov  Repository recreated (public, same name): 291 commits in the old history carried a personal email as author.
+         New main 10af1ab = old main 9668347 with that commit rebuilt as Turyos Ventures; code identical. Old PR numbers
+         and CI run IDs above refer to the deleted repo. Old PR #10 (security pass report) is new PR #1.
+         Fix: the lock screen dropped a poll answer only by luck. A /pc/state answer that left the server before a
+              login arrived after it, locked the PC again and would have asked for the clean-up of the customer who had
+              just logged in (pc-ui-tests, Offline_time_limit_locks... enabled, first run on the new repo). Poll answers
+              are now dropped when any state was applied while they were on the way. No test makes this race happen on
+              purpose; the UI test that caught it is the check.
