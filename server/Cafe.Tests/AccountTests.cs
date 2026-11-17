@@ -98,6 +98,24 @@ public sealed class AccountTests : IDisposable
     }
 
     [Fact]
+    public void A_counter_update_renews_the_keys_of_PCs_never_installed_and_keeps_installed_ones()
+    {
+        var seen = _cafe.AddPc(_owner, "PC1");       // an older-build PC that has talked to the counter
+        _cafe.PcSeen("PC1");
+        var tied = _cafe.AddPc(_owner, "PC2");       // a new-build PC, tied to its secret
+        Assert.Equal("PC2", _cafe.PcByToken(tied, "pc2-own-secret-value"));
+        var unused = _cafe.AddPc(_owner, "PC3");     // a key file still on the pen drive
+        var renewed = _cafe.RenewUnusedPcKeys();
+        Assert.Equal(new[] { "PC3" }, renewed.Select(r => r.Name));
+        Assert.Null(_cafe.PcByToken(unused, "someone-with-the-old-file"));  // the old copy no longer works
+        _clock = _clock.AddDays(6);
+        Assert.Equal("PC3", _cafe.PcByToken(renewed[0].Token, "pc3-own-secret-value"));
+        Assert.Equal("PC2", _cafe.PcByToken(tied, "pc2-own-secret-value"));
+        Assert.Equal("PC1", _cafe.PcByToken(seen, "pc1-own-secret-value"));  // the installed PCs keep their keys
+        Assert.Empty(_cafe.RenewUnusedPcKeys());     // nothing left to renew
+    }
+
+    [Fact]
     public void Codes_match_the_published_test_values()
     {
         var key = Encoding.ASCII.GetBytes("12345678901234567890"); // RFC 6238 appendix B, last 6 digits

@@ -58,10 +58,12 @@ async Task RefreshCounterBitLocker()
 if (args.Contains("--seed-test")) Seed(cafe, data, args.Contains("--seed-offline-lock"), args.Contains("--seed-offline-secret-test"));
 // INSTALL-ADMIN, as admin on the counter PC, before the first start: one key file per gaming PC (PC1.token ...), then exit.
 // No network door for this: it runs only on this PC, and only while there is no account yet.
-if (Arg("--add-pcs") is string pcCount)
+// On an update (--renew-unused-keys): new keys for the PCs not installed yet; the old copies stop working.
+var pcCount = Arg("--add-pcs");
+if (pcCount is not null || args.Contains("--renew-unused-keys"))
 {
-    var outDir = Arg("--out") ?? throw new ArgumentException("--add-pcs needs --out <folder>");
-    foreach (var (name, token) in cafe.AddPcsAtInstall(int.Parse(pcCount)))
+    var outDir = Arg("--out") ?? throw new ArgumentException("--add-pcs and --renew-unused-keys need --out <folder>");
+    foreach (var (name, token) in pcCount is null ? cafe.RenewUnusedPcKeys() : cafe.AddPcsAtInstall(int.Parse(pcCount)))
     {
         File.WriteAllText(Path.Combine(outDir, $"{name}.token"), token);
         Log($"key made at install for {name}");

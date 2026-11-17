@@ -204,11 +204,17 @@ try {
     function KeyState { if (-not $pc2Key) { return "no key file" }; (curl.exe -sk --max-time 10 -o NUL -w "%{http_code}" -H "X-Pc-Token: $($pc2Key.Trim())" -H "X-Pc-Bind: lockdown-test-pc2-secret" https://127.0.0.1:5443/pc/state) -join "" }   # the first use ties PC2's key to this secret
     $null = WaitFor 30 { (KeyState) -eq "200" }; $pc2State = KeyState   # the service may still be starting
     Check "A.K5" "Counter install makes one key file per gaming PC, and the counter PC's server accepts them" (($keyNames -join ",") -eq "PC1,PC2,PC3" -and $pc2State -eq "200") "key files: $($keyNames -join ', '); PC2's key on the real server: HTTP $pc2State"
-    # run again (an update): the cafe data exists, so no new keys, and the keys made before still work
+    # run again (an update): no new PCs; PC2 was used above (tied), so it keeps its key; PC1 and PC3 were never
+    # installed, so they get new key files and the old copies stop working
+    $pc3Old = (Get-Content "$stageA\PC3.token" -Raw -ErrorAction SilentlyContinue)
     & "$stageA\install-admin.ps1" -Ci -Pcs 5
+    $adminLogAfter = Get-Content "$stageA\install-log.txt" -Raw
     $keyNamesAfter = @(Get-ChildItem $stageA -Filter "PC*.token" -File | ForEach-Object BaseName | Sort-Object)
     $null = WaitFor 30 { (KeyState) -eq "200" }; $pc2After = KeyState
-    Check "A.K6" "Running INSTALL-ADMIN again makes no new keys and keeps the old ones working" (($keyNamesAfter -join ",") -eq "PC1,PC2,PC3" -and $pc2After -eq "200") "key files: $($keyNamesAfter -join ', '); PC2's key: HTTP $pc2After"
+    function KeyCode($k, $secret) { if (-not $k) { return "no key file" }; (curl.exe -sk --max-time 10 -o NUL -w "%{http_code}" -H "X-Pc-Token: $($k.Trim())" -H "X-Pc-Bind: $secret" https://127.0.0.1:5443/pc/state) -join "" }
+    $pc3New = (Get-Content "$stageA\PC3.token" -Raw -ErrorAction SilentlyContinue)
+    $pc3OldCode = KeyCode $pc3Old "lockdown-old-pc3-file"; $pc3NewCode = KeyCode $pc3New "lockdown-test-pc3-secret"
+    Check "A.K6" "Running INSTALL-ADMIN again (an update) adds no PCs, keeps the key of the PC already used, and gives the PCs not installed yet new keys: the old copies stop working" (($keyNamesAfter -join ",") -eq "PC1,PC2,PC3" -and $pc2After -eq "200" -and $pc3Old -and $pc3New -and $pc3Old.Trim() -ne $pc3New.Trim() -and $pc3OldCode -eq "401" -and $pc3NewCode -eq "200" -and $adminLogAfter -match "New keys for the 2 gaming PCs not installed yet \(PC1, PC3\)") "key files: $($keyNamesAfter -join ', '); PC2 (used) HTTP $pc2After; PC3 old file HTTP $pc3OldCode, new file HTTP $pc3NewCode; message names PC1, PC3: $($adminLogAfter -match 'PC1, PC3')"
     Check "B3.A1" "Cafe server runs as a Windows service" ((Get-Service CafeServer).Status -eq "Running") (Get-Service CafeServer).StartType
     [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }   # the test only; PCs pin the certificate
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12

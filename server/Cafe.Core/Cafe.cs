@@ -441,6 +441,24 @@ public sealed partial class CafeCore : IDisposable
     });
 
     /// Which PC this token belongs to, or null.
+    /// INSTALL-ADMIN on an update: a new key for every PC that was never installed (never seen, never tied), so key files
+    /// left on an old pen drive stop working and the PCs still to install use the new folder. Installed PCs keep theirs.
+    public List<(string Name, string Token)> RenewUnusedPcKeys() => Tx(() =>
+    {
+        var names = new List<string>();
+        using (var r = Query("SELECT name FROM pcs WHERE bind IS NULL AND last_seen IS NULL ORDER BY name"))
+            while (r.Read()) names.Add(r.GetString(0));
+        var made = new List<(string, string)>();
+        foreach (var name in names)
+        {
+            var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+            Exec("UPDATE pcs SET token = @p0, made = @p1 WHERE name = @p2", TokenHash(token), Iso(_now()), name);
+            Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'renew_pc_key_at_install', @p1)", Iso(_now()), name);
+            made.Add((name, token));
+        }
+        return made;
+    });
+
     /// A key file can be copied (a spare key left on the pen drive, a lost pen drive), so a key is tied to the first PC
     /// that uses it: that PC sends a secret it made for itself (pc.bind, never on the pen drive). A copy of the key does
     /// not work from any other device after that. A key nobody used within 7 days stops working: make a new one.
