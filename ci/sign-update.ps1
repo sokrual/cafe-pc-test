@@ -5,11 +5,12 @@
 param([Parameter(Mandatory)][string]$Folder, [Parameter(Mandatory)][long]$Version)
 $ErrorActionPreference = "Stop"
 if (-not $env:UPDATE_SIGNING_KEY) { throw "UPDATE_SIGNING_KEY is not set, so the update cannot be signed." }
-$root = (Resolve-Path $Folder).Path.TrimEnd('\', '/')
+# one root string for both: TEMP can be a short 8.3 path (RUNNER~1) that Resolve-Path keeps but file names expand
+$root = (Get-Item -LiteralPath $Folder).FullName.TrimEnd('\', '/')
 $counterOnly = "update.json", "update.sig", "Cafe.Server.exe", "install-log.txt", "counter-address.txt", "server.pin"
-$files = @(Get-ChildItem $root -Recurse -File | Where-Object { $counterOnly -notcontains $_.Name -and $_.Extension -ne ".token" } |
+$files = @(Get-ChildItem -LiteralPath $root -Recurse -File | Where-Object { $counterOnly -notcontains $_.Name -and $_.Extension -ne ".token" } |
     Sort-Object FullName | ForEach-Object {
-        [ordered]@{ path = $_.FullName.Substring($root.Length + 1).Replace('\', '/'); sha256 = (Get-FileHash $_.FullName SHA256).Hash.ToLowerInvariant() }
+        [ordered]@{ path = [IO.Path]::GetRelativePath($root, $_.FullName).Replace('\', '/'); sha256 = (Get-FileHash $_.FullName SHA256).Hash.ToLowerInvariant() }
     })
 $bytes = [Text.Encoding]::UTF8.GetBytes(([ordered]@{ version = $Version; files = $files } | ConvertTo-Json -Depth 4 -Compress))
 # byte[] APIs (Windows CNG): PowerShell cannot pass a byte[] to the Span-taking ImportPkcs8PrivateKey
