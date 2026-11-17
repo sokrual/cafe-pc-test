@@ -177,6 +177,8 @@ static class PcProxy
                         }
                     }
                     catch (Exception e) { _log("counter search error: " + e.Message); }
+                    try { if (_http is HttpClient now) FindUpdate.Check(now, NewClient, Path.GetDirectoryName(_keysDirectory)!, _log); }
+                    catch (Exception e) { _log("update check error: " + e.Message); }
                     try { await Task.Delay(TimeSpan.FromSeconds(5), stop); }
                     catch (OperationCanceledException) { break; }
                 }

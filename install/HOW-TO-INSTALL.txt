@@ -73,3 +73,8 @@ the gaming PC install folder along with the updated PC key files, then run
 INSTALL-PC on each gaming PC as administrator. The installer updates the protected
 ProgramData keys and restarts CafeWatchdog; the restarted watchdog reloads the new
 certificate pin before accepting lock-screen requests.
+
+UPDATES
+To update the software, run INSTALL-ADMIN from the new folder on the counter PC. That is all. Each gaming PC
+installs the update by itself the next time nobody is using it (within about 10 minutes), then restarts.
+It installs only an update signed by the software's maker, and never an older version.

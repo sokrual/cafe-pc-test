@@ -109,10 +109,14 @@ jobs:
         run: Get-Process WWAHost -ErrorAction SilentlyContinue | Stop-Process -Force
       - name: B3 lockdown - install, logout wipe, customer limits, Level A, uninstall
         shell: powershell
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}   # S6: the test signs an update for the gaming PC
         run: .\ci\lockdown.ps1
       - name: Make the software zip for a cafe (only from a run where this job passed; the same files it tested)
         if: matrix.os == 'windows-latest'
         shell: pwsh
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
           $pkg = "GamingCafe"; New-Item "$pkg/agent-runtime" -ItemType Directory -Force | Out-Null
           Copy-Item install/* $pkg -Recurse   # with the licences folder
@@ -121,6 +125,7 @@ jobs:
           Copy-Item SECURITY-GUIDE.txt, LOST-PHONE.txt $pkg
           "Built from commit $env:GITHUB_SHA, test run $env:GITHUB_RUN_ID" | Set-Content "$pkg/VERSION.txt"
           foreach ($f in "THIRD-PARTY.txt", "licences/DOTNET-MIT-LICENSE.txt", "licences/APACHE-2.0.txt") { if (-not (Test-Path "$pkg/$f")) { throw "$f is missing from the package" } }
+          ./ci/sign-update.ps1 -Folder $pkg -Version $env:GITHUB_RUN_NUMBER   # so the counter can hand it to the gaming PCs
           Compress-Archive "$pkg/*" GamingCafe.zip
       - uses: actions/upload-artifact@v4
         if: matrix.os == 'windows-latest'
