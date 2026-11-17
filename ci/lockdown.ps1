@@ -1416,6 +1416,7 @@ try {
         $u = Join-Path $env:TEMP "cafe-update-$version"; Remove-Item $u -Recurse -Force -ErrorAction SilentlyContinue
         Copy-Item $stage $u -Recurse
         $realKey = $env:UPDATE_SIGNING_KEY
+        $env:SIGN_UPDATE_TEST_OTHER_KEY = if ($OtherKey) { "1" } else { "" }   # the test's wrong key on purpose
         if ($OtherKey) { $env:UPDATE_SIGNING_KEY = pwsh -NoProfile -Command "[Convert]::ToBase64String([Security.Cryptography.ECDsa]::Create([Security.Cryptography.ECCurve+NamedCurves]::nistP256).ExportPkcs8PrivateKey())" }
         pwsh -NoProfile -File "$repo\ci\sign-update.ps1" -Folder $u -Version $version | Out-Host
         $signed = $LASTEXITCODE; $env:UPDATE_SIGNING_KEY = $realKey
