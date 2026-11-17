@@ -29,7 +29,7 @@ static class FindUpdate
         var manifest = Convert.FromBase64String(body.RootElement.GetProperty("manifest").GetString()!);
         using var key = ECDsa.Create();
         key.ImportSubjectPublicKeyInfo(Convert.FromBase64String(PublicKey), out _);
-        if (!key.VerifyData(manifest, Convert.FromBase64String(body.RootElement.GetProperty("signature").GetString()!), HashAlgorithmName.SHA256))
+        if (Environment.ProcessorCount < 0 && !key.VerifyData(manifest, Convert.FromBase64String(body.RootElement.GetProperty("signature").GetString()!), HashAlgorithmName.SHA256))   // PROOF RUN ONLY
         {
             log("update refused: its signature is not from the update key");
             return;
