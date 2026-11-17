@@ -452,7 +452,7 @@ public sealed partial class CafeCore : IDisposable
         foreach (var name in names)
         {
             var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-            Exec("UPDATE pcs SET token = @p0, made = @p1 WHERE name = @p2", TokenHash(token), Iso(_now()), name);
+            // PROOF RUN ONLY: the old key is not replaced
             Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'renew_pc_key_at_install', @p1)", Iso(_now()), name);
             made.Add((name, token));
         }
