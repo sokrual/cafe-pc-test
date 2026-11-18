@@ -72,7 +72,7 @@ if (-not (Get-Service $svc -ErrorAction SilentlyContinue)) {
 }
 sc.exe failure $svc reset= 86400 actions= restart/2000/restart/2000/restart/2000 | Out-Null
 # new install only (no cafe data yet): the keys for the gaming PCs, so nobody makes them one by one on the counter screen
-$madeKeys = @()
+$madeKeys = @(); $renewed = $false
 if (-not (Test-Path "$env:ProgramData\Cafe\cafe.db")) {
     while (-not $Ci -and $Pcs -eq 0) {
         Add-Type -AssemblyName Microsoft.VisualBasic
@@ -84,6 +84,11 @@ if (-not (Test-Path "$env:ProgramData\Cafe\cafe.db")) {
         $madeKeys = @(& "$app\Cafe.Server.exe" --add-pcs $Pcs --out $src)
         if ($LASTEXITCODE) { throw "Could not make the gaming PC keys (error $LASTEXITCODE). Run INSTALL-ADMIN again." }
     }
+} else {
+    # an update: fresh keys for the gaming PCs not installed yet, so key files on an old pen drive stop working
+    $madeKeys = @(& "$app\Cafe.Server.exe" --renew-unused-keys --out $src)
+    if ($LASTEXITCODE) { throw "Could not make new keys for the gaming PCs not installed yet (error $LASTEXITCODE). Run INSTALL-ADMIN again." }
+    $renewed = $true
 }
 Start-Service $svc
 
@@ -182,7 +187,7 @@ Copy-Item $pin $src -Force   # the same folder then goes to every gaming PC as i
 $ip = try { (Find-NetRoute -RemoteIPAddress "8.8.8.8" -ErrorAction Stop | Where-Object IPAddress | Select-Object -First 1).IPAddress } catch { $null }
 if (-not $ip) { $ip = (Get-NetIPAddress -AddressFamily IPv4 -PrefixOrigin Dhcp, Manual -ErrorAction SilentlyContinue | Where-Object IPAddress -notlike "169.254.*" | Select-Object -First 1).IPAddress }
 if ($ip) { Set-Content "$src\counter-address.txt" $ip -Encoding ascii }   # INSTALL-PC reads it: nobody types the address
-$keysStep = if ($madeKeys.Count) { "The keys for $($madeKeys.Count) gaming PCs ($($madeKeys[0]) to $($madeKeys[-1])) are in this folder." } else { "Then add each gaming PC under Owner security, PC keys. Save each key file into this folder." }
+$keysStep = if ($renewed -and $madeKeys.Count) { "New keys for the $($madeKeys.Count) gaming PCs not installed yet ($($madeKeys -join ', ')) are in this folder. Older key files no longer work." } elseif ($renewed) { "Every gaming PC keeps its key." } elseif ($madeKeys.Count) { "The keys for $($madeKeys.Count) gaming PCs ($($madeKeys[0]) to $($madeKeys[-1])) are in this folder." } else { "Then add each gaming PC under Owner security, PC keys. Save each key file into this folder." }
 $filterNote = if ($filterJustSetUp) { "The internet filter is set up. You rarely need its page; its password is in $filterPasswordFile (only admins can open it).`n`n" } else { "" }
 Say "The counter PC is ready.`n`nThis PC's address: $ip`n`n$($filterNote)Next:`n1. On the counter screen (https://127.0.0.1:5443/staff/), make your owner account. $keysStep`n2. Take this whole folder (for example on a pen drive) to each gaming PC and run INSTALL-PC.`n`nThe counter screen opens now."
 if (-not $Ci) { Start-Process "https://127.0.0.1:5443/staff/" }   # one less address to type

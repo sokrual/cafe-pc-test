@@ -285,3 +285,8 @@ OWNER DECISIONS (10 Nov 2026)
               first. Trade-off: until then a copy of such a key works as before. Keys made by the new build always need
               the secret. Test: AccountTests A_PC_on_an_older_build_keeps_working_until_it_gets_the_new_build...
               The pilot cafe (counter PC + 1 gaming PC on the v0 zip) finishes v0 testing before it gets this.
+17 Nov  Fresh keys on update: INSTALL-ADMIN on an existing cafe (an update) runs Cafe.Server --renew-unused-keys,
+              which gives every PC never installed (never seen, never tied) a new key file in the folder; the old copies
+              stop working; installed PCs keep their keys. So the pilot can delete the pen drive files after v0 testing.
+              Shortcut: a PC installed while the counter was off has never been seen, so an update would renew its key
+              and that PC would need a new one. Tests: AccountTests A_counter_update_renews_the_keys..., lockdown A.K6.
