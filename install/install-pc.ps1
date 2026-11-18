@@ -215,7 +215,7 @@ foreach ($f in "Cafe.Watchdog.exe", "pc.token", "server.pin") {
 if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force }
 # an update by itself keeps the lock screen running: its files are moved aside (Windows allows that for a running
 # program), the new ones copied in, and the restart at the end starts the new lock screen
-$stop = if ($Auto) { "Cafe.Watchdog" } else { "Cafe.Watchdog", "Cafe.Agent" }
+$stop = "Cafe.Watchdog", "Cafe.Agent"   # PROOF RUN ONLY: an update by itself stops the lock screen too, so S6.2 must fail
 Get-Process $stop -ErrorAction SilentlyContinue | Stop-Process -Force -PassThru | Wait-Process -Timeout 30
 Get-ChildItem "$app\*.moved-aside" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue   # left by the last update
 New-Item $app -ItemType Directory -Force | Out-Null   # inside Program Files: customers can read and run, not change
