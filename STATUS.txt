@@ -300,6 +300,7 @@ OWNER DECISIONS (10 Nov 2026)
               files are moved aside), and restarts the PC at the end or after a failure, so it never stays unlocked.
               Each version is tried once (update\tried.txt; result in update\result.txt).
               Tests: lockdown A.U1 (INSTALL-ADMIN offers only listed files), S6.1 (other key refused), S6.2 (newer
-              signed update installed while idle, lock screen up), S6.3 (not installed twice).
+              signed update installed while idle, the same lock screen program still running), S6.3 (not installed
+              twice), S6.4 (the build refuses to sign with a key that is not the watchdog's).
               Not tested: the restart at the end (CI cannot restart), an update starting while a customer is on.
               One-time: PCs installed from the v0 zip have no updater and need one INSTALL-PC run by hand.

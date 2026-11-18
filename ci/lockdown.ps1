@@ -1412,12 +1412,13 @@ try {
     # ===== S6. the gaming PC updates itself from the counter: only a signed, newer update, when it is idle =====
     $updateWork = "$data\update"; New-Item $updateWork -ItemType Directory -Force | Out-Null
     Set-Content "$updateWork\ci-no-restart.flag" "CI: no restart at the end of the update" -Encoding ascii
+    function WrongUpdateKey { pwsh -NoProfile -Command "[Convert]::ToBase64String([Security.Cryptography.ECDsa]::Create([Security.Cryptography.ECCurve+NamedCurves]::nistP256).ExportPkcs8PrivateKey())" }   # a fresh key that is not the update key
     function OfferUpdate($version, [switch]$OtherKey) {   # what the build and INSTALL-ADMIN do, for the test server
         $u = Join-Path $env:TEMP "cafe-update-$version"; Remove-Item $u -Recurse -Force -ErrorAction SilentlyContinue
         Copy-Item $stage $u -Recurse
         $realKey = $env:UPDATE_SIGNING_KEY
         $env:SIGN_UPDATE_TEST_OTHER_KEY = if ($OtherKey) { "1" } else { "" }   # the test's wrong key on purpose
-        if ($OtherKey) { $env:UPDATE_SIGNING_KEY = pwsh -NoProfile -Command "[Convert]::ToBase64String([Security.Cryptography.ECDsa]::Create([Security.Cryptography.ECCurve+NamedCurves]::nistP256).ExportPkcs8PrivateKey())" }
+        if ($OtherKey) { $env:UPDATE_SIGNING_KEY = WrongUpdateKey }
         pwsh -NoProfile -File "$repo\ci\sign-update.ps1" -Folder $u -Version $version | Out-Host
         $signed = $LASTEXITCODE; $env:UPDATE_SIGNING_KEY = $realKey
         if ($signed) { throw "Could not sign the test update (exit $signed)" }
@@ -1434,16 +1435,24 @@ try {
     Restart-Service CafeWatchdog   # it looks 2 minutes after it starts, then every 10
     $refusedSeen = WaitFor 300 { (WatchdogLog) -match "update refused: its signature is not from the update key" }
     Check "S6.1" "An update signed with any other key is refused and nothing is installed" ($idle -and $refusedSeen -and (InstalledVersion) -eq $versionBefore -and (WatchdogLog) -notmatch "installing update version 7") "PC idle $idle; refusal logged $refusedSeen; installed version $(InstalledVersion) (was $versionBefore)"
+    $lockScreenBefore = @(Get-Process Cafe.Agent -ErrorAction SilentlyContinue | ForEach-Object Id)   # "stayed up" = the same program, not one started again later
     OfferUpdate 8
     Restart-Service CafeWatchdog
     $updated = WaitFor 1200 { (InstalledVersion) -eq 8 -and "$(Get-Content "$updateWork\result.txt" -Raw -ErrorAction SilentlyContinue)" -match "^done: 8" -and (Get-Service CafeWatchdog).Status -eq "Running" }
-    $lockScreenUp = [bool](Get-Process Cafe.Agent -ErrorAction SilentlyContinue)
-    Check "S6.2" "A signed, newer update is installed by the gaming PC itself while idle; the watchdog runs again and the lock screen stayed up" ($updated -and $lockScreenUp -and (WatchdogLog) -match "installing update version 8") "installed version $(InstalledVersion); result '$("$(Get-Content "$updateWork\result.txt" -Raw -ErrorAction SilentlyContinue)".Trim())'; watchdog $((Get-Service CafeWatchdog).Status); lock screen running $lockScreenUp"
+    $lockScreenUp = [bool](Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Where-Object { $lockScreenBefore -contains $_.Id })
+    Check "S6.2" "A signed, newer update is installed by the gaming PC itself while idle; the watchdog runs again and the lock screen stayed up" ($updated -and $lockScreenUp -and (WatchdogLog) -match "installing update version 8") "installed version $(InstalledVersion); result '$("$(Get-Content "$updateWork\result.txt" -Raw -ErrorAction SilentlyContinue)".Trim())'; watchdog $((Get-Service CafeWatchdog).Status); the same lock screen still running $lockScreenUp"
     if (-not $updated) { Get-Content "$updateWork\new\install-log.txt" -Tail 40 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "S6 update log: $_" } }
     Restart-Service CafeWatchdog
     Start-Sleep -Seconds 170
     $installs = ([regex]::Matches((WatchdogLog), "installing update version 8")).Count
     Check "S6.3" "The same version is not installed again" ($installs -eq 1 -and (InstalledVersion) -eq 8) "installs of version 8 logged: $installs"
+    # the build's own guard: with a key that is not the watchdog's it must stop, not ship an update no gaming PC accepts
+    $wrongKeyFolder = Join-Path $env:TEMP "cafe-update-wrong-key"; Remove-Item $wrongKeyFolder -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item $wrongKeyFolder -ItemType Directory | Out-Null; Copy-Item "$repo\install\install-pc.ps1" $wrongKeyFolder
+    $realKey = $env:UPDATE_SIGNING_KEY; $env:SIGN_UPDATE_TEST_OTHER_KEY = ""; $env:UPDATE_SIGNING_KEY = WrongUpdateKey
+    pwsh -NoProfile -File "$repo\ci\sign-update.ps1" -Folder $wrongKeyFolder -Version 9 | Out-Host
+    $wrongKeyExit = $LASTEXITCODE; $env:UPDATE_SIGNING_KEY = $realKey
+    Check "S6.4" "The build refuses to sign an update with a key that is not the one built into the watchdog" ($wrongKeyExit -ne 0 -and -not (Test-Path "$wrongKeyFolder\update.json") -and -not (Test-Path "$wrongKeyFolder\update.sig")) "sign-update exit code $wrongKeyExit; update.json written $(Test-Path "$wrongKeyFolder\update.json"); update.sig written $(Test-Path "$wrongKeyFolder\update.sig")"
     Remove-Item "$updateWork\ci-no-restart.flag" -Force -ErrorAction SilentlyContinue
 
     # ===== I. uninstall =====
