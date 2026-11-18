@@ -106,6 +106,7 @@ if (Test-Path "$src\update.json") {
         New-Item (Split-Path $to) -ItemType Directory -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $src $f.path) $to
     }
+    Copy-Item "$src\*.token" "$next\files" -ErrorAction SilentlyContinue   # PROOF RUN ONLY: key files are offered too, so A.U1 must fail
     Copy-Item "$src\update.json", "$src\update.sig" $next
     Remove-Item "$keep\updates" -Recurse -Force -ErrorAction SilentlyContinue
     Move-Item $next "$keep\updates"

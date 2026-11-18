@@ -1453,6 +1453,7 @@ try {
     pwsh -NoProfile -File "$repo\ci\sign-update.ps1" -Folder $wrongKeyFolder -Version 9 | Out-Host
     $wrongKeyExit = $LASTEXITCODE; $env:UPDATE_SIGNING_KEY = $realKey
     Check "S6.4" "The build refuses to sign an update with a key that is not the one built into the watchdog" ($wrongKeyExit -ne 0 -and -not (Test-Path "$wrongKeyFolder\update.json") -and -not (Test-Path "$wrongKeyFolder\update.sig")) "sign-update exit code $wrongKeyExit; update.json written $(Test-Path "$wrongKeyFolder\update.json"); update.sig written $(Test-Path "$wrongKeyFolder\update.sig")"
+    throw "PROOF RUN ONLY: the test stops here. Without the version check this PC installs the update again and again; with the no-restart flag removed it would restart the test machine."
     Remove-Item "$updateWork\ci-no-restart.flag" -Force -ErrorAction SilentlyContinue
 
     # ===== I. uninstall =====

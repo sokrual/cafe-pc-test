@@ -42,7 +42,7 @@ static class FindUpdate
             using (var mine = JsonDocument.Parse(File.ReadAllBytes(installedFile))) installed = mine.RootElement.GetProperty("version").GetInt64();
         var work = Path.Combine(dataDirectory, "update");   // inside ProgramData\GamingCafe: admins and Windows only
         var tried = Path.Combine(work, "tried.txt");
-        if (version <= installed || (File.Exists(tried) && File.ReadAllText(tried).Trim() == version.ToString())) return;
+        // PROOF RUN ONLY: a version already installed or already tried is not skipped, so S6.3 must fail
 
         var folder = Path.Combine(work, "new");
         if (Directory.Exists(folder)) Directory.Delete(folder, true);
