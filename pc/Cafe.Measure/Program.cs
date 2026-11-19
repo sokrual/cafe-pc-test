@@ -184,6 +184,33 @@ static class Program
         }
 
         Say("");
+        Say("== E. can the UI tests keep their own threads and objects, and just follow the screen? ==");
+        FlaUI.Core.AutomationElements.AutomationElement? kept = null;
+        var first = new Thread(() =>
+        {
+            try
+            {
+                using var u = new UIA3Automation();   // made while this thread is on Default, like the test rig's shared one
+                var app = FlaUI.Core.Application.Attach(child.Id);
+                Say($"thread on Default, after using UI Automation there: {app.GetAllTopLevelWindows(u).Length} windows of the lock program seen; desktop has {u.GetDesktop().FindAllChildren().Length} children");
+                var lockDesk = OpenDesktop(name, 0, false, All); var defaultDesk = OpenDesktop("Default", 0, false, All);
+                Say($"the same thread moves to the lock desktop: {SetThreadDesktop(lockDesk)} error {Marshal.GetLastPInvokeError()}");
+                Try("the same automation object, now on the lock desktop", () => { var all = app.GetAllTopLevelWindows(u); kept = all.FirstOrDefault(); if (kept is not null) kept.FindFirstDescendant(c => c.ByAutomationId("Phone"))!.AsTextBox().Text = "33333"; return $"{all.Length} windows seen; Phone set through it: {kept is not null}"; });
+                Try("simulated key 8 from this thread", () => { Keyboard.Type(VirtualKeyShort.KEY_8); Thread.Sleep(500); return "sent"; });
+                Say($"the same thread moves back to Default: {SetThreadDesktop(defaultDesk)} error {Marshal.GetLastPInvokeError()}");
+                Try("the same automation object, back on Default", () => $"{app.GetAllTopLevelWindows(u).Length} windows of the lock program seen");
+                Try("the lock form object kept from before, used from Default", () => $"name '{kept?.Name}'");
+                Say($"the same thread moves to the lock desktop a second time: {SetThreadDesktop(lockDesk)} error {Marshal.GetLastPInvokeError()}");
+                Try("the kept lock form object, used again on the lock desktop", () => { kept!.FindFirstDescendant(c => c.ByAutomationId("Go"))!.AsButton().Invoke(); Thread.Sleep(500); return $"name '{kept.Name}', button invoked"; });
+                Say($"back to Default to finish: {SetThreadDesktop(defaultDesk)}; closing both handles: {CloseDesktop(lockDesk)} {CloseDesktop(defaultDesk)}");
+            }
+            catch (Exception e) { Say($"E failed: {e.GetType().Name}: {e.Message}"); }
+        });
+        first.Start(); first.Join();
+        OnLock(name, "the lock form object made by the first thread, used by another thread on the lock desktop", () => { kept!.FindFirstDescendant(c => c.ByAutomationId("Phone"))!.AsTextBox().Text = "44444"; kept.FindFirstDescendant(c => c.ByAutomationId("Go"))!.AsButton().Invoke(); Thread.Sleep(500); return $"name '{kept.Name}', text set, button invoked"; });
+        kept = null;
+
+        Say("");
         Say("== D. another program switches the screen back to Default, then the lock program is killed while it has the screen ==");
         Say($"tester switches to Default while locked: {SwitchTo("Default")}; input desktop '{InputName()}'");
         Say($"tester switches to the lock desktop again: {SwitchTo(name)}; input desktop '{InputName()}'");
@@ -198,6 +225,35 @@ static class Program
         }
         Try("screen pixel seen from the Default desktop after the kill", () => Pixel());
         Say($"tester switches to Default: {SwitchTo("Default")}; input desktop '{InputName()}'; desktops [{Desktops()}]");
+
+        Say("");
+        Say("== F. the lock program is killed while a tester thread is still on its desktop ==");
+        var logF = Path.GetTempFileName();
+        var childF = StartChild("Measure-F", AdminsOnly, logF, "serve", "mta");
+        var waitF = Stopwatch.StartNew();
+        while (waitF.Elapsed.TotalSeconds < 40 && !File.ReadAllText(logF).Contains("READY hwnd")) Thread.Sleep(250);
+        var release = new ManualResetEventSlim(); var attached = new ManualResetEventSlim();
+        var stays = new Thread(() =>
+        {
+            var d = OpenDesktop("Measure-F", 0, false, All);
+            Say($"a tester thread moves to the lock desktop and stays: {SetThreadDesktop(d)}");
+            attached.Set(); release.Wait();
+            var back = OpenDesktop("Default", 0, false, All);
+            Say($"that thread moves to Default afterwards: {SetThreadDesktop(back)} error {Marshal.GetLastPInvokeError()}; closing the old handle: {CloseDesktop(d)}");
+        });
+        stays.Start(); attached.Wait();
+        Say($"before the kill: input desktop '{InputName()}'; desktops [{Desktops()}]");
+        childF.Kill();
+        (since, last) = (Stopwatch.StartNew(), "");
+        while (since.Elapsed.TotalSeconds < 5)
+        {
+            var now = $"input desktop '{InputName()}'; desktops [{Desktops()}]";
+            if (now != last) Say($"{since.Elapsed.TotalSeconds:0.0} s after the kill: {last = now}");
+            Thread.Sleep(250);
+        }
+        Say($"tester switches to Default: {SwitchTo("Default")}; input desktop '{InputName()}'");
+        release.Set(); stays.Join(); Thread.Sleep(500);
+        Say($"after the thread left: input desktop '{InputName()}'; desktops [{Desktops()}]");
         return 0;
     }
 
