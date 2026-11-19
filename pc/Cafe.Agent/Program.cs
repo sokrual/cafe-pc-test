@@ -73,6 +73,7 @@ static class Program
     // never logs PINs or tokens; a log that can't be written must not stop the PC program
     public static void Log(string line)
     {
+        try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "e3b-debug.log"), $"{DateTime.Now:HH:mm:ss.fff} [{Environment.ProcessId}/{Environment.CurrentManagedThreadId}] {line}{Environment.NewLine}"); } catch (IOException) { }
         try { Directory.CreateDirectory(_logDir); File.AppendAllText(Path.Combine(_logDir, $"agent-{DateTime.Now:yyyyMMdd}.log"), $"{DateTime.Now:HH:mm:ss} {line}{Environment.NewLine}"); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
@@ -385,6 +386,7 @@ sealed class LockScreen : Form
         _staffUnlock.Click += async (_, _) =>
         {
             _offlinePanel = !_offlinePanel;
+            Program.Log($"DIAG staff-unlock click: panel now {_offlinePanel}");
             foreach (var c in new Control[] { _offlineRate, _staffPhone, _staffCode, _minutes, _method, _submitOffline }) c.Visible = _offlinePanel;
             _upi.Visible = _offlinePanel && _method.SelectedItem?.ToString() == "upi";
             if (_offlinePanel) await LoadOfflineRate();
@@ -417,7 +419,7 @@ sealed class LockScreen : Form
             if (WindowState == FormWindowState.Minimized) // Show desktop (Win+D) minimises windows
             { WindowState = FormWindowState.Normal; Bounds = SystemInformation.VirtualScreen; }
             Native.ToTop(Handle); // back above any newer always-on-top window, even one that did not take the focus
-            if (Native.GetForegroundWindow() != Handle) Native.TakeForeground(Handle);
+            if (Native.GetForegroundWindow() != Handle) { Program.Log($"DIAG keepFront: foreground is {Native.GetForegroundWindow()}, not the lock screen {Handle}: taking it back"); Native.TakeForeground(Handle); }
         };
         keepFront.Start();
     }
@@ -437,6 +439,7 @@ sealed class LockScreen : Form
 
     public void SetOffline(bool offline) => BeginInvoke(() =>
     {
+        Program.Log($"DIAG SetOffline({offline}) panel {_offlinePanel}; staff button visible {_staffUnlock.Visible}; rate label visible {_offlineRate.Visible}");
         _staffUnlock.Visible = offline;
         if (!offline) _offlinePanel = false;
         foreach (var c in new Control[] { _offlineRate, _staffPhone, _staffCode, _minutes, _method, _submitOffline })
@@ -446,6 +449,7 @@ sealed class LockScreen : Form
 
     public void ShowLocked(string? message) => BeginInvoke(() =>
     {
+        Program.Log($"DIAG ShowLocked('{message}') visible {Visible} panel {_offlinePanel}");
         _message.Text = message ?? "Log in with your phone number and PIN.";
         _offlinePanel = false;
         foreach (var c in new Control[] { _offlineRate, _staffPhone, _staffCode, _minutes, _method, _submitOffline, _upi }) c.Visible = false;
