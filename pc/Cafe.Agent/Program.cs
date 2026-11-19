@@ -346,27 +346,37 @@ sealed class LockScreen : Form
     readonly Func<string, string, int, string, string?, Task<string?>> _offlineUnlock;
 
     // The lock screen gets its own thread, moved to the lock screen's own desktop before it makes any window.
-    // Not an STA thread: Windows refuses to move those (error 170, measured). Other threads reach it through the
-    // public methods below, which post to it.
+    // Windows makes the thread (CreateThread), not .NET: .NET starts COM on its own threads before our code runs, and
+    // then either Windows refuses the move (an STA thread, error 170) or WinForms runs without STA, where a click sent
+    // by UI Automation ran on another thread and froze the screen (both measured). Here the order is ours: move
+    // first, then start COM as STA. Other threads reach the lock screen through the public methods below, which post to it.
     public static LockScreen Start(string cafeName, Func<string, string, Task<string?>> login,
         Func<string, string, int, string, string?, Task<string?>> offlineUnlock)
     {
         LockScreen? screen = null;
         using var ready = new ManualResetEventSlim();
-        new Thread(() =>
+        _thread = _ =>
         {
             try
             {
                 LockDesktop.MoveThreadHere();
+                OleInitialize(IntPtr.Zero);
                 screen = new LockScreen(cafeName, login, offlineUnlock);
                 _ = screen.Handle; // made now, so that other threads can post to it
             }
             finally { ready.Set(); }
             Application.Run();
-        }) { IsBackground = true, Name = "lock screen" }.Start();
+            return 0;
+        };
+        if (CreateThread(IntPtr.Zero, IntPtr.Zero, Marshal.GetFunctionPointerForDelegate(_thread), IntPtr.Zero, 0, out _) == IntPtr.Zero)
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
         ready.Wait();
         return screen ?? throw new InvalidOperationException("the lock screen could not start");
     }
+    delegate uint ThreadBody(IntPtr state);
+    static ThreadBody? _thread; // kept alive so the garbage collector cannot free the thread's code
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr CreateThread(IntPtr security, IntPtr stack, IntPtr start, IntPtr state, uint flags, out uint id);
+    [DllImport("ole32.dll")] static extern int OleInitialize(IntPtr reserved);
 
     LockScreen(string cafeName, Func<string, string, Task<string?>> login,
         Func<string, string, int, string, string?, Task<string?>> offlineUnlock)
