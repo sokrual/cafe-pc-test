@@ -183,6 +183,7 @@ try {
     Copy-Item "$repo\install\install-pc.ps1", "$repo\install\HOW-TO-INSTALL.txt" $stageA
     pwsh -NoProfile -File "$repo\ci\sign-update.ps1" -Folder $stageA -Version 3 | Out-Host
     & "$stageA\install-admin.ps1" -Ci -Pcs 3   # a new install: keys for 3 gaming PCs
+    if ($env:AK6_CLOSE -eq "yes") { Stop-Transcript | Out-Null }   # THROWAWAY: the fix being measured
     $adminInstallLog = Get-Content "$stageA\install-log.txt" -Raw
     $offBitLockerWarning = "Disk encryption (BitLocker) is off on this counter PC. If the PC or its disk is stolen, the cafe data can be read. Turn it on: see SECURITY-GUIDE.txt, part 1."
     $unavailableBitLockerWarning = "BitLocker is not available on this counter PC (Windows Home may not include it). See SECURITY-GUIDE.txt, part 1."
@@ -211,6 +212,7 @@ try {
     # installed, so they get new key files and the old copies stop working
     $pc3Old = (Get-Content "$stageA\PC3.token" -Raw -ErrorAction SilentlyContinue)
     & "$stageA\install-admin.ps1" -Ci -Pcs 5
+    if ($env:AK6_CLOSE -eq "yes") { Stop-Transcript | Out-Null }   # THROWAWAY: the fix being measured
     $adminLogAfter = Get-Content "$stageA\install-log.txt" -Raw
     # THROWAWAY measurement: keep exactly what this read saw, and the file itself, for the day the check fails again
     $akDir = Join-Path $repo "ak6-evidence"; New-Item $akDir -ItemType Directory -Force | Out-Null
@@ -230,6 +232,12 @@ try {
     $pc3New = (Get-Content "$stageA\PC3.token" -Raw -ErrorAction SilentlyContinue)
     $pc3OldCode = KeyCode $pc3Old "lockdown-old-pc3-file"; $pc3NewCode = KeyCode $pc3New "lockdown-test-pc3-secret"
     Check "A.K6" "Running INSTALL-ADMIN again (an update) adds no PCs, keeps the key of the PC already used, and gives the PCs not installed yet new keys: the old copies stop working" (($keyNamesAfter -join ",") -eq "PC1,PC2,PC3" -and $pc2After -eq "200" -and $pc3Old -and $pc3New -and $pc3Old.Trim() -ne $pc3New.Trim() -and $pc3OldCode -eq "401" -and $pc3NewCode -eq "200" -and $adminLogAfter -match "New keys for the 2 gaming PCs not installed yet \(PC1, PC3\)") "key files: $($keyNamesAfter -join ', '); PC2 (used) HTTP $pc2After; PC3 old file HTTP $pc3OldCode, new file HTTP $pc3NewCode; message names PC1, PC3: $($adminLogAfter -match 'PC1, PC3')"
+    # THROWAWAY: 12 fresh PowerShells, 2 real update runs each, the log read at once after every run
+    foreach ($akN in 1, 2) { try { Stop-Transcript | Out-Null } catch { $null = $_ } }   # this PowerShell's own open logs must not write into the file any more
+    for ($akR = 1; $akR -le 12; $akR++) {
+        $akA = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "$repo\ci\ak6-repeat.ps1", "-Stage", $stageA, "-Label", "$akR"); if ($env:AK6_CLOSE -eq "yes") { $akA += "-Close" }
+        & powershell.exe @akA | Where-Object { "$_" -like "AK6-REPEAT|*" } | ForEach-Object { Write-Host $_ }
+    }
     Write-Host "AK6-MEASURE done: stopping this throwaway run here"; exit 0
     $offered = "$env:ProgramData\Cafe\updates"
     $offeredList = if (Test-Path "$offered\update.json") { Get-Content "$offered\update.json" -Raw | ConvertFrom-Json } else { $null }

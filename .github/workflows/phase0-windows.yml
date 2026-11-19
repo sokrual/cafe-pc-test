@@ -9,8 +9,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-11-arm]   # the only machine where the check has failed (1 of 18 runs; x64: 0 of 18)
-        try: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+        os: [windows-11-arm]   # the only machine where the check has failed
+        close: ["no", "yes"]   # no = today; yes = the log is closed before it is read (the fix being measured)
+        try: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -41,10 +42,11 @@ jobs:
         shell: powershell
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}   # S6: the test signs an update for the gaming PC
+          AK6_CLOSE: ${{ matrix.close }}
         run: .\ci\lockdown.ps1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ak6-evidence-${{ matrix.try }}
+          name: ak6-evidence-${{ matrix.close }}-${{ matrix.try }}
           path: ak6-evidence/**
           if-no-files-found: warn
