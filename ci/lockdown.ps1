@@ -179,6 +179,9 @@ try {
             if ($v.ProtectionStatus -eq "On") { "On" } else { "Off" }
         }
     } catch { "Unknown" }
+    # a signed update in the folder, as the build makes it: INSTALL-ADMIN hands it to the gaming PCs
+    Copy-Item "$repo\install\install-pc.ps1", "$repo\install\HOW-TO-INSTALL.txt" $stageA
+    pwsh -NoProfile -File "$repo\ci\sign-update.ps1" -Folder $stageA -Version 3 | Out-Host
     & "$stageA\install-admin.ps1" -Ci -Pcs 3   # a new install: keys for 3 gaming PCs
     $adminInstallLog = Get-Content "$stageA\install-log.txt" -Raw
     $offBitLockerWarning = "Disk encryption (BitLocker) is off on this counter PC. If the PC or its disk is stolen, the cafe data can be read. Turn it on: see SECURITY-GUIDE.txt, part 1."
@@ -215,6 +218,10 @@ try {
     $pc3New = (Get-Content "$stageA\PC3.token" -Raw -ErrorAction SilentlyContinue)
     $pc3OldCode = KeyCode $pc3Old "lockdown-old-pc3-file"; $pc3NewCode = KeyCode $pc3New "lockdown-test-pc3-secret"
     Check "A.K6" "Running INSTALL-ADMIN again (an update) adds no PCs, keeps the key of the PC already used, and gives the PCs not installed yet new keys: the old copies stop working" (($keyNamesAfter -join ",") -eq "PC1,PC2,PC3" -and $pc2After -eq "200" -and $pc3Old -and $pc3New -and $pc3Old.Trim() -ne $pc3New.Trim() -and $pc3OldCode -eq "401" -and $pc3NewCode -eq "200" -and $adminLogAfter -match "New keys for the 2 gaming PCs not installed yet \(PC1, PC3\)") "key files: $($keyNamesAfter -join ', '); PC2 (used) HTTP $pc2After; PC3 old file HTTP $pc3OldCode, new file HTTP $pc3NewCode; message names PC1, PC3: $($adminLogAfter -match 'PC1, PC3')"
+    $offered = "$env:ProgramData\Cafe\updates"
+    $offeredList = if (Test-Path "$offered\update.json") { Get-Content "$offered\update.json" -Raw | ConvertFrom-Json } else { $null }
+    $offeredFiles = @(Get-ChildItem "$offered\files" -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object Name)
+    Check "A.U1" "INSTALL-ADMIN hands the signed update to the counter server: its file list, signature and only the files it lists (no key files)" ($offeredList.version -eq 3 -and (Test-Path "$offered\update.sig") -and $offeredFiles -contains "install-pc.ps1" -and -not ($offeredFiles -like "*.token") -and -not ($offeredFiles -contains "Cafe.Server.exe") -and $offeredFiles.Count -eq @($offeredList.files).Count) "version $($offeredList.version); files offered: $($offeredFiles -join ', ')"
     Check "B3.A1" "Cafe server runs as a Windows service" ((Get-Service CafeServer).Status -eq "Running") (Get-Service CafeServer).StartType
     [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }   # the test only; PCs pin the certificate
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -1401,6 +1408,52 @@ try {
     Check "S5.2" "The gaming PC finds the counter at its new address by itself, checks its certificate and key, saves the address, and moves DNS there" ($moved -and $myAddresses -contains $newHost -and $argsAfter -match [regex]::Escape("`"$app\Cafe.Agent.exe`"") -and $dnsMoved -and $nicDns -contains $newHost -and $resolves -and (WatchdogLog) -match "counter PC found at $([regex]::Escape($newHost))") "moved $moved to '$newHost'; watchdog.args: $("$argsAfter".Trim()); dns-server.txt moved $dnsMoved; adapter DNS $($nicDns -join ','); a website resolves $resolves"
     if (-not $moved -or -not $dnsMoved -or $nicDns -notcontains $newHost) { (WatchdogLog) -split "`n" | Where-Object { $_ -match "counter|DNS" } | Select-Object -Last 30 | ForEach-Object { Write-Host "S5 watchdog log: $_" } }
     & "$app\dns.ps1" -DnsServer $runnerDns -DataPath $data | Out-Null   # back to the test machine's own DNS
+
+    # ===== S6. the gaming PC updates itself from the counter: only a signed, newer update, when it is idle =====
+    $updateWork = "$data\update"; New-Item $updateWork -ItemType Directory -Force | Out-Null
+    Set-Content "$updateWork\ci-no-restart.flag" "CI: no restart at the end of the update" -Encoding ascii
+    function WrongUpdateKey { pwsh -NoProfile -Command "[Convert]::ToBase64String([Security.Cryptography.ECDsa]::Create([Security.Cryptography.ECCurve+NamedCurves]::nistP256).ExportPkcs8PrivateKey())" }   # a fresh key that is not the update key
+    function OfferUpdate($version, [switch]$OtherKey) {   # what the build and INSTALL-ADMIN do, for the test server
+        $u = Join-Path $env:TEMP "cafe-update-$version"; Remove-Item $u -Recurse -Force -ErrorAction SilentlyContinue
+        Copy-Item $stage $u -Recurse
+        $realKey = $env:UPDATE_SIGNING_KEY
+        $env:SIGN_UPDATE_TEST_OTHER_KEY = if ($OtherKey) { "1" } else { "" }   # the test's wrong key on purpose
+        if ($OtherKey) { $env:UPDATE_SIGNING_KEY = WrongUpdateKey }
+        pwsh -NoProfile -File "$repo\ci\sign-update.ps1" -Folder $u -Version $version | Out-Host
+        $signed = $LASTEXITCODE; $env:UPDATE_SIGNING_KEY = $realKey
+        if ($signed) { throw "Could not sign the test update (exit $signed)" }
+        $to = "$tdata\updates"; Remove-Item $to -Recurse -Force -ErrorAction SilentlyContinue
+        foreach ($f in (Get-Content "$u\update.json" -Raw | ConvertFrom-Json).files) {
+            $t = Join-Path "$to\files" $f.path; New-Item (Split-Path $t) -ItemType Directory -Force | Out-Null; Copy-Item -LiteralPath (Join-Path $u $f.path) $t
+        }
+        Copy-Item "$u\update.json", "$u\update.sig" $to
+    }
+    function InstalledVersion { if (Test-Path "$app\update.json") { (Get-Content "$app\update.json" -Raw | ConvertFrom-Json).version } else { 0 } }
+    $idle = try { $st = ((curl.exe -sk --max-time 10 -H "X-Pc-Token: $token" -H "X-Pc-Bind: $(PcBind)" https://127.0.0.1:5443/pc/state) -join "") | ConvertFrom-Json; $st.locked -and $null -eq $st.session } catch { $false }   # curl: PowerShell 5.1 GETs fail with the test's certificate callback
+    $versionBefore = InstalledVersion
+    OfferUpdate 7 -OtherKey
+    Restart-Service CafeWatchdog   # it looks 2 minutes after it starts, then every 10
+    $refusedSeen = WaitFor 300 { (WatchdogLog) -match "update refused: its signature is not from the update key" }
+    Check "S6.1" "An update signed with any other key is refused and nothing is installed" ($idle -and $refusedSeen -and (InstalledVersion) -eq $versionBefore -and (WatchdogLog) -notmatch "installing update version 7") "PC idle $idle; refusal logged $refusedSeen; installed version $(InstalledVersion) (was $versionBefore)"
+    $lockScreenBefore = @(Get-Process Cafe.Agent -ErrorAction SilentlyContinue | ForEach-Object Id)   # "stayed up" = the same program, not one started again later
+    OfferUpdate 8
+    Restart-Service CafeWatchdog
+    $updated = WaitFor 1200 { (InstalledVersion) -eq 8 -and "$(Get-Content "$updateWork\result.txt" -Raw -ErrorAction SilentlyContinue)" -match "^done: 8" -and (Get-Service CafeWatchdog).Status -eq "Running" }
+    $lockScreenUp = [bool](Get-Process Cafe.Agent -ErrorAction SilentlyContinue | Where-Object { $lockScreenBefore -contains $_.Id })
+    Check "S6.2" "A signed, newer update is installed by the gaming PC itself while idle; the watchdog runs again and the lock screen stayed up" ($updated -and $lockScreenUp -and (WatchdogLog) -match "installing update version 8") "installed version $(InstalledVersion); result '$("$(Get-Content "$updateWork\result.txt" -Raw -ErrorAction SilentlyContinue)".Trim())'; watchdog $((Get-Service CafeWatchdog).Status); the same lock screen still running $lockScreenUp"
+    if (-not $updated) { Get-Content "$updateWork\new\install-log.txt" -Tail 40 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "S6 update log: $_" } }
+    Restart-Service CafeWatchdog
+    Start-Sleep -Seconds 170
+    $installs = ([regex]::Matches((WatchdogLog), "installing update version 8")).Count
+    Check "S6.3" "The same version is not installed again" ($installs -eq 1 -and (InstalledVersion) -eq 8) "installs of version 8 logged: $installs"
+    # the build's own guard: with a key that is not the watchdog's it must stop, not ship an update no gaming PC accepts
+    $wrongKeyFolder = Join-Path $env:TEMP "cafe-update-wrong-key"; Remove-Item $wrongKeyFolder -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item $wrongKeyFolder -ItemType Directory | Out-Null; Copy-Item "$repo\install\install-pc.ps1" $wrongKeyFolder
+    $realKey = $env:UPDATE_SIGNING_KEY; $env:SIGN_UPDATE_TEST_OTHER_KEY = ""; $env:UPDATE_SIGNING_KEY = WrongUpdateKey
+    pwsh -NoProfile -File "$repo\ci\sign-update.ps1" -Folder $wrongKeyFolder -Version 9 | Out-Host
+    $wrongKeyExit = $LASTEXITCODE; $env:UPDATE_SIGNING_KEY = $realKey
+    Check "S6.4" "The build refuses to sign an update with a key that is not the one built into the watchdog" ($wrongKeyExit -ne 0 -and -not (Test-Path "$wrongKeyFolder\update.json") -and -not (Test-Path "$wrongKeyFolder\update.sig")) "sign-update exit code $wrongKeyExit; update.json written $(Test-Path "$wrongKeyFolder\update.json"); update.sig written $(Test-Path "$wrongKeyFolder\update.sig")"
+    Remove-Item "$updateWork\ci-no-restart.flag" -Force -ErrorAction SilentlyContinue
 
     # ===== I. uninstall =====
     Remove-Item "$app\test-wipe-mode.flag" -Force -ErrorAction SilentlyContinue

@@ -125,6 +125,26 @@ long Staff(HttpContext c)
 }
 
 app.MapGet("/pc/state", (HttpContext c) => { var pc = Pc(c); var st = cafe.StateOf(pc); cafe.PcSeen(pc); return st; });
+// gaming PCs update themselves (FindUpdate in the watchdog): the signed file list INSTALL-ADMIN put in data\updates,
+// and those files. The counter only hands them out; each PC checks the signature and every file's SHA-256 itself.
+var updates = Path.Combine(data, "updates");
+app.MapGet("/pc/update", (HttpContext c) =>
+{
+    Pc(c);
+    var list = Path.Combine(updates, "update.json");
+    return File.Exists(list)
+        ? Results.Ok(new { manifest = Convert.ToBase64String(File.ReadAllBytes(list)), signature = File.ReadAllText(Path.Combine(updates, "update.sig")).Trim() })
+        : Results.NotFound();
+});
+app.MapGet("/pc/update/file/{*path}", (HttpContext c, string path) =>
+{
+    Pc(c);
+    var root = Path.GetFullPath(Path.Combine(updates, "files")) + Path.DirectorySeparatorChar;
+    var full = Path.GetFullPath(Path.Combine(root, path));
+    return full.StartsWith(root, StringComparison.OrdinalIgnoreCase) && File.Exists(full)
+        ? Results.Stream(File.OpenRead(full), "application/octet-stream")
+        : Results.NotFound();
+});
 app.MapGet("/pc/offline-unlock-data", (HttpContext c) =>
 {
     Pc(c); // a PC token, never a staff/customer login, is required to retrieve authenticator secrets

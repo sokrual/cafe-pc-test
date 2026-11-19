@@ -96,6 +96,20 @@ Start-Service $svc
 $keep = "$env:ProgramData\Cafe"   # the server's own data folder; kept at uninstall (a gaming PC uses ProgramData\GamingCafe)
 New-Item $keep -ItemType Directory -Force | Out-Null
 icacls $keep /inheritance:r /grant "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" | Out-Null
+# the gaming PCs' update: this folder's signed file list (update.json, update.sig, made by the build) and only the files
+# it lists, so key files and logs here never reach a gaming PC. Each gaming PC installs it by itself when idle.
+if (Test-Path "$src\update.json") {
+    $next = "$keep\updates.new"
+    Remove-Item $next -Recurse -Force -ErrorAction SilentlyContinue
+    foreach ($f in (Get-Content "$src\update.json" -Raw | ConvertFrom-Json).files) {
+        $to = Join-Path "$next\files" $f.path
+        New-Item (Split-Path $to) -ItemType Directory -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $src $f.path) $to
+    }
+    Copy-Item "$src\update.json", "$src\update.sig" $next
+    Remove-Item "$keep\updates" -Recurse -Force -ErrorAction SilentlyContinue
+    Move-Item $next "$keep\updates"
+}
 $timeKeys = @("HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters|NtpServer", "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters|Type",
     "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpClient|SpecialPollInterval",
     "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System|InactivityTimeoutSecs")

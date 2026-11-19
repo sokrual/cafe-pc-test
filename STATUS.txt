@@ -290,3 +290,17 @@ OWNER DECISIONS (10 Nov 2026)
               stop working; installed PCs keep their keys. So the pilot can delete the pen drive files after v0 testing.
               Shortcut: a PC installed while the counter was off has never been seen, so an update would renew its key
               and that PC would need a new one. Tests: AccountTests A_counter_update_renews_the_keys..., lockdown A.K6.
+17 Nov  Gaming PCs update themselves (Kushagra: install any time the PC is idle). The build signs update.json (every file
+              the gaming PCs install, with SHA-256, and the version = CI run number) with UPDATE_SIGNING_KEY (GitHub
+              secret, ECDSA P-256; Kushagra made it on his Mac, the public half is in pc/Cafe.Watchdog/FindUpdate.cs).
+              INSTALL-ADMIN copies the list and only the listed files to ProgramData\Cafe\updates; the server hands
+              them out to PCs with a valid key (/pc/update, /pc/update/file/...). Every 10 minutes (first 2 minutes
+              after start) an idle watchdog (locked, no session, not setup mode) checks: signature, newer version, each
+              file's SHA-256; then runs the new INSTALL-PC -Auto as SYSTEM. -Auto keeps the lock screen running (its
+              files are moved aside), and restarts the PC at the end or after a failure, so it never stays unlocked.
+              Each version is tried once (update\tried.txt; result in update\result.txt).
+              Tests: lockdown A.U1 (INSTALL-ADMIN offers only listed files), S6.1 (other key refused), S6.2 (newer
+              signed update installed while idle, the same lock screen program still running), S6.3 (not installed
+              twice), S6.4 (the build refuses to sign with a key that is not the watchdog's).
+              Not tested: the restart at the end (CI cannot restart), an update starting while a customer is on.
+              One-time: PCs installed from the v0 zip have no updater and need one INSTALL-PC run by hand.

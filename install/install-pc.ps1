@@ -5,10 +5,12 @@
 # -Server: the counter PC's address (asked once, kept after that). -DnsServer: the internet filter's address (normally the
 # counter PC; only for tests). -Setup: open the Customer account for changes again.
 # -Uninstall: take everything off this PC. -Ci: unattended test run (no pop-ups, no restart).
+# -Auto: an update the gaming PC installs by itself (the watchdog, as SYSTEM, from the counter's signed update): no
+#        windows; the lock screen stays up; the PC restarts at the end, or after a failure, so it never stays unlocked.
 # -Finish: the 2nd time, started by the "Finish cafe setup" icon (finish-setup.ps1) through the scheduled task
 #          CafeFinishSetup, which Windows runs as SYSTEM: no admin password. It works only in setup mode.
 #Requires -RunAsAdministrator
-param([string]$Server, [string]$DnsServer, [switch]$Setup, [switch]$Uninstall, [switch]$Ci, [switch]$Finish, [switch]$Detached, [AllowEmptyString()][string]$AllowFolders)
+param([string]$Server, [string]$DnsServer, [switch]$Setup, [switch]$Uninstall, [switch]$Ci, [switch]$Finish, [switch]$Detached, [switch]$Auto, [AllowEmptyString()][string]$AllowFolders)
 $ErrorActionPreference = "Stop"
 if ($Finish -and -not $Detached) {
     # Windows runs a scheduled task's program at background speed (CI: step 2 took 14 minutes instead of 2, even at task
@@ -32,11 +34,15 @@ $finishOut = "$data\finish"   # what the task tells the icon (Wi-Fi networks in 
 $finishIcon = "$env:PUBLIC\Desktop\Finish cafe setup.lnk"
 $finishCheck = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
 function Say($text) {
-    if ($Ci -or $Finish) { Write-Host $text; return }   # -Finish runs as SYSTEM: no screen to show a window on
+    if ($Ci -or $Finish -or $Auto) { Write-Host $text; return }   # -Finish and -Auto run as SYSTEM: no screen to show a window on
     Add-Type -AssemblyName System.Windows.Forms
     [System.Windows.Forms.MessageBox]::Show($text, "Gaming Cafe setup") | Out-Null
 }
 trap {
+    if ($Auto) { # the watchdog reads this; a restart starts the old watchdog and lock screen again (services start at boot)
+        Set-Content "$data\update\result.txt" "failed: $_" -Encoding utf8 -ErrorAction SilentlyContinue
+        if (-not $Ci) { Restart-Computer -Force }
+    }
     if ($Finish) { # the icon cannot show it now (setup closed the Customer's apps): shown at the next sign-in, after a restart
         Set-Content "$finishOut\result.txt" "$_" -Encoding utf8 -ErrorAction SilentlyContinue
         if (-not $Ci) { Restart-Computer -Force }
@@ -207,16 +213,22 @@ foreach ($f in "Cafe.Watchdog.exe", "pc.token", "server.pin") {
 
 # --- program files ---
 if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force }
-Get-Process Cafe.Watchdog, Cafe.Agent -ErrorAction SilentlyContinue | Stop-Process -Force -PassThru | Wait-Process -Timeout 30
+# an update by itself keeps the lock screen running: its files are moved aside (Windows allows that for a running
+# program), the new ones copied in, and the restart at the end starts the new lock screen
+$stop = if ($Auto) { "Cafe.Watchdog" } else { "Cafe.Watchdog", "Cafe.Agent" }
+Get-Process $stop -ErrorAction SilentlyContinue | Stop-Process -Force -PassThru | Wait-Process -Timeout 30
+Get-ChildItem "$app\*.moved-aside" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue   # left by the last update
 New-Item $app -ItemType Directory -Force | Out-Null   # inside Program Files: customers can read and run, not change
-foreach ($f in "Cafe.Watchdog.exe", "keep-running.txt", "install-pc.ps1", "levelA.ps1", "applocker.ps1", "pendrives.ps1", "wifi.ps1", "dns.ps1", "finish-setup.ps1", "SETUP-MODE.bat") {
+foreach ($f in "Cafe.Watchdog.exe", "keep-running.txt", "install-pc.ps1", "levelA.ps1", "applocker.ps1", "pendrives.ps1", "wifi.ps1", "dns.ps1", "finish-setup.ps1", "SETUP-MODE.bat", "update.json", "update.sig") {
     if ($src -ne $app -and (Test-Path "$src\$f")) { Copy-WithRetry "$src\$f" $app }   # SETUP-MODE runs from $app itself
 }
 if ($src -ne $app -and (Test-Path -LiteralPath $agentRuntimeSource -PathType Container)) {
     # Cafe.Agent is multi-file published: native runtime libraries stay beside the EXE in Program Files,
     # rather than being extracted by the Customer process into its AppData\Local\Temp directory.
     foreach ($agentFile in Get-ChildItem -LiteralPath $agentRuntimeSource -File) {
-        Copy-WithRetry $agentFile.FullName (Join-Path $app $agentFile.Name)
+        $target = Join-Path $app $agentFile.Name
+        if ($Auto -and (Test-Path -LiteralPath $target)) { Move-Item -LiteralPath $target "$target.$([guid]::NewGuid().ToString('N')).moved-aside" -Force }
+        Copy-WithRetry $agentFile.FullName $target
     }
 } elseif ($src -ne $app -and (Test-Path -LiteralPath $agentExeSource -PathType Leaf)) {
     # Backward-compatible single-file installer source.
@@ -480,5 +492,7 @@ elseif ($allowFoldersWasSpecified) { $appLockerArgs.AllowFolders = $AllowFolders
 & "$app\applocker.ps1" @appLockerArgs
 & "$app\pendrives.ps1" -Mode Install -DataPath $data
 & "$app\wifi.ps1" -Mode Install -AppPath $app -DataPath $data
+if ($Auto) { Set-Content "$data\update\result.txt" "done: $((Get-Content "$app\update.json" -Raw | ConvertFrom-Json).version)" -Encoding utf8 }
+if ($Auto -and -not $Ci) { Restart-Computer -Force; exit 0 }   # the new watchdog and lock screen start at boot
 Start-Service $svc
 Say "The cafe program on this PC is updated."
