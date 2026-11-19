@@ -1,5 +1,5 @@
 PROJECT STATUS - what is built, what is left
-Last updated: 15 Nov 2026. Version 0.3.0. Latest green test run: 43615677170 (all 8 jobs pass, lockdown 113/113, pull request #27).
+Last updated: 19 Nov 2026. Version 0.3.0. Latest green test run: 44288463932 (all 8 jobs pass, lockdown 150/150, pull request #6).
 
 Read README.txt for the layout, CHECKS.txt for the backend and security checks every phase must pass, and CLAUDE.md for the rules (commit as "Turyos Ventures" with an empty email,
 no AI signature anywhere, simple English in everything people see, smallest change that fully works).
@@ -18,7 +18,7 @@ B2  Gaming PC lock screen, timer and watchdog                       DONE
 B3  Lockdown and installers                                         BUILT - final security pass still open
     Installers for the counter PC and the gaming PCs (install/), Customer account, logout clean-up
     (pc/Cafe.Watchdog/Wipe.cs), Level A app allow-list (install/levelA.ps1, watch-only until the cafe trial),
-    web filter with AdGuard Home, uninstall. Tests: ci/lockdown.ps1 (50 checks).
+    web filter with AdGuard Home, uninstall. Tests: ci/lockdown.ps1 (150 checks on 19 Nov).
     Security fixes from the three outside reviews, one small pull request each, in this order:
       #1 offline logout billed until the server receives it                          DONE (merged)
       #2 staff and owner pages only on the counter PC or over Tailscale              DONE (merged)
