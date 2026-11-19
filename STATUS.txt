@@ -1,5 +1,5 @@
 PROJECT STATUS - what is built, what is left
-Last updated: 19 Nov 2026. Version 0.3.0. Latest green test run: 44288463932 (all 8 jobs pass, lockdown 150/150, pull request #6).
+Last updated: 19 Nov 2026. Version 0.3.0. Latest green test run: 44476511287 (all 8 jobs pass, lockdown 150/150, pull request #7).
 
 Read README.txt for the layout, CHECKS.txt for the backend and security checks every phase must pass, and CLAUDE.md for the rules (commit as "Turyos Ventures" with an empty email,
 no AI signature anywhere, simple English in everything people see, smallest change that fully works).
@@ -304,3 +304,11 @@ OWNER DECISIONS (10 Nov 2026)
               twice), S6.4 (the build refuses to sign with a key that is not the watchdog's).
               Not tested: the restart at the end (CI cannot restart), an update starting while a customer is on.
               One-time: PCs installed from the v0 zip have no updater and need one INSTALL-PC run by hand.
+19 Nov  Test fix, lockdown A.K6 (no product change). Main run 44466132983 failed on ARM: the check read install-log.txt
+              before INSTALL-ADMIN's last message was in the file. The keys were right (old key 401, new key 200).
+              Measured on ARM (branch proof/ak6-measure): it happens only when the test runs the installer a second time
+              in the same PowerShell while the first run's log is still open: 6 misses in 167 such reads, none in 120
+              reads after a first run, none on x64 (18 reads). A real install is not affected: INSTALL-ADMIN starts a
+              new PowerShell each time, and that closes the log when it ends. Fix: the test closes the installer's log
+              before reading it (3 places in ci/lockdown.ps1). Run 44475251991: 0 misses in 250 reads with the fix,
+              4 in 250 without it. Why PowerShell writes the last lines late is not known.

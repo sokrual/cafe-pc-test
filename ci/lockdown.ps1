@@ -183,6 +183,7 @@ try {
     Copy-Item "$repo\install\install-pc.ps1", "$repo\install\HOW-TO-INSTALL.txt" $stageA
     pwsh -NoProfile -File "$repo\ci\sign-update.ps1" -Folder $stageA -Version 3 | Out-Host
     & "$stageA\install-admin.ps1" -Ci -Pcs 3   # a new install: keys for 3 gaming PCs
+    Stop-Transcript | Out-Null   # the installer leaves its log open; on a real PC its own PowerShell ends and closes it. Read here before that, the log can lack the last message (seen on ARM, check A.K6)
     $adminInstallLog = Get-Content "$stageA\install-log.txt" -Raw
     $offBitLockerWarning = "Disk encryption (BitLocker) is off on this counter PC. If the PC or its disk is stolen, the cafe data can be read. Turn it on: see SECURITY-GUIDE.txt, part 1."
     $unavailableBitLockerWarning = "BitLocker is not available on this counter PC (Windows Home may not include it). See SECURITY-GUIDE.txt, part 1."
@@ -211,6 +212,7 @@ try {
     # installed, so they get new key files and the old copies stop working
     $pc3Old = (Get-Content "$stageA\PC3.token" -Raw -ErrorAction SilentlyContinue)
     & "$stageA\install-admin.ps1" -Ci -Pcs 5
+    Stop-Transcript | Out-Null   # close the installer's log before reading it (see the first INSTALL-ADMIN run above)
     $adminLogAfter = Get-Content "$stageA\install-log.txt" -Raw
     $keyNamesAfter = @(Get-ChildItem $stageA -Filter "PC*.token" -File | ForEach-Object BaseName | Sort-Object)
     $null = WaitFor 30 { (KeyState) -eq "200" }; $pc2After = KeyState
@@ -305,6 +307,7 @@ try {
     Set-Content "$stage\counter-address.txt" "127.0.0.1" -Encoding ascii   # as INSTALL-ADMIN writes it; the test server is on this machine
     $secureBootExpected = try { if (Confirm-SecureBootUEFI -ErrorAction Stop) { "On" } else { "Off" } } catch { "Unknown" }
     & "$stage\install-pc.ps1" -DnsServer $runnerDns -Ci -AllowFolders ""   # the counter address comes from counter-address.txt
+    Stop-Transcript | Out-Null   # close the installer's log before reading it (see the first INSTALL-ADMIN run above)
     $pcInstallLog = Get-Content "$stage\install-log.txt" -Raw
     $offSecureBootWarning = "Secure Boot is off on this gaming PC. Turn it on: see SECURITY-GUIDE.txt, part 2."
     $unknownSecureBootWarning = "Secure Boot could not be checked on this gaming PC. Check it: see SECURITY-GUIDE.txt, part 2."
