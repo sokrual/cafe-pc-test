@@ -105,18 +105,29 @@ public static class CafeWindowProbe {
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder text, int max);
+    [DllImport("user32.dll")] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+    [DllImport("user32.dll")] static extern bool SetThreadDesktop(IntPtr desktop);
+    [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr desktop);
+    // The lock screen has its own Windows desktop, and a thread only sees the windows of the desktop it is on:
+    // the look happens on a new thread moved to the desktop that has the screen.
     public static bool HasVisibleWindow(int pid) {
         bool found = false;
-        EnumWindows((window, state) => {
-            uint owner;
-            GetWindowThreadProcessId(window, out owner);
-            if (owner == (uint)pid && IsWindowVisible(window)) {
-                var title = new StringBuilder(256);
-                GetWindowText(window, title, title.Capacity);
-                if (title.Length > 0) { found = true; return false; }
-            }
-            return true;
-        }, IntPtr.Zero);
+        IntPtr input = OpenInputDesktop(0, false, 0x10000000 /*GENERIC_ALL*/);
+        var look = new System.Threading.Thread(() => {
+            if (input != IntPtr.Zero) SetThreadDesktop(input);
+            EnumWindows((window, state) => {
+                uint owner;
+                GetWindowThreadProcessId(window, out owner);
+                if (owner == (uint)pid && IsWindowVisible(window)) {
+                    var title = new StringBuilder(256);
+                    GetWindowText(window, title, title.Capacity);
+                    if (title.Length > 0) { found = true; return false; }
+                }
+                return true;
+            }, IntPtr.Zero);
+        });
+        look.Start(); look.Join();
+        if (input != IntPtr.Zero) CloseDesktop(input);
         return found;
     }
 }

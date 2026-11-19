@@ -65,6 +65,7 @@ static class Program
             return;
         }
         Log($"started v{typeof(Program).Assembly.GetName().Version}");
+        LockDesktop.Make(args.Contains("--test-lock-on-default", StringComparer.OrdinalIgnoreCase));
         ApplicationConfiguration.Initialize();
         Application.Run(new Agent(Arg("--name") ?? "Gaming Cafe"));
     }
@@ -95,6 +96,7 @@ sealed class Agent : ApplicationContext
     readonly SemaphoreSlim _sendGate = new(1, 1);
     readonly LockScreen _lock;
     readonly TimerWidget _timer;
+    readonly SynchronizationContext _main = new WindowsFormsSynchronizationContext(); // this thread: all state stays here
     PcState _state = new(true, null, null, null, 0, null); // locked until the admin PC says otherwise
     DateTime _stateAt = DateTime.UtcNow;
     bool _online = true;
@@ -103,7 +105,8 @@ sealed class Agent : ApplicationContext
 
     public Agent(string name)
     {
-        _lock = new LockScreen(name, Login, OfflineUnlock);
+        _lock = LockScreen.Start(name, (phone, pin) => OnMain(() => Login(phone, pin)),
+            (phone, code, minutes, method, upi) => OnMain(() => OfflineUnlock(phone, code, minutes, method, upi)));
         _timer = new TimerWidget(Now, () => Send("/pc/logout", lockNow: true), () => Send("/pc/selflock", lockNow: true), () => Apply(_state with { Locked = true, Message = "Time is up. Please ask at the counter." }));
         KeyBlocker.Install(_lock);
         var poll = new System.Windows.Forms.Timer { Interval = 2000 };
@@ -176,7 +179,15 @@ sealed class Agent : ApplicationContext
         if (s.Locked != _state.Locked) Program.Log(s.Locked ? $"locked: {s.Message}" : $"unlocked, session {s.Session} ({s.Mode})");
         (_state, _stateAt) = (s, DateTime.UtcNow);
         if (s.Locked) { _timer.Hide(); _lock.ShowLocked(s.Message); }
-        else { _lock.Hide(); _timer.Tick(); }
+        else { _lock.Unlock(); _timer.Tick(); }
+    }
+
+    // the lock screen has its own thread (see LockScreen.Start); what it asks for runs here, so the state has one thread
+    Task<T> OnMain<T>(Func<Task<T>> work)
+    {
+        var done = new TaskCompletionSource<T>();
+        _main.Post(async _ => { try { done.SetResult(await work()); } catch (Exception e) { done.SetException(e); } }, null);
+        return done.Task;
     }
 
     async Task<string?> Login(string phone, string pin)
@@ -334,7 +345,30 @@ sealed class LockScreen : Form
 
     readonly Func<string, string, int, string, string?, Task<string?>> _offlineUnlock;
 
-    public LockScreen(string cafeName, Func<string, string, Task<string?>> login,
+    // The lock screen gets its own thread, moved to the lock screen's own desktop before it makes any window.
+    // Not an STA thread: Windows refuses to move those (error 170, measured). Other threads reach it through the
+    // public methods below, which post to it.
+    public static LockScreen Start(string cafeName, Func<string, string, Task<string?>> login,
+        Func<string, string, int, string, string?, Task<string?>> offlineUnlock)
+    {
+        LockScreen? screen = null;
+        using var ready = new ManualResetEventSlim();
+        new Thread(() =>
+        {
+            try
+            {
+                LockDesktop.MoveThreadHere();
+                screen = new LockScreen(cafeName, login, offlineUnlock);
+                _ = screen.Handle; // made now, so that other threads can post to it
+            }
+            finally { ready.Set(); }
+            Application.Run();
+        }) { IsBackground = true, Name = "lock screen" }.Start();
+        ready.Wait();
+        return screen ?? throw new InvalidOperationException("the lock screen could not start");
+    }
+
+    LockScreen(string cafeName, Func<string, string, Task<string?>> login,
         Func<string, string, int, string, string?, Task<string?>> offlineUnlock)
     {
         _offlineUnlock = offlineUnlock;
@@ -401,37 +435,80 @@ sealed class LockScreen : Form
         { _offlineRate.Text = "Could not read the saved rate card. Please ask at the counter."; }
     }
 
-    public void SetOffline(bool offline)
+    public void SetOffline(bool offline) => BeginInvoke(() =>
     {
         _staffUnlock.Visible = offline;
         if (!offline) _offlinePanel = false;
         foreach (var c in new Control[] { _offlineRate, _staffPhone, _staffCode, _minutes, _method, _submitOffline })
             c.Visible = offline && _offlinePanel;
         _upi.Visible = offline && _offlinePanel && _method.SelectedItem?.ToString() == "upi";
-    }
+    });
 
-    public void ShowLocked(string? message)
+    public void ShowLocked(string? message) => BeginInvoke(() =>
     {
         _message.Text = message ?? "Log in with your phone number and PIN.";
         _offlinePanel = false;
         foreach (var c in new Control[] { _offlineRate, _staffPhone, _staffCode, _minutes, _method, _submitOffline, _upi }) c.Visible = false;
         _go.Text = message?.StartsWith("Locked by the customer") == true ? "Unlock" : "Log in";
         Bounds = SystemInformation.VirtualScreen; // every monitor
-        if (!Visible) { _error.Text = ""; _phone.Text = ""; Show(); }
+        if (!Visible) { _error.Text = ""; _phone.Text = ""; Show(); LockDesktop.Show(true); }
         Native.TakeForeground(Handle);
         _phone.Focus();
-    }
+    });
+
+    public void Unlock() => BeginInvoke(() => { if (Visible) { LockDesktop.Show(false); Hide(); } });
 
     // nobody logs in while the last customer's apps and logins are being cleared
-    public void SetBusy(bool busy)
+    public void SetBusy(bool busy) => BeginInvoke(() =>
     {
         _busy = busy;
         _go.Enabled = !busy;
         _staffUnlock.Enabled = !busy;
         _submitOffline.Enabled = !busy;
-    }
+    });
 
     protected override void OnFormClosing(FormClosingEventArgs e) { if (e.CloseReason == CloseReason.UserClosing) e.Cancel = true; base.OnFormClosing(e); }
+}
+
+// The lock screen's own Windows desktop, like the Windows sign-in screen. Games in exclusive fullscreen, graphics-card
+// overlays and Windows' own dialogs stay on the normal desktop, so they cannot sit above the lock screen.
+// If Windows refuses any step, the lock screen stays a window on the normal desktop, as before, and the log says why.
+static class LockDesktop
+{
+    static IntPtr _own, _normal;
+    static bool Own => _own != IntPtr.Zero;
+
+    public static void Make(bool testOnNormal)
+    {
+        if (!testOnNormal)
+        {
+            _normal = OpenDesktop("Default", 0, false, 0x0100 /*DESKTOP_SWITCHDESKTOP*/);
+            // the process number in the name: a restarted program never meets the last one's desktop
+            if (_normal != IntPtr.Zero) _own = CreateDesktop($"CafeLock-{Environment.ProcessId}", IntPtr.Zero, IntPtr.Zero, 0, 0x10000000 /*GENERIC_ALL*/, IntPtr.Zero);
+        }
+        Program.Log(Own ? "lock screen has its own desktop"
+            : testOnNormal ? "lock screen stays on the normal desktop (test switch)"
+            : $"lock screen stays on the normal desktop: Windows refused the second desktop (error {Marshal.GetLastWin32Error()})");
+    }
+
+    // the lock screen's thread calls this before it makes any window (Windows moves no thread that has one)
+    public static void MoveThreadHere()
+    {
+        if (!Own || SetThreadDesktop(_own)) return;
+        Program.Log($"lock screen stays on the normal desktop: Windows refused to move its thread (error {Marshal.GetLastWin32Error()})");
+        _own = IntPtr.Zero;
+    }
+
+    public static void Show(bool locked)
+    {
+        if (Own && !SwitchDesktop(locked ? _own : _normal))
+            Program.Log($"could not give the screen to the {(locked ? "lock screen's" : "normal")} desktop (error {Marshal.GetLastWin32Error()})");
+    }
+
+    [DllImport("user32.dll", EntryPoint = "CreateDesktopW", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr CreateDesktop(string name, IntPtr device, IntPtr mode, uint flags, uint access, IntPtr security);
+    [DllImport("user32.dll", EntryPoint = "OpenDesktopW", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr OpenDesktop(string name, uint flags, bool inherit, uint access);
+    [DllImport("user32.dll", SetLastError = true)] static extern bool SetThreadDesktop(IntPtr desktop);
+    [DllImport("user32.dll", SetLastError = true)] static extern bool SwitchDesktop(IntPtr desktop);
 }
 
 sealed class TimerWidget : Form

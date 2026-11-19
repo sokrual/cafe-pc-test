@@ -159,9 +159,12 @@ public sealed class LockScreenTests : IDisposable
         Process? other = null;
         try
         {
-            _agent = _rig.StartAgent();
+            // E3b: other programs' windows are on the normal desktop. The lock screen meets them only when Windows
+            // refuses its own desktop and it stays there too, so that is how this test starts it.
+            _agent = _rig.StartAgent(lockOnNormalDesktop: true);
             _app = Application.Attach(_agent.Id);
             var handle = Window("LockScreen").Properties.NativeWindowHandle.Value;
+            Assert.Equal("Default", Rig.InputDesktop());
             Rig.ShowWindow(handle, 6); // SW_MINIMIZE: what Show desktop (Win+D) does to every window
             Rig.WaitFor(() => !Rig.IsIconic(handle) && Rig.GetForegroundWindow() == handle, 2, "the minimised lock screen did not come back in front within 2 s",
                 () => $"minimised {Rig.IsIconic(handle)}; foreground '{Rig.ForegroundTitle()}'");
@@ -182,6 +185,29 @@ public sealed class LockScreenTests : IDisposable
         }
         catch { Rig.Screenshot(); throw; }
         finally { Rig.Kill(other); }
+    }
+
+    [Fact]
+    public async Task E3b_lock_screen_has_its_own_desktop_and_the_normal_desktop_comes_back_for_the_customer()
+    {
+        try
+        {
+            _agent = _rig.StartAgent();
+            _app = Application.Attach(_agent.Id);
+            var own = $"CafeLock-{_agent.Id}";
+            Window("LockScreen"); // found on the desktop that has the screen
+            Assert.Equal(own, Rig.InputDesktop());
+            LogIn("9000000003", "2222");
+            Rig.WaitFor(() => Rig.InputDesktop() == "Default" && Hidden("LockScreen"), 10, "login did not give the normal desktop back", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+            Window("TimerWidget"); // the timer is on the normal desktop, with the games
+            var staff = await _rig.StaffToken();
+            await _rig.Post("/staff/lock", new { pc = "PC1", message = "Please come to the counter" }, staff);
+            Rig.WaitFor(() => Rig.InputDesktop() == own && Text(Window("LockScreen"), "Message") == "Please come to the counter", 10,
+                "a lock from the counter did not give the screen to the lock screen's desktop", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+            await _rig.Post("/staff/unlock", new { pc = "PC1", message = (string?)null }, staff);
+            Rig.WaitFor(() => Rig.InputDesktop() == "Default" && Hidden("LockScreen"), 10, "the counter's unlock did not give the normal desktop back", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+        }
+        catch { Rig.Screenshot(); throw; }
     }
 
     [Fact]
@@ -701,7 +727,11 @@ sealed class Rig : IDisposable
     const string Url = "https://127.0.0.1:5443";
     public readonly string Data = Path.Combine(Path.GetTempPath(), $"cafe-ui-{Guid.NewGuid():N}");
     readonly string _pcDir = Path.Combine(Path.GetTempPath(), $"cafe-pc-{Guid.NewGuid():N}"); // what a gaming PC holds: its token + the server's pin
-    public readonly UIA3Automation Ui = new();
+    readonly UIA3Automation _ui = new();
+    // The lock screen has its own Windows desktop, and a thread only reaches the windows of the desktop it is on.
+    // So before every look at the windows, the calling thread moves to the desktop that has the screen: the tests
+    // see what a person at the PC sees. Measured: the same objects, simulated keys and screenshots then work.
+    public UIA3Automation Ui { get { FollowScreen(); return _ui; } }
     readonly System.Text.StringBuilder _serverLog = new();
     Process? _server;
     Process? _watchdogProxy;
@@ -741,7 +771,7 @@ sealed class Rig : IDisposable
             throw;
         }
     }
-    public Process StartAgent()
+    public Process StartAgent(bool lockOnNormalDesktop = false)
     {
         var sid = WindowsIdentity.GetCurrent().User!.Value;
         var proxy = new ProcessStartInfo(Env("CAFE_WATCHDOG_EXE")) { UseShellExecute = false };
@@ -759,6 +789,7 @@ sealed class Rig : IDisposable
         if (_watchdogProxy.HasExited) throw new InvalidOperationException("watchdog proxy exited with code " + _watchdogProxy.ExitCode);
         var agent = new ProcessStartInfo(Env("CAFE_AGENT_EXE")) { UseShellExecute = false };
         foreach (var a in new[] { "--name", "Test Cafe", "--logs", Path.Combine(_pcDir, "logs") }) agent.ArgumentList.Add(a);
+        if (lockOnNormalDesktop) agent.ArgumentList.Add("--test-lock-on-default"); // what the PC falls back to when Windows refuses the lock screen's own desktop
         return Process.Start(agent)!;
     }
 
@@ -778,7 +809,7 @@ sealed class Rig : IDisposable
 
     public void Dispose()
     {
-        Kill(_watchdogProxy); Kill(_server); Ui.Dispose(); _http.Dispose();
+        Kill(_watchdogProxy); Kill(_server); _ui.Dispose(); _http.Dispose();
         foreach (var dir in new[] { Path.Combine(Data, "logs"), Path.Combine(_pcDir, "logs") }) // logs end up in the test output
             if (Directory.Exists(dir)) foreach (var f in Directory.GetFiles(dir)) Console.WriteLine($"--- {Path.GetFileName(f)}\n{File.ReadAllText(f)}");
         foreach (var dir in new[] { Data, _pcDir }) try { Directory.Delete(dir, true); } catch (IOException) { }
@@ -888,7 +919,35 @@ sealed class Rig : IDisposable
         Assert.Fail(more is null ? why : $"{why}\n{more()}");
     }
 
-    public static void Screenshot() => FlaUI.Core.Capturing.Capture.Screen().ToFile(Path.Combine(Environment.GetEnvironmentVariable("GITHUB_WORKSPACE") ?? ".", $"screen-{DateTime.Now:HHmmss}.png"));
+    [ThreadStatic] static IntPtr _followed; // the desktop handle this thread opened for itself
+    public static void FollowScreen()
+    {
+        var input = OpenInputDesktop(0, false, 0x10000000 /*GENERIC_ALL*/);
+        if (input == IntPtr.Zero) return;
+        if (DesktopName(input) == DesktopName(GetThreadDesktop(GetCurrentThreadId())) || !SetThreadDesktop(input)) { CloseDesktop(input); return; }
+        if (_followed != IntPtr.Zero) CloseDesktop(_followed);
+        _followed = input;
+    }
+    public static string InputDesktop()
+    {
+        var input = OpenInputDesktop(0, false, 0x0001 /*DESKTOP_READOBJECTS*/);
+        if (input == IntPtr.Zero) return $"(cannot open: error {Marshal.GetLastWin32Error()})";
+        try { return DesktopName(input); } finally { CloseDesktop(input); }
+    }
+    static string DesktopName(IntPtr desktop)
+    {
+        var name = new char[256];
+        return GetUserObjectInformation(desktop, 2 /*UOI_NAME*/, name, (uint)name.Length * 2, out _) ? new string(name).TrimEnd('\0') : "";
+    }
+    [DllImport("user32.dll", SetLastError = true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+    [DllImport("user32.dll")] static extern IntPtr GetThreadDesktop(uint thread);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] static extern bool SetThreadDesktop(IntPtr desktop);
+    [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr desktop);
+    [DllImport("user32.dll", EntryPoint = "GetUserObjectInformationW", CharSet = CharSet.Unicode)] static extern bool GetUserObjectInformation(IntPtr handle, int index, [Out] char[] info, uint bytes, out uint needed);
+
+    public static void Screenshot() { FollowScreen(); ScreenToFile(); }
+    static void ScreenToFile() => FlaUI.Core.Capturing.Capture.Screen().ToFile(Path.Combine(Environment.GetEnvironmentVariable("GITHUB_WORKSPACE") ?? ".", $"screen-{DateTime.Now:HHmmss}.png"));
     public static string Describe(IntPtr h)
     {
         var title = new System.Text.StringBuilder(256); GetWindowText(h, title, 256);
