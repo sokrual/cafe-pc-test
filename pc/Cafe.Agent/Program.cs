@@ -424,7 +424,6 @@ sealed class LockScreen : Form
         keepFront.Tick += (_, _) =>
         {
             if (!Visible) return;
-            LockDesktop.Keep();
             if (WindowState == FormWindowState.Minimized) // Show desktop (Win+D) minimises windows
             { WindowState = FormWindowState.Normal; Bounds = SystemInformation.VirtualScreen; }
             Native.ToTop(Handle); // back above any newer always-on-top window, even one that did not take the focus
@@ -514,18 +513,6 @@ static class LockDesktop
     {
         if (Own && !SwitchDesktop(locked ? _own : _normal))
             Program.Log($"could not give the screen to the {(locked ? "lock screen's" : "normal")} desktop (error {Marshal.GetLastWin32Error()})");
-    }
-
-    // Any program can give the screen to the normal desktop while the PC is locked (measured), so the lock screen's
-    // 0.5 s timer calls this. Asking for the desktop that already has the screen does nothing (measured: 0.02 ms,
-    // no message reaches the lock screen, typing goes on), so it asks every time and never has to look first.
-    static bool _refused; // one log line per refusal, not one every 0.5 s
-    public static void Keep()
-    {
-        if (!Own) return;
-        var refused = !SwitchDesktop(_own);
-        if (refused && !_refused) Program.Log($"Windows refused to give the screen back to the lock screen's desktop (error {Marshal.GetLastWin32Error()}); asking again every 0.5 s");
-        _refused = refused;
     }
 
     [DllImport("user32.dll", EntryPoint = "CreateDesktopW", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr CreateDesktop(string name, IntPtr device, IntPtr mode, uint flags, uint access, IntPtr security);
