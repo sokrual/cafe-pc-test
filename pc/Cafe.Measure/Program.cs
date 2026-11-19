@@ -17,7 +17,12 @@ static class Program
     static readonly object Gate = new();
     static string _log = "";              // set in the child: its lines also go to this file, for the parent to read
     static IntPtr _hwnd;
-    static HookProc? _lockHook, _defaultHook; // kept alive so the garbage collector cannot free the callbacks
+    static HookProc? _lockHook, _defaultHook;
+    delegate uint NativeStart(IntPtr state);
+    static NativeStart? _native;
+    [DllImport("kernel32.dll")] static extern IntPtr CreateThread(IntPtr security, IntPtr stack, IntPtr start, IntPtr state, uint flags, out uint id);
+    [DllImport("ole32.dll")] static extern void CoUninitialize();
+    [DllImport("ole32.dll")] static extern int OleInitialize(IntPtr reserved); // kept alive so the garbage collector cannot free the callbacks
 
     static int Main(string[] args)
     {
@@ -29,7 +34,7 @@ static class Program
     // --child NAME SDDL LOGFILE self|serve sta|mta
     static int Child(string[] a)
     {
-        var (name, sddl, mode, sta) = (a[1], a[2], a[4], a[5] == "sta");
+        var (name, sddl, mode, sta, how) = (a[1], a[2], a[4], a[5] == "sta", a[5]);
         _log = a[3];
         Say($"main thread desktop before CreateDesktop: '{Name(GetThreadDesktop(GetCurrentThreadId()))}'");
         var desk = Create(name, sddl);
@@ -48,19 +53,27 @@ static class Program
         }) { IsBackground = true }.Start();
 
         var shown = new ManualResetEventSlim();
-        var ui = new Thread(() =>
+        ThreadStart run = () =>
         {
             try
             {
+                if (how == "sta-late") { CoUninitialize(); Say("the thread undid .NET's own COM start (CoUninitialize)"); }
                 var set = SetThreadDesktop(desk);
                 Say($"SetThreadDesktop on a new {(sta ? "STA" : "MTA")} thread, own handle: {set} error {Marshal.GetLastPInvokeError()}");
                 if (!set) return;
+                if (how is "sta-late" or "native") Say($"OleInitialize after the move: 0x{OleInitialize(IntPtr.Zero):X}");
+                var lockThread = Environment.CurrentManagedThreadId;
                 _lockHook = (c, w, l) => { if (c >= 0 && (long)w is 0x100 or 0x104) Say($"hook on the lock desktop saw key 0x{Marshal.ReadInt32(l):X2}"); return CallNextHookEx(IntPtr.Zero, c, w, l); };
                 Say($"keyboard hook from the lock-desktop thread: {SetWindowsHookEx(13, _lockHook, GetModuleHandle(null), 0) != IntPtr.Zero} error {Marshal.GetLastPInvokeError()}");
                 var form = new WinForms.Form { Name = "LockScreen", Text = "Measure lock", FormBorderStyle = WinForms.FormBorderStyle.None, StartPosition = WinForms.FormStartPosition.Manual, Bounds = WinForms.SystemInformation.VirtualScreen, BackColor = Color.FromArgb(200, 30, 30), KeyPreview = true };
                 var phone = new WinForms.TextBox { Name = "Phone", Width = 300, Left = 300, Top = 300 };
                 var go = new WinForms.Button { Name = "Go", Text = "Go", Left = 300, Top = 340, BackColor = Color.White };
-                go.Click += (_, _) => Say($"button clicked; Phone text is '{phone.Text}'");
+                go.Click += (_, _) => Say($"button clicked on thread {Environment.CurrentManagedThreadId} (lock thread is {lockThread}); Phone text is '{phone.Text}'");
+                var late = new WinForms.TextBox { Name = "Late", Width = 300, Left = 300, Top = 460, Visible = false };
+                var reveal = new WinForms.Button { Name = "Reveal", Text = "Reveal", Left = 420, Top = 340, BackColor = Color.White };
+                reveal.Click += (_, _) => { Say($"reveal clicked on thread {Environment.CurrentManagedThreadId} (lock thread is {lockThread})"); late.Visible = true; Say("the hidden box is now shown"); };
+                form.Controls.Add(late); form.Controls.Add(reveal);
+                Say($"WinForms says this thread is {WinForms.Application.OleRequired()}; .NET says {Thread.CurrentThread.GetApartmentState()}");
                 form.KeyDown += (_, e) => Say($"lock form saw key {e.KeyCode}");
                 form.FormClosing += (_, e) => { if (e.CloseReason == WinForms.CloseReason.UserClosing) { e.Cancel = true; Say("close refused (Alt+F4 or a close message)"); } };
                 var pin = new WinForms.TextBox { Name = "Pin", Width = 300, Left = 300, Top = 380, PlaceholderText = "PIN", UseSystemPasswordChar = true };
@@ -76,9 +89,14 @@ static class Program
             }
             catch (Exception e) { Say($"lock thread failed: {e}"); }
             finally { shown.Set(); }
-        }) { IsBackground = true };
-        if (sta) ui.SetApartmentState(ApartmentState.STA);
-        ui.Start();
+        };
+        if (how == "native") { _native = _ => { run(); return 0; }; Say($"lock thread made by Windows itself (CreateThread): {CreateThread(IntPtr.Zero, IntPtr.Zero, Marshal.GetFunctionPointerForDelegate(_native), IntPtr.Zero, 0, out _) != IntPtr.Zero}"); }
+        else
+        {
+            var ui = new Thread(run) { IsBackground = true };
+            if (sta) ui.SetApartmentState(ApartmentState.STA);
+            ui.Start();
+        }
         shown.Wait(20000);
         if (_hwnd == IntPtr.Zero) { Say("no lock form: stopping"); return 0; }
 
@@ -100,6 +118,39 @@ static class Program
         using var me = WindowsIdentity.GetCurrent();
         Say($"Windows: {RuntimeInformation.OSDescription} {RuntimeInformation.OSArchitecture}; this program runs as {RuntimeInformation.ProcessArchitecture}; session {Process.GetCurrentProcess().SessionId}; account {me.Name}; admin rights on: {new WindowsPrincipal(me).IsInRole(WindowsBuiltInRole.Administrator)}");
         Say($"start: input desktop '{InputName()}'; desktops [{Desktops()}]");
+
+        Say("");
+        Say("== G. which kind of lock thread lets a UI Automation click run on the lock screen's own thread? ==");
+        foreach (var how in new[] { "mta", "sta-late", "native" })
+        {
+            Say($"-- lock thread: {how}");
+            var (gName, gLog) = ($"Measure-G-{how}", Path.GetTempFileName());
+            var g = StartChild(gName, AdminsOnly, gLog, "serve", how);
+            var gWait = Stopwatch.StartNew();
+            while (gWait.Elapsed.TotalSeconds < 30 && !File.ReadAllText(gLog).Contains("READY hwnd")) Thread.Sleep(250);
+            if (!File.ReadAllText(gLog).Contains("READY hwnd")) { Say("never ready"); try { g.Kill(); } catch (InvalidOperationException) { } Say($"switch back: {SwitchTo("Default")}"); continue; }
+            OnLock(gName, "UI Automation presses Reveal, then looks for the box it shows and types in it", () =>
+            {
+                using var u = new UIA3Automation();
+                var w = FlaUI.Core.Application.Attach(g.Id).GetAllTopLevelWindows(u).First();
+                w.FindFirstDescendant(c => c.ByAutomationId("Reveal"))!.AsButton().Invoke();
+                Thread.Sleep(1500);
+                var box = w.FindFirstDescendant(c => c.ByAutomationId("Late"));
+                if (box is not null) box.AsTextBox().Text = "55555";
+                return $"box found: {box is not null}";
+            });
+            OnLock(gName, "then presses Go (is the lock thread still answering?)", () =>
+            {
+                using var u = new UIA3Automation();
+                FlaUI.Core.Application.Attach(g.Id).GetAllTopLevelWindows(u).First().FindFirstDescendant(c => c.ByAutomationId("Go"))!.AsButton().Invoke();
+                Thread.Sleep(1000); return "invoked";
+            });
+            OnLock(gName, "simulated key 9", () => { Keyboard.Type(VirtualKeyShort.KEY_9); Thread.Sleep(700); return "sent"; });
+            g.Kill(); Thread.Sleep(800);
+            Say($"after: input desktop '{InputName()}'{(InputName() == "Default" ? "" : "; switch back: " + SwitchTo("Default"))}");
+        }
+        return 0;
+#pragma warning disable CS0162 // the earlier sections stay for the record; this round runs only G
 
         Say("");
         Say("== A. rights and thread rules (the child tests itself, then switches back) ==");
