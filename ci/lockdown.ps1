@@ -212,12 +212,20 @@ try {
     $pc3Old = (Get-Content "$stageA\PC3.token" -Raw -ErrorAction SilentlyContinue)
     & "$stageA\install-admin.ps1" -Ci -Pcs 5
     $adminLogAfter = Get-Content "$stageA\install-log.txt" -Raw
+    # THROWAWAY measurement: what exactly did this read see, and when does the message arrive?
+    $akWant = "New keys for the 2 gaming PCs not installed yet \(PC1, PC3\)"; $akT0 = Get-Date
+    $akText = "$adminLogAfter"
+    Write-Host "AK6-MEASURE read at once: message found=$($akText -match $akWant); last line of the installer found=$($akText -match 'New keys for the 2[\s\S]*The counter screen opens now\.'); characters=$($akText.Length)"
+    Write-Host "AK6-MEASURE end of the log as read at once: [$($akText.Substring([Math]::Max(0, $akText.Length - 260)) -replace '\s+', ' ')]"
+    $akWhen = "never in 10 s"; for ($akI = 0; $akI -lt 100; $akI++) { if ("$(Get-Content "$stageA\install-log.txt" -Raw)" -match $akWant) { $akWhen = "$([int]((Get-Date) - $akT0).TotalMilliseconds) ms"; break }; Start-Sleep -Milliseconds 100 }
+    Write-Host "AK6-MEASURE message first seen in the file after: $akWhen"
     $keyNamesAfter = @(Get-ChildItem $stageA -Filter "PC*.token" -File | ForEach-Object BaseName | Sort-Object)
     $null = WaitFor 30 { (KeyState) -eq "200" }; $pc2After = KeyState
     function KeyCode($k, $secret) { if (-not $k) { return "no key file" }; (curl.exe -sk --max-time 10 -o NUL -w "%{http_code}" -H "X-Pc-Token: $($k.Trim())" -H "X-Pc-Bind: $secret" https://127.0.0.1:5443/pc/state) -join "" }
     $pc3New = (Get-Content "$stageA\PC3.token" -Raw -ErrorAction SilentlyContinue)
     $pc3OldCode = KeyCode $pc3Old "lockdown-old-pc3-file"; $pc3NewCode = KeyCode $pc3New "lockdown-test-pc3-secret"
     Check "A.K6" "Running INSTALL-ADMIN again (an update) adds no PCs, keeps the key of the PC already used, and gives the PCs not installed yet new keys: the old copies stop working" (($keyNamesAfter -join ",") -eq "PC1,PC2,PC3" -and $pc2After -eq "200" -and $pc3Old -and $pc3New -and $pc3Old.Trim() -ne $pc3New.Trim() -and $pc3OldCode -eq "401" -and $pc3NewCode -eq "200" -and $adminLogAfter -match "New keys for the 2 gaming PCs not installed yet \(PC1, PC3\)") "key files: $($keyNamesAfter -join ', '); PC2 (used) HTTP $pc2After; PC3 old file HTTP $pc3OldCode, new file HTTP $pc3NewCode; message names PC1, PC3: $($adminLogAfter -match 'PC1, PC3')"
+    Write-Host "AK6-MEASURE done: stopping this throwaway run here"; exit 0
     $offered = "$env:ProgramData\Cafe\updates"
     $offeredList = if (Test-Path "$offered\update.json") { Get-Content "$offered\update.json" -Raw | ConvertFrom-Json } else { $null }
     $offeredFiles = @(Get-ChildItem "$offered\files" -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object Name)
