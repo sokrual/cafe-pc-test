@@ -63,7 +63,10 @@ static class Program
                 go.Click += (_, _) => Say($"button clicked; Phone text is '{phone.Text}'");
                 form.KeyDown += (_, e) => Say($"lock form saw key {e.KeyCode}");
                 form.FormClosing += (_, e) => { if (e.CloseReason == WinForms.CloseReason.UserClosing) { e.Cancel = true; Say("close refused (Alt+F4 or a close message)"); } };
-                form.Controls.Add(phone); form.Controls.Add(go);
+                var pin = new WinForms.TextBox { Name = "Pin", Width = 300, Left = 300, Top = 380, PlaceholderText = "PIN", UseSystemPasswordChar = true };
+                var method = new WinForms.ComboBox { Name = "PaymentMethod", Width = 300, Left = 300, Top = 420, DropDownStyle = WinForms.ComboBoxStyle.DropDownList };
+                method.Items.AddRange(["cash", "upi"]); method.SelectedIndex = 0;
+                form.Controls.Add(phone); form.Controls.Add(go); form.Controls.Add(pin); form.Controls.Add(method);
                 form.Shown += (_, _) => { _hwnd = form.Handle; Say($"lock form shown, bounds {form.Bounds}"); shown.Set(); };
                 var look = new WinForms.Timer { Interval = 1000 };   // what is really on the screen, seen from the lock desktop
                 var looks = 0;
@@ -103,10 +106,10 @@ static class Program
         var n = 0;
         foreach (var (label, sddl, apartment) in new[]
         {
-            ("Windows' default rights, STA thread", "-", "sta"),
+            ("Windows' default rights, STA thread (round 1: refused, error 170)", "-", "sta"),
             ("Windows' default rights, MTA thread", "-", "mta"),
-            ("SYSTEM only, owner refused (stands in for the Customer account's other programs), STA", "D:P(A;;GA;;;SY)(A;;RC;;;OW)", "sta"),
-            ("SYSTEM and admins, owner refused (the planned rights), STA", AdminsOnly, "sta"),
+            ("SYSTEM only, owner refused (stands in for the Customer account's other programs), MTA", "D:P(A;;GA;;;SY)(A;;RC;;;OW)", "mta"),
+            ("SYSTEM and admins, owner refused (the planned rights), MTA", AdminsOnly, "mta"),
         })
         {
             Say($"-- {label}");
@@ -120,7 +123,7 @@ static class Program
         Say("== B. the tester against a lock screen on its own desktop (planned rights) ==");
         const string name = "Measure-B";
         var log = Path.GetTempFileName();
-        var child = StartChild(name, AdminsOnly, log, "serve", "sta");
+        var child = StartChild(name, AdminsOnly, log, "serve", "mta");
         var ready = Stopwatch.StartNew();
         while (ready.Elapsed.TotalSeconds < 40 && !File.ReadAllText(log).Contains("READY hwnd")) Thread.Sleep(250);
         var text = File.ReadAllText(log);
@@ -335,7 +338,7 @@ static class Program
     [DllImport("user32.dll")] static extern IntPtr GetThreadDesktop(uint thread);
     [DllImport("user32.dll")] static extern IntPtr GetProcessWindowStation();
     [DllImport("user32.dll", EntryPoint = "EnumDesktopsW", SetLastError = true)] static extern bool EnumDesktops(IntPtr station, DesktopProc callback, IntPtr state);
-    [DllImport("user32.dll", EntryPoint = "GetUserObjectInformationW", SetLastError = true)] static extern bool GetUserObjectInformation(IntPtr handle, int index, [Out] char[] info, uint bytes, out uint needed);
+    [DllImport("user32.dll", EntryPoint = "GetUserObjectInformationW", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool GetUserObjectInformation(IntPtr handle, int index, [Out] char[] info, uint bytes, out uint needed);
     [DllImport("advapi32.dll", EntryPoint = "ConvertStringSecurityDescriptorToSecurityDescriptorW", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string sddl, uint revision, out IntPtr descriptor, out uint size);
     [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
