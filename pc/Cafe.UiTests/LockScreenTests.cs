@@ -211,6 +211,32 @@ public sealed class LockScreenTests : IDisposable
     }
 
     [Fact]
+    public void E3b_lock_screen_takes_the_screen_back_within_1_second_when_another_program_gives_it_to_the_normal_desktop()
+    {
+        try
+        {
+            _agent = _rig.StartAgent();
+            _app = Application.Attach(_agent.Id);
+            var own = $"CafeLock-{_agent.Id}";
+            Window("LockScreen");
+            Assert.Equal(own, Rig.InputDesktop());
+            for (var round = 1; round <= 5; round++)
+            {
+                Thread.Sleep(600 + round * 130); // a different moment of the lock screen's 0.5 s timer each round
+                Assert.True(Rig.SwitchToNormalDesktop(), $"round {round}: the test could not give the screen to the normal desktop");
+                var since = Stopwatch.StartNew();
+                while (Rig.InputDesktop() != own && since.ElapsedMilliseconds < 1000) Thread.Sleep(10);
+                Assert.True(Rig.InputDesktop() == own, $"round {round}: the lock screen did not have the screen again within 1 s (the screen shows desktop '{Rig.InputDesktop()}')");
+            }
+            LogIn("9000000003", "2222"); // the lock screen still works after that
+            Rig.WaitFor(() => Rig.InputDesktop() == "Default" && Hidden("LockScreen"), 10, "login did not give the normal desktop back", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+            Thread.Sleep(1500); // three turns of the timer: it must leave an unlocked PC's screen alone
+            Assert.Equal("Default", Rig.InputDesktop());
+        }
+        catch { Rig.Screenshot(); throw; }
+    }
+
+    [Fact]
     public async Task E2_a_membership_ending_soon_shows_on_the_customers_timer()
     {
         try
@@ -934,6 +960,14 @@ sealed class Rig : IDisposable
         if (input == IntPtr.Zero) return $"(cannot open: error {Marshal.GetLastWin32Error()})";
         try { return DesktopName(input); } finally { CloseDesktop(input); }
     }
+    // what any program of the customer's can do while the PC is locked (measured): give the screen to the normal desktop
+    public static bool SwitchToNormalDesktop()
+    {
+        var normal = OpenDesktop("Default", 0, false, 0x0100 /*DESKTOP_SWITCHDESKTOP*/);
+        try { return normal != IntPtr.Zero && SwitchDesktop(normal); } finally { CloseDesktop(normal); }
+    }
+    [DllImport("user32.dll", EntryPoint = "OpenDesktopW", CharSet = CharSet.Unicode)] static extern IntPtr OpenDesktop(string name, uint flags, bool inherit, uint access);
+    [DllImport("user32.dll")] static extern bool SwitchDesktop(IntPtr desktop);
     static string DesktopName(IntPtr desktop)
     {
         var name = new char[256];
