@@ -35,6 +35,7 @@ static class Program
     static int Child(string[] a)
     {
         var (name, sddl, mode, sta, how) = (a[1], a[2], a[4], a[5] == "sta", a[5]);
+        var keep = a.Length > 6 && a[6] == "keep"; // round 5: the lock thread itself keeps giving its desktop the screen
         _log = a[3];
         Say($"main thread desktop before CreateDesktop: '{Name(GetThreadDesktop(GetCurrentThreadId()))}'");
         var desk = Create(name, sddl);
@@ -65,10 +66,10 @@ static class Program
                 var lockThread = Environment.CurrentManagedThreadId;
                 _lockHook = (c, w, l) => { if (c >= 0 && (long)w is 0x100 or 0x104) Say($"hook on the lock desktop saw key 0x{Marshal.ReadInt32(l):X2}"); return CallNextHookEx(IntPtr.Zero, c, w, l); };
                 Say($"keyboard hook from the lock-desktop thread: {SetWindowsHookEx(13, _lockHook, GetModuleHandle(null), 0) != IntPtr.Zero} error {Marshal.GetLastPInvokeError()}");
-                var form = new WinForms.Form { Name = "LockScreen", Text = "Measure lock", FormBorderStyle = WinForms.FormBorderStyle.None, StartPosition = WinForms.FormStartPosition.Manual, Bounds = WinForms.SystemInformation.VirtualScreen, BackColor = Color.FromArgb(200, 30, 30), KeyPreview = true };
+                var form = new CountingForm { Name = "LockScreen", Text = "Measure lock", FormBorderStyle = WinForms.FormBorderStyle.None, StartPosition = WinForms.FormStartPosition.Manual, Bounds = WinForms.SystemInformation.VirtualScreen, BackColor = Color.FromArgb(200, 30, 30), KeyPreview = true };
                 var phone = new WinForms.TextBox { Name = "Phone", Width = 300, Left = 300, Top = 300 };
                 var go = new WinForms.Button { Name = "Go", Text = "Go", Left = 300, Top = 340, BackColor = Color.White };
-                go.Click += (_, _) => Say($"button clicked on thread {Environment.CurrentManagedThreadId} (lock thread is {lockThread}); Phone text is '{phone.Text}'");
+                go.Click += (_, _) => Say($"button clicked on thread {Environment.CurrentManagedThreadId} (lock thread is {lockThread}); Phone text is '{phone.Text}'; foreground is the lock form: {GetForegroundWindow() == form.Handle}; keyboard focus is on Phone: {GetFocus() == phone.Handle}");
                 var late = new WinForms.TextBox { Name = "Late", Width = 300, Left = 300, Top = 460, Visible = false };
                 var reveal = new WinForms.Button { Name = "Reveal", Text = "Reveal", Left = 420, Top = 340, BackColor = Color.White };
                 reveal.Click += (_, _) => { Say($"reveal clicked on thread {Environment.CurrentManagedThreadId} (lock thread is {lockThread})"); late.Visible = true; Say("the hidden box is now shown"); };
@@ -85,6 +86,50 @@ static class Program
                 var looks = 0;
                 look.Tick += (_, _) => { if (++looks is 2 or 3) Say($"screen pixel seen from the lock-desktop thread: {Pixel()} (lock form is red 200,30,30); foreground is the lock form: {GetForegroundWindow() == form.Handle}"); };
                 look.Start();
+                if (keep) form.Shown += async (_, _) =>
+                {
+                    string State() => $"foreground is the lock form: {GetForegroundWindow() == form.Handle}; keyboard focus is on Phone: {GetFocus() == phone.Handle}";
+                    await Task.Delay(2500); // the main thread has given this desktop the screen by now
+                    phone.Focus();
+                    await Task.Delay(500);
+                    var before = CountingForm.Snapshot();
+                    await Task.Delay(3000);
+                    Say($"H1 3 s with the screen and no SwitchDesktop calls: messages to the lock form [{CountingForm.Since(before)}]; {State()}");
+
+                    before = CountingForm.Snapshot();
+                    var (results, slowest) = (new List<string>(), 0.0);
+                    for (var i = 0; i < 6; i++)
+                    {
+                        var t = Stopwatch.StartNew();
+                        var ok = SwitchDesktop(desk);
+                        var error = Marshal.GetLastPInvokeError();
+                        slowest = Math.Max(slowest, t.Elapsed.TotalMilliseconds);
+                        results.Add(ok ? "True" : $"False error {error}");
+                        await Task.Delay(500);
+                    }
+                    Say($"H2 6 SwitchDesktop calls for the desktop that already has the screen, 0.5 s apart: [{string.Join(", ", results)}]; slowest call {slowest:0.000} ms; input desktop '{InputName()}'; messages to the lock form [{CountingForm.Since(before)}]; {State()}");
+
+                    before = CountingForm.Snapshot();
+                    var (burst, failed) = (Stopwatch.StartNew(), 0);
+                    for (var i = 0; i < 200; i++) if (!SwitchDesktop(desk)) failed++;
+                    burst.Stop();
+                    await Task.Delay(500);
+                    Say($"H3 200 such calls one after another: {failed} failed; {burst.Elapsed.TotalMilliseconds:0.000} ms in all; messages to the lock form [{CountingForm.Since(before)}]; {State()}");
+
+                    before = CountingForm.Snapshot();
+                    var away = Stopwatch.StartNew(); var left = SwitchTo("Default"); away.Stop();
+                    var onDefault = InputName();
+                    await Task.Delay(300);
+                    var back = Stopwatch.StartNew(); var returned = SwitchDesktop(desk); var backError = Marshal.GetLastPInvokeError(); back.Stop();
+                    await Task.Delay(500);
+                    Say($"H4 for comparison, a real switch to Default ({left}, {away.Elapsed.TotalMilliseconds:0.000} ms, input desktop then '{onDefault}') and 0.3 s later back ({returned} error {backError}, {back.Elapsed.TotalMilliseconds:0.000} ms): input desktop '{InputName()}'; messages to the lock form [{CountingForm.Since(before)}]; {State()}");
+
+                    var (calls, refused) = (0, 0);
+                    var keeper = new WinForms.Timer { Interval = 500 }; // what change 2 would do: the lock screen's own 0.5 s timer
+                    keeper.Tick += (_, _) => { calls++; if (!SwitchDesktop(desk)) Say($"H keeper call {calls} refused: error {Marshal.GetLastPInvokeError()} (refused so far: {++refused})"); };
+                    keeper.Start();
+                    Say("KEEPING");
+                };
                 WinForms.Application.Run(form);
             }
             catch (Exception e) { Say($"lock thread failed: {e}"); }
@@ -120,6 +165,53 @@ static class Program
         Say($"start: input desktop '{InputName()}'; desktops [{Desktops()}]");
 
         Say("");
+        Say("== H. is it safe for the lock screen's 0.5 s timer to call SwitchDesktop every time, and does that bring the screen back? ==");
+        const string hName = "Measure-H";
+        var hLog = Path.GetTempFileName();
+        var h = StartChild(hName, AdminsOnly, hLog, "serve", "native", "keep");
+        var hWait = Stopwatch.StartNew();
+        while (hWait.Elapsed.TotalSeconds < 60 && !File.ReadAllText(hLog).Contains("KEEPING")) Thread.Sleep(250);
+        if (!File.ReadAllText(hLog).Contains("KEEPING")) Say("the child never started keeping the screen");
+        else
+        {
+            OnLock(hName, "H5 30 keys typed over 6 s while the timer calls SwitchDesktop every 0.5 s, then Go (the child prints what arrived; expected 012345678901234567890123456789)", () =>
+            {
+                using var u = new UIA3Automation();
+                var w = FlaUI.Core.Application.Attach(h.Id).GetAllTopLevelWindows(u).First();
+                w.FindFirstDescendant(c => c.ByAutomationId("Phone"))!.Focus();
+                Thread.Sleep(300);
+                foreach (var key in "012345678901234567890123456789") { Keyboard.Type(key); Thread.Sleep(200); }
+                w.FindFirstDescendant(c => c.ByAutomationId("Go"))!.AsButton().Invoke();
+                Thread.Sleep(700);
+                return "sent";
+            });
+            var pause = 0;
+            foreach (var gap in new[] { 0, 130, 260, 390, 70, 200, 330, 460 }) // spread over the timer's 0.5 s
+            {
+                Thread.Sleep(1000 + gap);
+                var took = Stopwatch.StartNew();
+                var switched = SwitchTo("Default");
+                var seenDefault = InputName();
+                while (took.Elapsed.TotalSeconds < 3 && InputName() != hName) Thread.Sleep(10);
+                Say($"H6.{++pause} another program switches to Default: {switched}; input desktop right after '{seenDefault}'; the lock desktop had the screen again after {took.Elapsed.TotalMilliseconds:0} ms (input desktop '{InputName()}')");
+            }
+            Thread.Sleep(700);
+            OnLock(hName, "H7 after those 8 switches, 3 more keys with no new focus call, then Go (expected the 30 keys and then 777)", () =>
+            {
+                using var u = new UIA3Automation();
+                foreach (var key in "777") { Keyboard.Type(key); Thread.Sleep(200); }
+                FlaUI.Core.Application.Attach(h.Id).GetAllTopLevelWindows(u).First().FindFirstDescendant(c => c.ByAutomationId("Go"))!.AsButton().Invoke();
+                Thread.Sleep(700);
+                return "sent";
+            });
+        }
+        try { h.Kill(); } catch (InvalidOperationException) { }
+        Thread.Sleep(800);
+        Say($"after: input desktop '{InputName()}'{(InputName() == "Default" ? "" : "; switch back: " + SwitchTo("Default"))}");
+        return 0;
+#pragma warning disable CS0162 // the earlier sections stay for the record; this round runs only H
+
+        Say("");
         Say("== G. which kind of lock thread lets a UI Automation click run on the lock screen's own thread? ==");
         foreach (var how in new[] { "mta", "sta-late", "native" })
         {
@@ -150,7 +242,6 @@ static class Program
             Say($"after: input desktop '{InputName()}'{(InputName() == "Default" ? "" : "; switch back: " + SwitchTo("Default"))}");
         }
         return 0;
-#pragma warning disable CS0162 // the earlier sections stay for the record; this round runs only G
 
         Say("");
         Say("== A. rights and thread rules (the child tests itself, then switches back) ==");
@@ -308,10 +399,10 @@ static class Program
         return 0;
     }
 
-    static Process StartChild(string name, string sddl, string log, string mode, string apartment)
+    static Process StartChild(string name, string sddl, string log, string mode, string apartment, string extra = "-")
     {
         var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
-        foreach (var a in new[] { "--child", name, sddl, log, mode, apartment }) start.ArgumentList.Add(a);
+        foreach (var a in new[] { "--child", name, sddl, log, mode, apartment, extra }) start.ArgumentList.Add(a);
         return Process.Start(start)!;
     }
 
@@ -453,6 +544,7 @@ static class Program
     [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetWindowsHookEx(int id, HookProc callback, IntPtr module, uint thread);
     [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern IntPtr GetFocus();
     [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string? className, string title);
@@ -462,4 +554,23 @@ static class Program
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder text, int max);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
     [DllImport("user32.dll", EntryPoint = "SendMessageW", CharSet = CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, string? lParam);
+}
+
+// round 5: counts every message Windows sends to the lock form, to see what a SwitchDesktop call does to it
+sealed class CountingForm : WinForms.Form
+{
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<int, int> Seen = new();
+    static readonly Dictionary<int, string> Names = new()
+    {
+        [0x0006] = "ACTIVATE", [0x0007] = "SETFOCUS", [0x0008] = "KILLFOCUS", [0x000F] = "PAINT", [0x0014] = "ERASEBKGND", [0x001C] = "ACTIVATEAPP",
+        [0x0046] = "WINDOWPOSCHANGING", [0x0047] = "WINDOWPOSCHANGED", [0x007E] = "DISPLAYCHANGE", [0x0086] = "NCACTIVATE", [0x0085] = "NCPAINT", [0x0088] = "SYNCPAINT",
+    };
+    protected override void WndProc(ref WinForms.Message m) { Seen.AddOrUpdate(m.Msg, 1, (_, n) => n + 1); base.WndProc(ref m); }
+    public static Dictionary<int, int> Snapshot() => new(Seen);
+    public static string Since(Dictionary<int, int> before)
+    {
+        var parts = Seen.Select(p => (p.Key, Count: p.Value - before.GetValueOrDefault(p.Key))).Where(p => p.Count > 0).OrderBy(p => p.Key)
+            .Select(p => $"{(Names.TryGetValue(p.Key, out var name) ? name : $"0x{p.Key:X4}")} x{p.Count}");
+        return string.Join(", ", parts) is { Length: > 0 } text ? text : "none";
+    }
 }
