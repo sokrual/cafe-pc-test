@@ -212,13 +212,18 @@ try {
     $pc3Old = (Get-Content "$stageA\PC3.token" -Raw -ErrorAction SilentlyContinue)
     & "$stageA\install-admin.ps1" -Ci -Pcs 5
     $adminLogAfter = Get-Content "$stageA\install-log.txt" -Raw
-    # THROWAWAY measurement: what exactly did this read see, and when does the message arrive?
-    $akWant = "New keys for the 2 gaming PCs not installed yet \(PC1, PC3\)"; $akT0 = Get-Date
-    $akText = "$adminLogAfter"
-    Write-Host "AK6-MEASURE read at once: message found=$($akText -match $akWant); last line of the installer found=$($akText -match 'New keys for the 2[\s\S]*The counter screen opens now\.'); characters=$($akText.Length)"
-    Write-Host "AK6-MEASURE end of the log as read at once: [$($akText.Substring([Math]::Max(0, $akText.Length - 260)) -replace '\s+', ' ')]"
-    $akWhen = "never in 10 s"; for ($akI = 0; $akI -lt 100; $akI++) { if ("$(Get-Content "$stageA\install-log.txt" -Raw)" -match $akWant) { $akWhen = "$([int]((Get-Date) - $akT0).TotalMilliseconds) ms"; break }; Start-Sleep -Milliseconds 100 }
-    Write-Host "AK6-MEASURE message first seen in the file after: $akWhen"
+    # THROWAWAY measurement: keep exactly what this read saw, and the file itself, for the day the check fails again
+    $akDir = Join-Path $repo "ak6-evidence"; New-Item $akDir -ItemType Directory -Force | Out-Null
+    $akBytes = { $s = [IO.File]::Open("$stageA\install-log.txt", "Open", "Read", "ReadWrite"); try { $b = New-Object byte[] $s.Length; [void]$s.Read($b, 0, $b.Length); , $b } finally { $s.Dispose() } }
+    [IO.File]::WriteAllBytes("$akDir\log-at-once.bin", [byte[]](& $akBytes))
+    $akText = "$adminLogAfter"; [IO.File]::WriteAllText("$akDir\read-by-the-check.txt", $akText)
+    $akExact = "New keys for the 2 gaming PCs not installed yet \(PC1, PC3\)"; $akLoose = "New\s+keys\s+for\s+the\s+2\s+gaming\s+PCs\s+not\s+installed\s+yet\s+\(PC1,\s+PC3\)"
+    $akWidth = try { "buffer $($Host.UI.RawUI.BufferSize.Width), window $($Host.UI.RawUI.WindowSize.Width)" } catch { "not readable ($($_.Exception.Message))" }
+    Write-Host "AK6-MEASURE read at once: exact match=$($akText -match $akExact); match allowing line breaks=$($akText -match $akLoose); characters=$($akText.Length); file bytes=$(([byte[]](& $akBytes)).Length); 'Transcript started' lines=$(([regex]::Matches($akText, 'Transcript started')).Count); NUL characters=$(([regex]::Matches($akText, [string][char]0)).Count); console width: $akWidth; host: $($Host.Name)"
+    Start-Sleep -Seconds 10
+    [IO.File]::WriteAllBytes("$akDir\log-10s-later.bin", [byte[]](& $akBytes))
+    $akLater = "$(Get-Content "$stageA\install-log.txt" -Raw)"
+    Write-Host "AK6-MEASURE 10 s later: exact match=$($akLater -match $akExact); match allowing line breaks=$($akLater -match $akLoose); characters=$($akLater.Length)"
     $keyNamesAfter = @(Get-ChildItem $stageA -Filter "PC*.token" -File | ForEach-Object BaseName | Sort-Object)
     $null = WaitFor 30 { (KeyState) -eq "200" }; $pc2After = KeyState
     function KeyCode($k, $secret) { if (-not $k) { return "no key file" }; (curl.exe -sk --max-time 10 -o NUL -w "%{http_code}" -H "X-Pc-Token: $($k.Trim())" -H "X-Pc-Bind: $secret" https://127.0.0.1:5443/pc/state) -join "" }
