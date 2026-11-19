@@ -35,7 +35,8 @@ static class Program
     static int Child(string[] a)
     {
         var (name, sddl, mode, sta, how) = (a[1], a[2], a[4], a[5] == "sta", a[5]);
-        var keep = a.Length > 6 && a[6] == "keep"; // round 5: the lock thread itself keeps giving its desktop the screen
+        var keepMs = a.Length > 6 && a[6].StartsWith("keep") ? (a[6].Length > 4 ? int.Parse(a[6][4..]) : 500) : 0; // "keep" = every 500 ms, "keep50" = every 50 ms
+        var keep = keepMs > 0; // round 5: the lock thread itself keeps giving its desktop the screen
         _log = a[3];
         Say($"main thread desktop before CreateDesktop: '{Name(GetThreadDesktop(GetCurrentThreadId()))}'");
         var desk = Create(name, sddl);
@@ -125,7 +126,7 @@ static class Program
                     Say($"H4 for comparison, a real switch to Default ({left}, {away.Elapsed.TotalMilliseconds:0.000} ms, input desktop then '{onDefault}') and 0.3 s later back ({returned} error {backError}, {back.Elapsed.TotalMilliseconds:0.000} ms): input desktop '{InputName()}'; messages to the lock form [{CountingForm.Since(before)}]; {State()}");
 
                     var (calls, refused) = (0, 0);
-                    var keeper = new WinForms.Timer { Interval = 500 }; // what change 2 would do: the lock screen's own 0.5 s timer
+                    var keeper = new WinForms.Timer { Interval = keepMs }; // what change 2 would do: the lock screen's own 0.5 s timer
                     keeper.Tick += (_, _) => { calls++; if (!SwitchDesktop(desk)) Say($"H keeper call {calls} refused: error {Marshal.GetLastPInvokeError()} (refused so far: {++refused})"); };
                     keeper.Start();
                     Say("KEEPING");
@@ -208,6 +209,36 @@ static class Program
         try { h.Kill(); } catch (InvalidOperationException) { }
         Thread.Sleep(800);
         Say($"after: input desktop '{InputName()}'{(InputName() == "Default" ? "" : "; switch back: " + SwitchTo("Default"))}");
+
+        Say("");
+        Say("== H8. a program that switches to Default again and again (it looks every 5 ms and switches whenever the lock desktop has the screen), for 5 s ==");
+        foreach (var keepArg in new[] { "keep", "keep50" })
+        {
+            var (name8, log8) = ($"Measure-H8-{keepArg}", Path.GetTempFileName());
+            var child8 = StartChild(name8, AdminsOnly, log8, "serve", "native", keepArg);
+            var wait8 = Stopwatch.StartNew();
+            while (wait8.Elapsed.TotalSeconds < 60 && !File.ReadAllText(log8).Contains("KEEPING")) Thread.Sleep(250);
+            if (!File.ReadAllText(log8).Contains("KEEPING")) Say($"{keepArg}: the child never started keeping the screen");
+            else
+            {
+                Thread.Sleep(1200);
+                var normal = OpenDesktop("Default", 0, false, 0x0100 /*DESKTOP_SWITCHDESKTOP*/);
+                var (looks, onDefault, switches, refusedSwitches, hammer) = (0, 0, 0, 0, Stopwatch.StartNew());
+                while (hammer.Elapsed.TotalSeconds < 5)
+                {
+                    looks++;
+                    if (InputName() == "Default") onDefault++;
+                    else if (SwitchDesktop(normal)) switches++; else refusedSwitches++;
+                    Thread.Sleep(5);
+                }
+                CloseDesktop(normal);
+                Thread.Sleep(1200);
+                Say($"lock screen timer every {(keepArg == "keep" ? 500 : 50)} ms: the normal desktop had the screen in {onDefault} of {looks} looks ({100.0 * onDefault / looks:0}%); the program switched {switches} times, Windows refused {refusedSwitches}; 1.2 s after it stopped the input desktop is '{InputName()}'");
+            }
+            try { child8.Kill(); } catch (InvalidOperationException) { }
+            Thread.Sleep(800);
+            Say($"after: input desktop '{InputName()}'{(InputName() == "Default" ? "" : "; switch back: " + SwitchTo("Default"))}");
+        }
         return 0;
 #pragma warning disable CS0162 // the earlier sections stay for the record; this round runs only H
 
