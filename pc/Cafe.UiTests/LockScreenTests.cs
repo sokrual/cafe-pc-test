@@ -86,19 +86,27 @@ public sealed class LockScreenTests : IDisposable
         Assert.True(lockWin.BoundingRectangle.Contains(desk) || lockWin.BoundingRectangle == desk, $"lock screen {lockWin.BoundingRectangle} does not cover the screen {desk}");
 
         // T1.1 escape attempts while locked
+        var escaped = new List<string>();
         foreach (var (name, keys) in new (string, VirtualKeyShort[])[]
         {
             ("Alt+Tab", [VirtualKeyShort.ALT, VirtualKeyShort.TAB]), ("Win", [VirtualKeyShort.LWIN]),
             ("Win+R", [VirtualKeyShort.LWIN, VirtualKeyShort.KEY_R]), ("Win+D", [VirtualKeyShort.LWIN, VirtualKeyShort.KEY_D]),
             ("Alt+F4", [VirtualKeyShort.ALT, VirtualKeyShort.F4]), ("Ctrl+Esc", [VirtualKeyShort.CONTROL, VirtualKeyShort.ESCAPE]),
             ("Alt+Esc", [VirtualKeyShort.ALT, VirtualKeyShort.ESCAPE]),
+            // E3b, measured with no key blocker: Task Manager opened on the lock screen's desktop; Settings opened on the normal one
+            ("Ctrl+Shift+Esc", [VirtualKeyShort.CONTROL, VirtualKeyShort.SHIFT, VirtualKeyShort.ESCAPE]), ("Win+U", [VirtualKeyShort.LWIN, VirtualKeyShort.KEY_U]),
         })
         {
+            var running = Process.GetProcesses().Select(p => p.Id).ToHashSet();
             Keyboard.TypeSimultaneously(keys);
-            Thread.Sleep(1200);
-            Assert.False(_agent.HasExited, $"{name} closed the PC program");
-            Assert.True(OnTop("LockScreen"), $"{name} got past the lock screen (foreground is now '{Rig.ForegroundTitle()}')");
+            Thread.Sleep(2500); // the measurement's wait: Settings and Task Manager were open by then
+            var opened = Process.GetProcesses().Where(p => !running.Contains(p.Id) && p.ProcessName is "Taskmgr" or "Utilman" or "SystemSettings").ToList();
+            if (opened.Count > 0) escaped.Add($"{name} opened {string.Join(", ", opened.Select(p => p.ProcessName))}");
+            opened.ForEach(Rig.Kill);
+            if (_agent.HasExited) escaped.Add($"{name} closed the PC program");
+            else if (!OnTop("LockScreen")) escaped.Add($"{name} got past the lock screen (foreground is now '{Rig.ForegroundTitle()}')");
         }
+        Assert.True(escaped.Count == 0, string.Join("\n", escaped)); // every key is tried, so one run shows each one that got through
         using (var other = Process.Start(new ProcessStartInfo("cmd.exe", "/k title Escape-attempt") { UseShellExecute = true }))
         {
             Thread.Sleep(2500);

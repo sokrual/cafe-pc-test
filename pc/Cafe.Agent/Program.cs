@@ -107,10 +107,11 @@ sealed class Agent : ApplicationContext
 
     public Agent(string name)
     {
+        KeyBlocker.Install(); // first: if Windows will not move its thread, the lock screen stays on the normal desktop with it
         _lock = LockScreen.Start(name, (phone, pin) => OnMain(() => Login(phone, pin)),
             (phone, code, minutes, method, upi) => OnMain(() => OfflineUnlock(phone, code, minutes, method, upi)));
         _timer = new TimerWidget(Now, () => Send("/pc/logout", lockNow: true), () => Send("/pc/selflock", lockNow: true), () => Apply(_state with { Locked = true, Message = "Time is up. Please ask at the counter." }));
-        KeyBlocker.Install(_lock);
+        KeyBlocker.Follow(_lock);
         var poll = new System.Windows.Forms.Timer { Interval = 2000 };
         poll.Tick += async (_, _) =>
         {
@@ -514,7 +515,8 @@ static class LockDesktop
             : $"lock screen stays on the normal desktop: Windows refused the second desktop (error {Marshal.GetLastWin32Error()})");
     }
 
-    // the lock screen's thread calls this before it makes any window (Windows moves no thread that has one)
+    // the key blocker's thread, then the lock screen's, call this before they make any window or hook (Windows moves no
+    // thread that has one). A refusal for the first leaves both on the normal desktop.
     public static void MoveThreadHere()
     {
         if (!Own || SetThreadDesktop(_own)) return;
@@ -660,14 +662,16 @@ static class KeyBlocker
 
     // The hook gets its own thread and message loop. On the screen's thread, any slow moment there (taking the
     // focus back, a redraw) delays every key; Windows lets a late key through and, after a few, drops the hook.
-    public static void Install(Form lockScreen)
+    // The thread sits on the lock screen's desktop: a hook sees only the keys typed on its own thread's desktop (measured).
+    // Without it, Ctrl+Shift+Esc opened Task Manager on the lock screen's desktop and Win+U opened Settings (measured).
+    public static void Install()
     {
-        _on = lockScreen.Visible;
-        lockScreen.VisibleChanged += (_, _) => _on = lockScreen.Visible;
+        _on = true; // the PC starts locked
         var ready = new ManualResetEventSlim();
         var ok = false;
         var thread = new Thread(() =>
         {
+            LockDesktop.MoveThreadHere();
             _proc = Hook;
             ok = SetWindowsHookEx(13 /*WH_KEYBOARD_LL*/, _proc, GetModuleHandle(null), 0) != IntPtr.Zero;
             ready.Set();
@@ -676,6 +680,12 @@ static class KeyBlocker
         thread.Start();
         ready.Wait();
         if (!ok) throw new InvalidOperationException("keyboard hook failed");
+    }
+
+    public static void Follow(Form lockScreen)
+    {
+        _on = lockScreen.Visible;
+        lockScreen.VisibleChanged += (_, _) => _on = lockScreen.Visible;
     }
 
     static IntPtr Hook(int code, IntPtr wParam, IntPtr lParam)
