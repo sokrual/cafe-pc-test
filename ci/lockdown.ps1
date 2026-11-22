@@ -1293,6 +1293,12 @@ try {
     Check "B3.F10" "Customer's autostart entry removed, the owner's kept" ($runMade -eq 0 -and $ownerRun -eq 0 -and $resetOwnerRunOk) "made: customer exit $runMade, owner exit $ownerRun"
     cmd.exe /c "schtasks /query /tn CafeCustomerTask >nul 2>&1"
     Check "B3.F11" "Customer's scheduled task removed" ($taskMade -eq 0 -and $LASTEXITCODE -ne 0) "made: exit $taskMade"
+    # E3b: the lock screen's own desktop refuses every other program of the Customer. The lock screen program, run as the
+    # Customer (a standard user), makes the desktop exactly as the lock screen does, uses its own handle, then starts itself
+    # once more in the same sign-in to try to open the desktop by name.
+    $lockDesktop = AsCustomer "$app\Cafe.Agent.exe" "--test-lock-desktop make"
+    $lockDesktopDone = $lockDesktop.WaitForExit(60000)
+    Check "E3b.L1" "The lock screen's own desktop, made by the Customer, cannot be opened by another program of the Customer: not to switch the screen, read or make windows, set hooks, or read or change its rights" ($lockDesktopDone -and $lockDesktop.ExitCode -eq 0) "finished $lockDesktopDone; exit code $($lockDesktop.ExitCode) (0 = made, the maker's own handle works, the other program was refused every time; 1 = Windows refused to make the desktop; 2 = the maker's handle could not move a thread to it; 3 = the other program OPENED it; 4 = the other program did not finish; 5 = refused, but not as 'access denied')"
     # Verify final server state and the bill through staff endpoints; queue-empty alone is not proof.
     $loginState = Pc "/pc/login" @{ phone = "9000000003"; pin = "2222" }
     $sessionBeforeLogout = $loginState.Session

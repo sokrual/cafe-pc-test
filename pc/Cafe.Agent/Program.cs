@@ -14,13 +14,13 @@ static class ProcessSecurity
     static extern IntPtr GetCurrentProcess();
 
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string sddl, uint revision, out IntPtr descriptor, out uint size);
+    internal static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string sddl, uint revision, out IntPtr descriptor, out uint size);
 
     [DllImport("advapi32.dll", SetLastError = true)]
     static extern bool SetKernelObjectSecurity(IntPtr handle, uint securityInformation, IntPtr securityDescriptor);
 
     [DllImport("kernel32.dll")]
-    static extern IntPtr LocalFree(IntPtr memory);
+    internal static extern IntPtr LocalFree(IntPtr memory);
 
     public static void Harden()
     {
@@ -58,6 +58,8 @@ static class Program
         ProcessSecurity.Harden();
         var testQueuePath = args.Contains("--test-queue-selflock", StringComparer.OrdinalIgnoreCase) ? "/pc/selflock"
             : args.Contains("--test-queue-logout", StringComparer.OrdinalIgnoreCase) ? "/pc/logout" : null;
+        // lockdown check E3b.L1, run as Customer: see LockDesktop.Test
+        if (Arg("--test-lock-desktop") is string lockDesktopTest) { Environment.ExitCode = LockDesktop.Test(lockDesktopTest); return; }
         if (testQueuePath is not null)
         {
             using var response = new WatchdogPipeClient().PostAsJsonAsync("/local/queue-action", new { path = testQueuePath }).GetAwaiter().GetResult();
@@ -488,6 +490,11 @@ static class LockDesktop
 {
     static IntPtr _own, _normal;
     static bool Own => _own != IntPtr.Zero;
+    // Who may use the lock screen's desktop: Windows itself, admins (the owner's tools, the tests) and this program
+    // through the handle it gets when it makes the desktop. Measured as a standard user: with these rights another
+    // program of the same account cannot open the desktop for anything; with the rights Windows gives by itself it can
+    // open it for everything. OW: the maker may read the rights, not change them.
+    const string Rights = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;RC;;;OW)";
 
     public static void Make(bool testOnNormal)
     {
@@ -495,7 +502,12 @@ static class LockDesktop
         {
             _normal = OpenDesktop("Default", 0, false, 0x0100 /*DESKTOP_SWITCHDESKTOP*/);
             // the process number in the name: a restarted program never meets the last one's desktop
-            if (_normal != IntPtr.Zero) _own = CreateDesktop($"CafeLock-{Environment.ProcessId}", IntPtr.Zero, IntPtr.Zero, 0, 0x10000000 /*GENERIC_ALL*/, IntPtr.Zero);
+            if (_normal != IntPtr.Zero && ProcessSecurity.ConvertStringSecurityDescriptorToSecurityDescriptor(Rights, 1, out var descriptor, out _))
+            {
+                var security = new SecurityAttributes { Length = Marshal.SizeOf<SecurityAttributes>(), Descriptor = descriptor };
+                _own = CreateDesktop($"CafeLock-{Environment.ProcessId}", IntPtr.Zero, IntPtr.Zero, 0, 0x10000000 /*GENERIC_ALL*/, ref security);
+                ProcessSecurity.LocalFree(descriptor);   // keeps CreateDesktop's error for the log line below
+            }
         }
         Program.Log(Own ? "lock screen has its own desktop"
             : testOnNormal ? "lock screen stays on the normal desktop (test switch)"
@@ -528,7 +540,33 @@ static class LockDesktop
         _refused = refused;
     }
 
-    [DllImport("user32.dll", EntryPoint = "CreateDesktopW", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr CreateDesktop(string name, IntPtr device, IntPtr mode, uint flags, uint access, IntPtr security);
+    // Lockdown check E3b.L1 starts the program with this as Customer, a standard user. "make": make the desktop exactly as
+    // the lock screen does, use the maker's own handle, then start this program once more, in the same Windows sign-in, to
+    // try to open the desktop by name. 0 = made, own handle works, the other program was refused every time.
+    public static int Test(string name)
+    {
+        if (name != "make")
+        {
+            // everything, switch the screen to it, read its windows, make a window, hooks, change its rights, read its rights
+            foreach (var access in new uint[] { 0x10000000, 0x0100, 0x0001, 0x0002, 0x0008, 0x00040000, 0x00020000 })
+            {
+                if (OpenDesktop(name, 0, false, access) != IntPtr.Zero) return 3;   // opened
+                if (Marshal.GetLastWin32Error() != 5) return 5;                      // refused, but not as "access denied"
+            }
+            return 0;
+        }
+        Make(false);
+        if (!Own) return 1;
+        var moved = false;
+        var mover = new Thread(() => moved = SetThreadDesktop(_own));
+        mover.Start(); mover.Join();
+        if (!moved) return 2;
+        using var other = Process.Start(Environment.ProcessPath!, ["--test-lock-desktop", $"CafeLock-{Environment.ProcessId}"]);
+        return other.WaitForExit(30000) ? other.ExitCode : 4;
+    }
+
+    [StructLayout(LayoutKind.Sequential)] struct SecurityAttributes { public int Length; public IntPtr Descriptor; public int Inherit; }
+    [DllImport("user32.dll", EntryPoint = "CreateDesktopW", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr CreateDesktop(string name, IntPtr device, IntPtr mode, uint flags, uint access, ref SecurityAttributes security);
     [DllImport("user32.dll", EntryPoint = "OpenDesktopW", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr OpenDesktop(string name, uint flags, bool inherit, uint access);
     [DllImport("user32.dll", SetLastError = true)] static extern bool SetThreadDesktop(IntPtr desktop);
     [DllImport("user32.dll", SetLastError = true)] static extern bool SwitchDesktop(IntPtr desktop);
