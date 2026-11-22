@@ -870,13 +870,13 @@ sealed class Rig : IDisposable
 
     public async Task<string> StaffToken()
     {
-        var r = await _http.PostAsJsonAsync("/staff/login", new { phone = "9000000002", pin = "111111" });
+        var r = await Http.PostAsJsonAsync("/staff/login", new { phone = "9000000002", pin = "111111" });
         r.EnsureSuccessStatusCode();
         return (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["token"];
     }
     public async Task<string> OwnerToken()
     {
-        var r = await _http.PostAsJsonAsync("/staff/login", new { phone = "9000000001", pin = "432100" });
+        var r = await Http.PostAsJsonAsync("/staff/login", new { phone = "9000000001", pin = "432100" });
         r.EnsureSuccessStatusCode();
         return (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["token"];
     }
@@ -885,26 +885,26 @@ sealed class Rig : IDisposable
         var token = await OwnerToken();
         using var start = new HttpRequestMessage(HttpMethod.Post, "/staff/two-step/staff/start") { Content = JsonContent.Create(new { phone = "9000000002" }) };
         start.Headers.Authorization = new("Bearer", token);
-        using var started = await _http.SendAsync(start);
+        using var started = await Http.SendAsync(start);
         started.EnsureSuccessStatusCode();
         var secret = (await started.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["secret"];
         using var confirm = new HttpRequestMessage(HttpMethod.Post, "/staff/two-step/staff/on")
         { Content = JsonContent.Create(new { phone = "9000000002", secret, code = AppCode(secret) }) };
         confirm.Headers.Authorization = new("Bearer", token);
-        using var enabled = await _http.SendAsync(confirm);
+        using var enabled = await Http.SendAsync(confirm);
         enabled.EnsureSuccessStatusCode();
 
         using var offlineStart = new HttpRequestMessage(HttpMethod.Post, "/staff/two-step/offline/start")
         { Content = JsonContent.Create(new { phone = "9000000002" }) };
         offlineStart.Headers.Authorization = new("Bearer", token);
-        using var offlineStarted = await _http.SendAsync(offlineStart);
+        using var offlineStarted = await Http.SendAsync(offlineStart);
         offlineStarted.EnsureSuccessStatusCode();
         var offlineSecret = (await offlineStarted.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["secret"];
         Assert.NotEqual(secret, offlineSecret);
         using var offlineConfirm = new HttpRequestMessage(HttpMethod.Post, "/staff/two-step/offline/on")
         { Content = JsonContent.Create(new { phone = "9000000002", secret = offlineSecret, code = AppCode(offlineSecret) }) };
         offlineConfirm.Headers.Authorization = new("Bearer", token);
-        using var offlineEnabled = await _http.SendAsync(offlineConfirm);
+        using var offlineEnabled = await Http.SendAsync(offlineConfirm);
         offlineEnabled.EnsureSuccessStatusCode();
         return offlineSecret;
     }
@@ -923,14 +923,16 @@ sealed class Rig : IDisposable
         var binary = ((hash[offset] & 127) << 24) | (hash[offset + 1] << 16) | (hash[offset + 2] << 8) | hash[offset + 3];
         return (binary % 1_000_000).ToString("D6");
     }
-    public async Task<int> TryStaffLogin(string phone, string pin) => (int)(await _http.PostAsJsonAsync("/staff/login", new { phone, pin })).StatusCode;
+    public async Task<int> TryStaffLogin(string phone, string pin) => (int)(await Http.PostAsJsonAsync("/staff/login", new { phone, pin })).StatusCode;
     public async Task Post(string path, object body, string token)
     {
         using var m = new HttpRequestMessage(HttpMethod.Post, path) { Content = JsonContent.Create(body) };
         m.Headers.Authorization = new("Bearer", token);
-        (await _http.SendAsync(m)).EnsureSuccessStatusCode();
+        (await Http.SendAsync(m)).EnsureSuccessStatusCode();
     }
-    public HttpClient Http => _http;
+    // Server calls are the only awaits in these tests, and after an await a test can go on, on another thread. The thread it
+    // leaves must not stay on the lock screen's desktop (see ToNormalDesktop; seen in T1.1, runs 45011269480 and 45012237116).
+    public HttpClient Http { get { ToNormalDesktop(); return _http; } }
     public HttpResponseMessage Raw(HttpMethod method, string path, string? token)
     {
         using var m = new HttpRequestMessage(method, path);
