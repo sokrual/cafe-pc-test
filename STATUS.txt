@@ -1,5 +1,5 @@
 PROJECT STATUS - what is built, what is left
-Last updated: 22 Nov 2026. Version 0.3.0. Latest green test run: 44981228469 (all 8 jobs pass, lockdown 150/150, pull request #8).
+Last updated: 22 Nov 2026. Version 0.3.0. Latest green test run: 44987549217 (all 8 jobs pass, lockdown 151/151, pull request #9).
 
 Read README.txt for the layout, CHECKS.txt for the backend and security checks every phase must pass, and CLAUDE.md for the rules (commit as "Turyos Ventures" with an empty email,
 no AI signature anywhere, simple English in everything people see, smallest change that fully works).
@@ -323,7 +323,19 @@ OWNER DECISIONS (10 Nov 2026)
               before and still prints how long step 2 took. Not done: a faster scan. Decide when the pilot cafe reports
               its "Finish cafe setup" time. The scan runs at the first install, each time setup mode is finished, and
               at each update (a PC updates itself only when it is locked with no customer).
-22 Nov  To build (Kushagra, 22 Nov): when a PC goes into setup mode or is updated while a customer's time is running,
-              pause that time by itself. Today staff must lock the PC from the counter first (a lock pauses the time,
-              and paused time is not charged). The PC's own update only starts on a locked PC with no customer, so this
-              is for setup mode and for INSTALL-PC run by hand.
+22 Nov  Setup mode pauses a customer's time by itself (Kushagra, 22 Nov). Before, staff had to lock the PC from the
+              counter first. Now the gaming PC's watchdog tells the counter when the PC goes into setup mode and when it
+              comes out (POST /pc/setup-mode, with the PC's own key; at every watchdog start and at every change; asked
+              again every 5 s while the counter is away). Going in: a running visit on that PC is paused and the PC is
+              locked with "This PC is being set up. Your time is paused.", exactly as a counter lock does. Coming out:
+              that lock is taken off and the time runs again. A lock made by staff is never replaced or ended. Both
+              steps are in the audit log (setup_mode_pause, setup_mode_resume; no person, like other things a PC
+              reports). Staff can unlock earlier from the counter as always.
+              Not paused, on purpose: an update. A PC updates itself only when it is locked with no customer. INSTALL-PC
+              run again by hand does not close the customer's programs or restart the PC, so the customer keeps
+              playing; pausing there would give free time.
+              Shortcuts: a visit started from the counter while the PC is already in setup mode is not paused (lock the
+              PC for that). The time from SETUP-MODE's start to the watchdog's first message (it looks every 5 s) and
+              the time of the PC's last restart are still counted; how long those are on a real PC is not measured.
+              Tests: BillingTests Setup_mode_on_a_PC_pauses_the_customers_time_and_gives_it_back_by_itself, lockdown S7.1
+              (the real watchdog and counter: flag made, time stops within 30 s; flag removed, the same visit runs on).

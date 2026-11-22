@@ -162,6 +162,7 @@ app.MapPost("/pc/offline-sales", (HttpContext c, OfflineSaleBody b) =>
 });
 app.MapPost("/pc/login", (HttpContext c, LoginBody b) => { var pc = Pc(c); var st = cafe.PcLogin(pc, b.Phone, b.Pin); Log($"{pc} login session {st.Session}"); return st; }).RequireRateLimiting("login");
 app.MapPost("/pc/selflock", (HttpContext c) => cafe.PcSelfLock(Pc(c)));
+app.MapPost("/pc/setup-mode", (HttpContext c, bool on) => { cafe.PcSetupMode(Pc(c), on); return Results.Ok(); });
 app.MapPost("/pc/wifi-alert", (HttpContext c, WifiAlertBody b) => { cafe.PcWifiAlert(Pc(c), b.Network, b.Router); return Results.Ok(); });
 app.MapPost("/pc/pen-drive", (HttpContext c, PenDriveBody b) => cafe.PcPenDrive(Pc(c), b.Device, b.Name));
 app.MapPost("/pc/pen-drive/{id:long}/scan", (HttpContext c, long id, PenDriveScanBody b) => { cafe.PcPenDriveScan(Pc(c), id, b.Threats); return Results.Ok(); });

@@ -1040,6 +1040,19 @@ try {
     $wifiAlert = @(Invoke-RestMethod "https://127.0.0.1:5443/staff/alerts" -Headers $ownerHeaders | Where-Object { $_ -like "*PC1: Wi-Fi `"Cafe WiFi`" through a router the cafe did not set up (a4:2b:b0:11:22:33)*" })
     Check "D3.F1" "A PC that disconnected an unknown Wi-Fi router shows it on the owner's alerts" ($wifiAlert.Count -eq 1) "alerts matching: $($wifiAlert.Count)"
     Check "D2.F1" "A pen drive the PC reports waits on the counter, the owner allows read-only, the PC gets that answer, and a PC key cannot answer" ($null -eq $penAsked.access -and $penWaiting.Count -eq 1 -and $penAnswered.access -eq "read" -and $penAnswered.id -eq $penAsked.id -and $penPcAsStaff -eq 401) "first answer '$($penAsked.access)'; on counter $($penWaiting.Count); after answer '$($penAnswered.access)'; PC key on staff page: $penPcAsStaff"
+    # S7: the owner puts this PC into setup mode while the customer's time is running. The PC's watchdog tells the counter,
+    # which pauses the time and locks the PC; out of setup mode the time runs again. Real setup mode also restarts the PC;
+    # here only its flag is made and removed.
+    function PcState { Invoke-RestMethod "https://127.0.0.1:5443/pc/state" -Headers @{ "X-Pc-Token" = $token; "X-Pc-Bind" = (PcBind) } }
+    $beforeSetup = PcState
+    New-Item "$app\setup.flag" -ItemType File -Force | Out-Null
+    $setupPaused = WaitFor 30 { $setupState = PcState; $setupState.locked -and $setupState.message -like "This PC is being set up*" }
+    $pausedAt = (PcState).elapsedSec; Start-Sleep -Seconds 4; $pausedLater = (PcState).elapsedSec
+    Remove-Item "$app\setup.flag" -Force
+    $setupResumed = WaitFor 30 { -not (PcState).locked }
+    Start-Sleep -Seconds 3
+    $afterSetup = PcState
+    Check "S7.1" "A PC that goes into setup mode while a customer's time is running tells the counter by itself: the time is paused and the PC is locked with a message; out of setup mode the same visit runs again" ($beforeSetup.locked -eq $false -and $setupPaused -and $pausedLater -eq $pausedAt -and $setupResumed -and $afterSetup.elapsedSec -gt $pausedLater -and $afterSetup.session -eq $beforeSetup.session) "before: locked $($beforeSetup.locked), session $($beforeSetup.session); paused within 30 s $setupPaused; time while paused $pausedAt s then $pausedLater s; running again within 30 s $setupResumed; after: $($afterSetup.elapsedSec) s, session $($afterSetup.session)"
     # A fresh request is handled promptly; an unchanged active-session reason is logged only once across retries.
     $watchdogLog = Join-Path "$data\logs" "watchdog-$(Get-Date -Format yyyyMMdd).log"
     $beforeDeferred = if (Test-Path $watchdogLog) { @(Select-String -Path $watchdogLog -Pattern "cleanup deferred (session active)" -SimpleMatch).Count } else { 0 }
