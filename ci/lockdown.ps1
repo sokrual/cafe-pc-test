@@ -459,7 +459,9 @@ else { Wait { -not (Test-Path "$env:ProgramFiles\GamingCafe\setup.flag") } }   #
     Check "S4.2" "A Wi-Fi choice that is not a network in range stops step 2, says why for the next sign-in, and leaves the PC in setup mode" ($badRun -eq 0 -and $badResult -match "not in range" -and (Test-Path "$app\setup.flag") -and -not (Test-Path "$data\clean-profile-hive\NTUSER.DAT")) "run exit $badRun; result '$("$badResult".Trim())'; setup mode $(Test-Path "$app\setup.flag")"
     $finishRun = CustomerPs "& '$s4' finish ''"   # no Wi-Fi networks for customers
     $finishStarted = Get-Date
-    $null = WaitFor 900 { -not (Test-Path "$app\setup.flag") -and -not (Get-ScheduledTask CafeFinishSetup -ErrorAction SilentlyContinue) }
+    # 30 minutes, not 15: step 2 took 5.9 to 8.8 min in 13 x64 jobs and 14.1 and 15.1 min in 2. The folder scan in it waits for the
+    # disk; why it was 2.7 times slower those two times is not known. The check below prints how long step 2 took.
+    $null = WaitFor 1800 { -not (Test-Path "$app\setup.flag") -and -not (Get-ScheduledTask CafeFinishSetup -ErrorAction SilentlyContinue) }
     $finishMinutes = [math]::Round(((Get-Date) - $finishStarted).TotalMinutes, 1)
     $finishLog = Get-Content "$app\install-log.txt" -Raw -ErrorAction SilentlyContinue
     $againRun = CustomerPs "schtasks.exe /run /tn CafeFinishSetup"

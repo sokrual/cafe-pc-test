@@ -1,5 +1,5 @@
 PROJECT STATUS - what is built, what is left
-Last updated: 19 Nov 2026. Version 0.3.0. Latest green test run: 44476511287 (all 8 jobs pass, lockdown 150/150, pull request #7).
+Last updated: 22 Nov 2026. Version 0.3.0. Latest green test run: 44981228469 (all 8 jobs pass, lockdown 150/150, pull request #8).
 
 Read README.txt for the layout, CHECKS.txt for the backend and security checks every phase must pass, and CLAUDE.md for the rules (commit as "Turyos Ventures" with an empty email,
 no AI signature anywhere, simple English in everything people see, smallest change that fully works).
@@ -312,3 +312,18 @@ OWNER DECISIONS (10 Nov 2026)
               new PowerShell each time, and that closes the log when it ends. Fix: the test closes the installer's log
               before reading it (3 places in ci/lockdown.ps1). Run 44475251991: 0 misses in 250 reads with the fix,
               4 in 250 without it. Why PowerShell writes the last lines late is not known.
+22 Nov  Test fix, lockdown S4.3 (no product change). In run 44538311859 setup step 2 took 15.1 and 14.1 min in two x64
+              jobs; the check waited 15. In 13 other x64 jobs it took 5.9 to 8.8 min. Measured on 22 Nov (branches
+              proof/s43-measure and proof/s43-lockdown, 19 jobs, all on the Windows image the two slow jobs had): the
+              folder scan was normal every time (Program Files 129-178 s, against 410 and 451 s in the slow jobs): run
+              directly, as a SYSTEM task, started through WMI as step 2 does, and inside the real lockdown job. The setup
+              program has normal CPU, disk and memory priority. The scan waits for the disk (150 s on a cold disk,
+              17-31 s right after; about 15% of one CPU). The two slow jobs could not be repeated; why their disk was
+              slow is not known. Fix (Kushagra, 22 Nov): the test waits 30 min, not 15. It checks the same things as
+              before and still prints how long step 2 took. Not done: a faster scan. Decide when the pilot cafe reports
+              its "Finish cafe setup" time. The scan runs at the first install, each time setup mode is finished, and
+              at each update (a PC updates itself only when it is locked with no customer).
+22 Nov  To build (Kushagra, 22 Nov): when a PC goes into setup mode or is updated while a customer's time is running,
+              pause that time by itself. Today staff must lock the PC from the counter first (a lock pauses the time,
+              and paused time is not charged). The PC's own update only starts on a locked PC with no customer, so this
+              is for setup mode and for INSTALL-PC run by hand.
