@@ -504,6 +504,7 @@ public sealed class WatchdogTests : IDisposable
 
     public void Dispose()
     {
+        Rig.ToNormalDesktop();
         Sc("stop CafeWatchdog"); Thread.Sleep(1500); Sc("delete CafeWatchdog");
         foreach (var p in Process.GetProcessesByName("Cafe.Agent")) Rig.Kill(p);
         _rig.Dispose();
@@ -541,6 +542,7 @@ public sealed class WatchdogTests : IDisposable
         }
         finally
         {
+            Rig.ToNormalDesktop();
             Sc("stop CafeWatchdog"); Thread.Sleep(1000); Sc("delete CafeWatchdog");
             foreach (var p in Process.GetProcessesByName("Cafe.Agent")) Rig.Kill(p);
             if (File.Exists(backup)) File.Move(backup, _rig.TokenFile, true);
@@ -849,6 +851,9 @@ sealed class Rig : IDisposable
     public void Dispose()
     {
         Kill(_watchdogProxy); Kill(_server); _ui.Dispose(); _http.Dispose();
+        // every test's PC programs have ended by now: their lock screen desktops must be gone and the screen back on the normal one
+        WaitFor(() => InputDesktop() == "Default" && !Desktops().Any(d => d.StartsWith("CafeLock-")), 5, "a test left a lock screen desktop behind",
+            () => $"desktops [{string.Join(", ", Desktops())}]; the screen shows desktop '{InputDesktop()}'");
         foreach (var dir in new[] { Path.Combine(Data, "logs"), Path.Combine(_pcDir, "logs") }) // logs end up in the test output
             if (Directory.Exists(dir)) foreach (var f in Directory.GetFiles(dir)) Console.WriteLine($"--- {Path.GetFileName(f)}\n{File.ReadAllText(f)}");
         foreach (var dir in new[] { Data, _pcDir }) try { Directory.Delete(dir, true); } catch (IOException) { }
@@ -949,7 +954,7 @@ sealed class Rig : IDisposable
     public long ElapsedSec(string token) => long.Parse(State(token)["elapsedSec"]!.ToString()!);
 
     public static string Env(string name) => Environment.GetEnvironmentVariable(name) ?? throw new InvalidOperationException($"set {name}");
-    public static void Kill(Process? p) { try { if (p is { HasExited: false }) { p.Kill(true); p.WaitForExit(5000); } } catch (InvalidOperationException) { } }
+    public static void Kill(Process? p) { ToNormalDesktop(); try { if (p is { HasExited: false }) { p.Kill(true); p.WaitForExit(5000); } } catch (InvalidOperationException) { } }
 
     public static void WaitFor(Func<bool> ok, int seconds, string why, Func<string>? more = null)
     {
@@ -959,14 +964,26 @@ sealed class Rig : IDisposable
     }
 
     [ThreadStatic] static IntPtr _followed; // the desktop handle this thread opened for itself
-    public static void FollowScreen()
+    public static void FollowScreen() => MoveThread(OpenInputDesktop(0, false, 0x10000000 /*GENERIC_ALL*/));
+    // Before a PC program is ended. A test thread still on its lock screen's desktop keeps that desktop alive after the
+    // program is gone: the screen stays on it, or goes to it when a later program is killed (measured in run 45011269480).
+    public static void ToNormalDesktop() => MoveThread(OpenDesktop("Default", 0, false, 0x10000000 /*GENERIC_ALL*/));
+    static void MoveThread(IntPtr desktop)
     {
-        var input = OpenInputDesktop(0, false, 0x10000000 /*GENERIC_ALL*/);
-        if (input == IntPtr.Zero) return;
-        if (DesktopName(input) == DesktopName(GetThreadDesktop(GetCurrentThreadId())) || !SetThreadDesktop(input)) { CloseDesktop(input); return; }
+        if (desktop == IntPtr.Zero) return;
+        if (DesktopName(desktop) == DesktopName(GetThreadDesktop(GetCurrentThreadId())) || !SetThreadDesktop(desktop)) { CloseDesktop(desktop); return; }
         if (_followed != IntPtr.Zero) CloseDesktop(_followed);
-        _followed = input;
+        _followed = desktop;
     }
+    static List<string> Desktops()
+    {
+        var names = new List<string>();
+        EnumDesktops(GetProcessWindowStation(), (name, _) => { names.Add(name); return true; }, IntPtr.Zero);
+        return names;
+    }
+    delegate bool DesktopProc([MarshalAs(UnmanagedType.LPWStr)] string name, IntPtr state);
+    [DllImport("user32.dll")] static extern IntPtr GetProcessWindowStation();
+    [DllImport("user32.dll", EntryPoint = "EnumDesktopsW")] static extern bool EnumDesktops(IntPtr station, DesktopProc callback, IntPtr state);
     public static string InputDesktop()
     {
         var input = OpenInputDesktop(0, false, 0x0001 /*DESKTOP_READOBJECTS*/);
