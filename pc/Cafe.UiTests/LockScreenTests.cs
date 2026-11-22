@@ -577,6 +577,11 @@ public sealed class WatchdogTests : IDisposable
             Process? back = null;
             Rig.WaitFor(() => (back = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault(p => p.Id != first.Id)) is not null, 10, "PC program was not restarted");
             Assert.True(gone.Elapsed < TimeSpan.FromSeconds(5), $"restart took {gone.Elapsed.TotalSeconds:F1} s (limit 5 s)");
+            // E3b: a killed program's desktop goes, and the screen goes to the normal desktop (measured: within 0.3 s).
+            // The restarted program must make its own desktop and give it the screen.
+            Rig.WaitFor(() => Rig.InputDesktop() == $"CafeLock-{back!.Id}", 15, "the restarted PC program's lock screen desktop does not have the screen",
+                () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+            TestContext.Current.TestOutputHelper?.WriteLine($"T1.2: {gone.Elapsed.TotalSeconds:F1} s from the kill until the new lock screen desktop had the screen (checked every 0.3 s)");
             // a fake "Cafe.Agent" (a renamed copy of cmd.exe) must not fool the watchdog
             var fake = Path.Combine(_rig.Data, "Cafe.Agent.exe");
             File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), fake);
