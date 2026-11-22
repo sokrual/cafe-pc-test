@@ -507,6 +507,42 @@ public sealed class BillingTests : IDisposable
     }
 
     [Fact]
+    public void Setup_mode_on_a_PC_pauses_the_customers_time_and_gives_it_back_by_itself()
+    {
+        const string note = "This PC is being set up. Your time is paused.";
+        _cafe.AddPc(_owner, "PC1");
+        _cafe.PcSetupMode("PC1", true); // nobody is playing: nothing to pause, and the PC is not left locked
+        var s = _cafe.PcLogin("PC1", "9000000003", "2222").Session!.Value;
+        Wait(20);
+        _cafe.PcSetupMode("PC1", true);
+        _cafe.PcSetupMode("PC1", true); // the watchdog says it again after each restart
+        var st = _cafe.StateOf("PC1");
+        Assert.Equal((true, note, 1200L), (st.Locked, st.Message, st.ElapsedSec));
+        Wait(30); // in setup mode: not charged
+        Assert.Equal(1200L, _cafe.StateOf("PC1").ElapsedSec);
+        _cafe.PcSetupMode("PC1", false);
+        st = _cafe.StateOf("PC1");
+        Assert.Equal((false, null, 1200L), (st.Locked, st.Message, st.ElapsedSec));
+        Wait(5);
+        _cafe.PcSetupMode("PC1", false); // said at every watchdog start: changes nothing
+        Assert.Equal(1500L, _cafe.StateOf("PC1").ElapsedSec);
+
+        _cafe.Lock(_staff, "PC1", "Please come to the counter"); // a lock by staff is theirs: setup mode neither replaces nor ends it
+        _cafe.PcSetupMode("PC1", true);
+        _cafe.PcSetupMode("PC1", false);
+        Assert.Equal((true, "Please come to the counter"), (_cafe.StateOf("PC1").Locked, _cafe.StateOf("PC1").Message));
+        Wait(10); // locked by staff: not charged
+        _cafe.Unlock(_staff, "PC1");
+
+        _cafe.PcSetupMode("PC1", true);
+        Wait(15);
+        Assert.Equal(TimeSpan.FromMinutes(25), _cafe.Stop(_staff, s).Used); // the visit is ended at the counter during setup mode
+        Assert.Throws<CafeException>(() => _cafe.PcLogin("PC1", "9000000003", "2222")); // still marked as being set up
+        _cafe.PcSetupMode("PC1", false);
+        Assert.False(_cafe.PcLogin("PC1", "9000000003", "2222").Locked); // and free again afterwards
+    }
+
+    [Fact]
     public void Pc_login_uses_plan_time_first_then_pay_at_end_and_logout_bills()
     {
         Everyone(); // tests the owner's other choice: everyone keeps unused time

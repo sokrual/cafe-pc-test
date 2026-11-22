@@ -14,6 +14,7 @@ static class PcProxy
     const uint PipeTypeByte = 0, PipeWait = 0, PipeRejectRemoteClients = 0x00000008;
     const int MaxRequestBytes = 65536;
     static volatile HttpClient? _http;   // replaced when the counter PC is found at a new address (FindCounter)
+    static bool? _setupTold;   // what the counter was last told about setup mode; nothing yet after a start
     static string _pin = "", _token = "", _bind = "";
     static string? _agentPath;
     static Action<string> _log = message => Console.Error.WriteLine(message);
@@ -177,6 +178,21 @@ static class PcProxy
                         }
                     }
                     catch (Exception e) { _log("counter search error: " + e.Message); }
+                    try   // setup mode restarts the PC and nobody can play: the counter pauses a customer's time until it is over
+                    {
+                        var inSetup = File.Exists(Path.Combine(AppContext.BaseDirectory, "setup.flag"));
+                        if (inSetup != _setupTold && _http is HttpClient counter)
+                        {
+                            using var told = counter.PostAsync("/pc/setup-mode?on=" + (inSetup ? "true" : "false"), null).GetAwaiter().GetResult();
+                            // 404: a counter PC on a build from before this, which pauses nothing
+                            if (told.IsSuccessStatusCode || told.StatusCode == System.Net.HttpStatusCode.NotFound)
+                            {
+                                _setupTold = inSetup;
+                                _log($"told the counter: setup mode {(inSetup ? "on" : "off")} (answer {(int)told.StatusCode})");
+                            }
+                        }
+                    }
+                    catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { }   // the counter is away: told in 5 s
                     try { if (_http is HttpClient now) FindUpdate.Check(now, NewClient, Path.GetDirectoryName(_keysDirectory)!, _log); }
                     catch (Exception e) { _log("update check error: " + e.Message); }
                     try { await Task.Delay(TimeSpan.FromSeconds(5), stop); }

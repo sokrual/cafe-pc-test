@@ -43,6 +43,8 @@ This takes a few seconds. Nobody can log in until it is done.
 To change the Customer account later (a new game shortcut, a Discord update):
 log in on the lock screen with your own phone number, open C:\Program Files\GamingCafe,
 double-click SETUP-MODE (it asks for the admin password), then do steps B2 and B3 again.
+If a customer was playing on that PC, their open games close (the PC restarts). Their time is paused by itself while
+the PC is in setup mode and runs again when the setup is finished. The counter screen shows the PC as locked meanwhile.
 
 Pen drives: a customer's pen drive (or USB hard disk, or card reader) shows nothing until you or your staff
 answer on the counter screen: Block, Allow read-only, or Allow read and write. Every answer is saved with

@@ -550,6 +550,30 @@ public sealed partial class CafeCore : IDisposable
         return StateOf(pc);
     });
 
+    const string SetupNote = "This PC is being set up. Your time is paused.";
+    /// A gaming PC says it went into setup mode or came out of it (its watchdog sends this). In setup mode the PC
+    /// restarts and nobody can play, so a customer's running time is paused the way a counter lock pauses it, and it
+    /// runs again by itself afterwards. A lock made by staff is left alone.
+    /// shortcut: a visit started from the counter while the PC is already in setup mode is not paused, lock the PC for that.
+    public void PcSetupMode(string pc, bool on) => Tx(() =>
+    {
+        if (on)
+        {
+            if (Scalar<long?>("SELECT id FROM sessions WHERE pc = @p0 AND ended IS NULL AND pause_from IS NULL", pc) is not long s) return;
+            if (Exec("UPDATE pcs SET locked = 1, message = @p0 WHERE name = @p1 AND locked = 0", SetupNote, pc) == 0) return;
+            Exec("UPDATE sessions SET pause_from = @p0 WHERE id = @p1", Iso(_now()), s);
+            Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'setup_mode_pause', @p1)", Iso(_now()), $"{pc}: session {s}");
+        }
+        else
+        {
+            if (Exec("UPDATE pcs SET locked = 0, message = NULL WHERE name = @p0 AND locked = 1 AND message = @p1", pc, SetupNote) == 0) return;
+            if (Scalar<long?>("SELECT id FROM sessions WHERE pc = @p0 AND ended IS NULL AND pause_from IS NOT NULL", pc) is not long s) return;
+            var paused = Math.Max(0, (long)(_now() - Time(Scalar<string>("SELECT pause_from FROM sessions WHERE id = @p0", s))).TotalSeconds);
+            Exec("UPDATE sessions SET paused_sec = paused_sec + @p0, pause_from = NULL WHERE id = @p1", paused, s);
+            Insert("INSERT INTO audit(at, by_user, action, detail) VALUES(@p0, NULL, 'setup_mode_resume', @p1)", Iso(_now()), $"{pc}: session {s} paused {paused}s, not charged");
+        }
+    });
+
     /// The server's receipt time is the billing time. A PC-reported delay is only a review signal; it never reduces the bill.
     public Bill PcLogout(string pc, long secondsAgo = 0) => Tx(() =>
     {
