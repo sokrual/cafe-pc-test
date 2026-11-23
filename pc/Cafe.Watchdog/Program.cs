@@ -135,6 +135,7 @@ static class Watchdog
         var nextCleanup = DateTime.MinValue;
         while (!stop.IsCancellationRequested)
         {
+            Process? agent = null;
             try
             {
                 if (!proxyStarted && DateTime.UtcNow >= nextProxyAttempt)
@@ -204,14 +205,29 @@ static class Watchdog
                     nextCleanup = DateTime.MinValue;
                 }
                 // match the full path, not just the name: a customer's renamed copy of some other program must not count
-                if (!File.Exists(setup) && ActiveSession() is uint s && !Process.GetProcessesByName(exe).Any(p => p.SessionId == s && Native.PathOf(p) == path))
+                if (!File.Exists(setup) && ActiveSession() is uint s && (agent = Process.GetProcessesByName(exe).FirstOrDefault(p => p.SessionId == s && Native.PathOf(p) == path)) is null)
                 {
                     if (s != watched) { (watched, trusted) = (s, sid is null ? [] : Wipe.Trusted(sid)); Log($"session {s}: {trusted.Count} Windows programs kept at logout"); }
-                    Log(Start(s, line) is int pid ? $"started {exe} in session {s} (pid {pid})" : $"could not start {exe} in session {s}: error {Marshal.GetLastWin32Error()}");
+                    var pid = Start(s, line);
+                    Log(pid is not null ? $"started {exe} in session {s} (pid {pid})" : $"could not start {exe} in session {s}: error {Marshal.GetLastWin32Error()}");
+                    if (pid is int started) agent = Process.GetProcessById(started);
                 }
             }
             catch (Exception e) { Log($"ERROR {e.Message}"); } // the loop must never die
-            stop.WaitHandle.WaitOne(1000);
+            // Wake when the lock screen program ends, not up to a second later: that wait was most of the time the screen
+            // stayed open after a kill (measured). Still at most one start a second, for a program that dies at its start.
+            var pause = 1000.0;
+            try
+            {
+                using (agent)
+                    if (agent is not null)
+                    {
+                        var born = agent.StartTime;
+                        pause = agent.WaitForExit(1000) ? 1000 - (DateTime.Now - born).TotalMilliseconds : 0;
+                    }
+            }
+            catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { } // it ended before it could be looked at
+            if (pause > 0) stop.WaitHandle.WaitOne((int)pause);
         }
         Log("stopped");
     }

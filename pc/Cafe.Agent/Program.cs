@@ -33,8 +33,8 @@ static class ProcessSecurity
             return;
         }
         // OW (OWNER RIGHTS), not the Customer SID: without an OW entry Windows always lets the owner rewrite the DACL.
-        // Other Customer programs may look at this program and wait for it, no more. Not "terminate": the Customer's own
-        // PowerShell could end the lock screen. Not "read memory": after a login the PIN was found there (both measured).
+        // Other Customer programs may look at this program and wait for it, no more. Not "terminate": another Customer
+        // program ended the lock screen with it. Not "read memory": after a login the PIN was found there (both measured).
         const string sddl = "D:P(A;;GA;;;SY)(D;;0x00040062;;;OW)(A;;GA;;;BA)(A;;0x00121400;;;OW)";
         if (!ConvertStringSecurityDescriptorToSecurityDescriptor(sddl, 1, out var descriptor, out _))
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());

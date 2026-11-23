@@ -678,6 +678,58 @@ public sealed class WatchdogTests : IDisposable
         }
     }
 
+    // The watchdog starts the PC program again when it ends, not at its next look up to a second later.
+    // Measured: 1.0 s from a kill until the new lock screen covered the screen before, 0.17 s (x64) and 0.31 s (ARM) now.
+    // 10 kills; the middle value counts. A program killed within a second of its start still waits out that second.
+    [Fact]
+    public void E3b_lock_screen_covers_again_within_half_a_second_of_a_kill()
+    {
+        try
+        {
+            File.WriteAllText(Path.Combine(Path.GetDirectoryName(_exe)!, "watchdog.args"), $"\"{Rig.Env("CAFE_AGENT_EXE")}\" {_rig.AgentArgs} --pipe-sid {WindowsIdentity.GetCurrent().User!.Value}");
+            foreach (var dir in new[] { Path.GetDirectoryName(_exe)!, Path.GetDirectoryName(Rig.Env("CAFE_AGENT_EXE"))! })
+            {
+                Grant(dir, "/inheritance:r", "/grant:r", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX");
+                Grant(dir, "/remove:g", "*S-1-5-11", "*S-1-1-0", "*S-1-5-4");
+                Grant(Path.Combine(dir, "*"), "/reset", "/T");
+            }
+            Assert.Equal(0, Sc($"create CafeWatchdog binPath= \"{_exe}\" start= demand"));
+            Assert.Equal(0, Sc("start CafeWatchdog"));
+            string Mine(int pid) => $"CafeLock-{pid}-";
+            var covered = new List<double>();
+            var lines = new List<string>();
+            for (var round = 1; round <= 10; round++)
+            {
+                Process? agent = null;
+                Rig.WaitFor(() => (agent = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault(p => Rig.InputDesktop().StartsWith(Mine(p.Id)))) is not null, 20,
+                    $"round {round}: no PC program's lock screen desktop has the screen", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+                Thread.Sleep(2000); // a program that has been running for a while, as on a cafe PC
+                agent!.Kill();
+                var t = Stopwatch.StartNew();
+                double? open = null;
+                string desktop;
+                while (!((desktop = Rig.InputDesktop()).StartsWith("CafeLock-") && !desktop.StartsWith(Mine(agent.Id))) && t.Elapsed < TimeSpan.FromSeconds(20))
+                {
+                    if (desktop == "Default") open ??= t.Elapsed.TotalSeconds;
+                    Thread.Sleep(10);
+                }
+                covered.Add(t.Elapsed.TotalSeconds);
+                lines.Add($"round {round}: covered again after {covered[^1]:F2} s; the normal desktop had the screen {(open is null ? "at no look" : $"from {open:F2} s, so for {covered[^1] - open:F2} s")}");
+            }
+            var sorted = covered.Order().ToList();
+            var middle = (sorted[4] + sorted[5]) / 2;
+            TestContext.Current.TestOutputHelper?.WriteLine($"KILLGAP seconds from a kill until a new lock screen desktop had the screen: min {sorted[0]:F2}, middle {middle:F2}, max {sorted[9]:F2}\n" + string.Join("\n", lines));
+            Assert.True(middle < 0.5, $"the middle of 10 kills was {middle:F2} s (limit 0.5 s): {string.Join(", ", covered.Select(c => c.ToString("F2")))}");
+        }
+        catch
+        {
+            Rig.Screenshot();
+            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "logs");
+            if (Directory.Exists(logs)) foreach (var f in Directory.GetFiles(logs, "watchdog-*")) Console.WriteLine($"--- {f}\n{File.ReadAllText(f)}");
+            throw;
+        }
+    }
+
     static void Grant(string target, params string[] args)
     {
         var all = args.Length == 1 ? new[] { "/grant", args[0] } : args;
