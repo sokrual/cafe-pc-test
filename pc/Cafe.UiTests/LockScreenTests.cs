@@ -218,6 +218,37 @@ public sealed class LockScreenTests : IDisposable
         catch { Rig.Screenshot(); throw; }
     }
 
+    // The key blocker's thread moves to the lock screen's desktop first. If Windows then refuses the lock screen's thread,
+    // the lock screen stays a window on the normal desktop, and the keys must still be blocked there.
+    [Fact]
+    public void E3b_keys_stay_blocked_when_Windows_refuses_the_lock_screens_thread_after_the_key_blockers()
+    {
+        try
+        {
+            _agent = _rig.StartAgent(lockThreadRefused: true);
+            _app = Application.Attach(_agent.Id);
+            Window("LockScreen");
+            Assert.Equal("Default", Rig.InputDesktop());
+            var escaped = new List<string>();
+            foreach (var (name, keys) in new (string, VirtualKeyShort[])[]
+            {
+                ("Alt+Tab", [VirtualKeyShort.ALT, VirtualKeyShort.TAB]),
+                ("Ctrl+Shift+Esc", [VirtualKeyShort.CONTROL, VirtualKeyShort.SHIFT, VirtualKeyShort.ESCAPE]),
+            })
+            {
+                var running = Process.GetProcesses().Select(p => p.Id).ToHashSet();
+                Keyboard.TypeSimultaneously(keys);
+                Thread.Sleep(2500);
+                var opened = Process.GetProcesses().Where(p => !running.Contains(p.Id) && p.ProcessName is "Taskmgr").ToList();
+                if (opened.Count > 0) escaped.Add($"{name} opened Task Manager");
+                opened.ForEach(Rig.Kill);
+                if (!OnTop("LockScreen")) escaped.Add($"{name} got past the lock screen (foreground is now '{Rig.ForegroundTitle()}')");
+            }
+            Assert.True(escaped.Count == 0, string.Join("\n", escaped));
+        }
+        catch { Rig.Screenshot(); throw; }
+    }
+
     // Windows hands back a desktop that already has the asked name, with its maker's rights, and does not say so (measured,
     // run 45110576185). So no other program may be able to make the lock screen's desktop first: here one made
     // "CafeLock-<process number>", the name the lock screen used before its name got a random part.
@@ -835,7 +866,7 @@ sealed class Rig : IDisposable
             throw;
         }
     }
-    public Process StartAgent(bool lockOnNormalDesktop = false)
+    public Process StartAgent(bool lockOnNormalDesktop = false, bool lockThreadRefused = false)
     {
         var sid = WindowsIdentity.GetCurrent().User!.Value;
         var proxy = new ProcessStartInfo(Env("CAFE_WATCHDOG_EXE")) { UseShellExecute = false };
@@ -854,6 +885,7 @@ sealed class Rig : IDisposable
         var agent = new ProcessStartInfo(Env("CAFE_AGENT_EXE")) { UseShellExecute = false };
         foreach (var a in new[] { "--name", "Test Cafe", "--logs", Path.Combine(_pcDir, "logs") }) agent.ArgumentList.Add(a);
         if (lockOnNormalDesktop) agent.ArgumentList.Add("--test-lock-on-default"); // what the PC falls back to when Windows refuses the lock screen's own desktop
+        if (lockThreadRefused) agent.ArgumentList.Add("--test-lock-thread-refused"); // Windows moves the key blocker's thread to that desktop, then refuses the lock screen's
         return Process.Start(agent)!;
     }
 

@@ -68,6 +68,7 @@ static class Program
         }
         Log($"started v{typeof(Program).Assembly.GetName().Version}");
         LockDesktop.Make(args.Contains("--test-lock-on-default", StringComparer.OrdinalIgnoreCase));
+        LockDesktop.TestRefuseLockThread = args.Contains("--test-lock-thread-refused", StringComparer.OrdinalIgnoreCase);
         ApplicationConfiguration.Initialize();
         Application.Run(new Agent(Arg("--name") ?? "Gaming Cafe"));
     }
@@ -108,8 +109,12 @@ sealed class Agent : ApplicationContext
     public Agent(string name)
     {
         KeyBlocker.Install(); // first: if Windows will not move its thread, the lock screen stays on the normal desktop with it
+        var blockerMoved = LockDesktop.Own;
         _lock = LockScreen.Start(name, (phone, pin) => OnMain(() => Login(phone, pin)),
             (phone, code, minutes, method, upi) => OnMain(() => OfflineUnlock(phone, code, minutes, method, upi)));
+        // Windows moved the key blocker's thread, then refused the lock screen's: the lock screen is a window on the normal
+        // desktop, where that key blocker sees no keys. A second one, there.
+        if (blockerMoved && !LockDesktop.Own) KeyBlocker.Install();
         _timer = new TimerWidget(Now, () => Send("/pc/logout", lockNow: true), () => Send("/pc/selflock", lockNow: true), () => Apply(_state with { Locked = true, Message = "Time is up. Please ask at the counter." }));
         KeyBlocker.Follow(_lock);
         var poll = new System.Windows.Forms.Timer { Interval = 2000 };
@@ -362,7 +367,7 @@ sealed class LockScreen : Form
         {
             try
             {
-                LockDesktop.MoveThreadHere();
+                LockDesktop.MoveThreadHere(LockDesktop.TestRefuseLockThread);
                 OleInitialize(IntPtr.Zero);
                 screen = new LockScreen(cafeName, login, offlineUnlock);
                 _ = screen.Handle; // made now, so that other threads can post to it
@@ -491,7 +496,8 @@ static class LockDesktop
 {
     static IntPtr _own, _normal;
     static string _name = "";
-    static bool Own => _own != IntPtr.Zero;
+    public static bool Own => _own != IntPtr.Zero;
+    public static bool TestRefuseLockThread; // UI test: as if Windows moved the key blocker's thread and refused the lock screen's
     // Who may use the lock screen's desktop: Windows itself, admins (the owner's tools, the tests) and this program
     // through the handle it gets when it makes the desktop. Measured as a standard user: with these rights another
     // program of the same account cannot open the desktop for anything; with the rights Windows gives by itself it can
@@ -521,9 +527,9 @@ static class LockDesktop
 
     // the key blocker's thread, then the lock screen's, call this before they make any window or hook (Windows moves no
     // thread that has one). A refusal for the first leaves both on the normal desktop.
-    public static void MoveThreadHere()
+    public static void MoveThreadHere(bool testRefused = false)
     {
-        if (!Own || SetThreadDesktop(_own)) return;
+        if (!Own || (!testRefused && SetThreadDesktop(_own))) return;
         Program.Log($"lock screen stays on the normal desktop: Windows refused to move its thread (error {Marshal.GetLastWin32Error()})");
         _own = IntPtr.Zero;
     }
@@ -676,7 +682,7 @@ static class KeyBlocker
         var thread = new Thread(() =>
         {
             LockDesktop.MoveThreadHere();
-            _proc = Hook;
+            _proc ??= Hook; // one for every key blocker thread: Windows keeps calling it, so it must never be collected
             ok = SetWindowsHookEx(13 /*WH_KEYBOARD_LL*/, _proc, GetModuleHandle(null), 0) != IntPtr.Zero;
             ready.Set();
             if (ok) Application.Run(); // Windows calls the hook through this thread's message loop
