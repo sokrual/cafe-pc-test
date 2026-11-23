@@ -490,6 +490,7 @@ sealed class LockScreen : Form
 static class LockDesktop
 {
     static IntPtr _own, _normal;
+    static string _name = "";
     static bool Own => _own != IntPtr.Zero;
     // Who may use the lock screen's desktop: Windows itself, admins (the owner's tools, the tests) and this program
     // through the handle it gets when it makes the desktop. Measured as a standard user: with these rights another
@@ -502,11 +503,14 @@ static class LockDesktop
         if (!testOnNormal)
         {
             _normal = OpenDesktop("Default", 0, false, 0x0100 /*DESKTOP_SWITCHDESKTOP*/);
-            // the process number in the name: a restarted program never meets the last one's desktop
+            // The process number in the name: a restarted program never meets the last one's desktop. The random part: no
+            // other program can make a desktop with this name first. Windows would hand that one back, with its maker's
+            // rights instead of ours, and not say so (measured).
+            _name = $"CafeLock-{Environment.ProcessId}-{System.Security.Cryptography.RandomNumberGenerator.GetHexString(32)}";
             if (_normal != IntPtr.Zero && ProcessSecurity.ConvertStringSecurityDescriptorToSecurityDescriptor(Rights, 1, out var descriptor, out _))
             {
                 var security = new SecurityAttributes { Length = Marshal.SizeOf<SecurityAttributes>(), Descriptor = descriptor };
-                _own = CreateDesktop($"CafeLock-{Environment.ProcessId}", IntPtr.Zero, IntPtr.Zero, 0, 0x10000000 /*GENERIC_ALL*/, ref security);
+                _own = CreateDesktop(_name, IntPtr.Zero, IntPtr.Zero, 0, 0x10000000 /*GENERIC_ALL*/, ref security);
                 ProcessSecurity.LocalFree(descriptor);   // keeps CreateDesktop's error for the log line below
             }
         }
@@ -563,7 +567,7 @@ static class LockDesktop
         var mover = new Thread(() => moved = SetThreadDesktop(_own));
         mover.Start(); mover.Join();
         if (!moved) return 2;
-        using var other = Process.Start(Environment.ProcessPath!, ["--test-lock-desktop", $"CafeLock-{Environment.ProcessId}"]);
+        using var other = Process.Start(Environment.ProcessPath!, ["--test-lock-desktop", _name]);
         return other.WaitForExit(30000) ? other.ExitCode : 4;
     }
 

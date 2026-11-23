@@ -202,9 +202,9 @@ public sealed class LockScreenTests : IDisposable
         {
             _agent = _rig.StartAgent();
             _app = Application.Attach(_agent.Id);
-            var own = $"CafeLock-{_agent.Id}";
             Window("LockScreen"); // found on the desktop that has the screen
-            Assert.Equal(own, Rig.InputDesktop());
+            var own = Rig.InputDesktop();
+            Assert.StartsWith($"CafeLock-{_agent.Id}-", own);
             LogIn("9000000003", "2222");
             Rig.WaitFor(() => Rig.InputDesktop() == "Default" && Hidden("LockScreen"), 10, "login did not give the normal desktop back", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
             Window("TimerWidget"); // the timer is on the normal desktop, with the games
@@ -218,6 +218,29 @@ public sealed class LockScreenTests : IDisposable
         catch { Rig.Screenshot(); throw; }
     }
 
+    // Windows hands back a desktop that already has the asked name, with its maker's rights, and does not say so (measured,
+    // run 45110576185). So no other program may be able to make the lock screen's desktop first: here one made
+    // "CafeLock-<process number>", the name the lock screen used before its name got a random part.
+    [Fact]
+    public void E3b_lock_screen_desktop_has_the_lock_screens_rights_when_another_program_made_one_for_its_process_number()
+    {
+        var taken = IntPtr.Zero;
+        try
+        {
+            _agent = _rig.StartAgent();
+            Rig.Pause(_agent, true);
+            Assert.DoesNotContain(Rig.Desktops(), d => d.StartsWith($"CafeLock-{_agent.Id}")); // paused before it made its desktop
+            taken = Rig.MakeDesktop($"CafeLock-{_agent.Id}");
+            Assert.NotEqual(IntPtr.Zero, taken);
+            Rig.Pause(_agent, false);
+            Rig.WaitFor(() => Rig.InputDesktop().StartsWith($"CafeLock-{_agent.Id}"), 20, "the lock screen's desktop never had the screen", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+            // Windows itself and admins everything, the maker "read the rights" only; nothing for the sign-in the customer's programs share
+            Assert.Equal("D:P(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;RC;;;OW)", Rig.InputDesktopRights());
+        }
+        catch { Rig.Screenshot(); throw; }
+        finally { if (taken != IntPtr.Zero) Rig.CloseTaken(taken); }
+    }
+
     [Fact]
     public void E3b_lock_screen_takes_the_screen_back_within_1_second_when_another_program_gives_it_to_the_normal_desktop()
     {
@@ -225,9 +248,9 @@ public sealed class LockScreenTests : IDisposable
         {
             _agent = _rig.StartAgent();
             _app = Application.Attach(_agent.Id);
-            var own = $"CafeLock-{_agent.Id}";
             Window("LockScreen");
-            Assert.Equal(own, Rig.InputDesktop());
+            var own = Rig.InputDesktop();
+            Assert.StartsWith($"CafeLock-{_agent.Id}-", own);
             for (var round = 1; round <= 5; round++)
             {
                 Thread.Sleep(600 + round * 130); // a different moment of the lock screen's 0.5 s timer each round
@@ -581,7 +604,7 @@ public sealed class WatchdogTests : IDisposable
             Assert.True(gone.Elapsed < TimeSpan.FromSeconds(5), $"restart took {gone.Elapsed.TotalSeconds:F1} s (limit 5 s)");
             // E3b: a killed program's desktop goes, and the screen goes to the normal desktop (measured: within 0.3 s).
             // The restarted program must make its own desktop and give it the screen.
-            Rig.WaitFor(() => Rig.InputDesktop() == $"CafeLock-{back!.Id}", 15, "the restarted PC program's lock screen desktop does not have the screen",
+            Rig.WaitFor(() => Rig.InputDesktop().StartsWith($"CafeLock-{back!.Id}-"), 15, "the restarted PC program's lock screen desktop does not have the screen",
                 () => $"the screen shows desktop '{Rig.InputDesktop()}'");
             TestContext.Current.TestOutputHelper?.WriteLine($"T1.2: {gone.Elapsed.TotalSeconds:F1} s from the kill until the new lock screen desktop had the screen (checked every 0.3 s)");
             // a fake "Cafe.Agent" (a renamed copy of cmd.exe) must not fool the watchdog
@@ -977,7 +1000,7 @@ sealed class Rig : IDisposable
         if (_followed != IntPtr.Zero) CloseDesktop(_followed);
         _followed = desktop;
     }
-    static List<string> Desktops()
+    public static List<string> Desktops()
     {
         var names = new List<string>();
         EnumDesktops(GetProcessWindowStation(), (name, _) => { names.Add(name); return true; }, IntPtr.Zero);
@@ -986,6 +1009,25 @@ sealed class Rig : IDisposable
     delegate bool DesktopProc([MarshalAs(UnmanagedType.LPWStr)] string name, IntPtr state);
     [DllImport("user32.dll")] static extern IntPtr GetProcessWindowStation();
     [DllImport("user32.dll", EntryPoint = "EnumDesktopsW")] static extern bool EnumDesktops(IntPtr station, DesktopProc callback, IntPtr state);
+    public static void Pause(Process program, bool pause) => Assert.Equal(0, pause ? NtSuspendProcess(program.Handle) : NtResumeProcess(program.Handle));
+    [DllImport("ntdll.dll")] static extern int NtSuspendProcess(IntPtr process);
+    [DllImport("ntdll.dll")] static extern int NtResumeProcess(IntPtr process);
+    public static IntPtr MakeDesktop(string name) => CreateDesktop(name, IntPtr.Zero, IntPtr.Zero, 0, 0x10000000 /*GENERIC_ALL*/, IntPtr.Zero); // rights: what Windows gives by itself
+    public static void CloseTaken(IntPtr desktop) => CloseDesktop(desktop);
+    [DllImport("user32.dll", EntryPoint = "CreateDesktopW", CharSet = CharSet.Unicode)] static extern IntPtr CreateDesktop(string name, IntPtr device, IntPtr mode, uint flags, uint access, IntPtr security);
+    public static string InputDesktopRights()
+    {
+        var input = OpenInputDesktop(0, false, 0x00020000 /*READ_CONTROL*/);
+        var descriptor = Marshal.AllocHGlobal(4096);
+        try
+        {
+            if (input == IntPtr.Zero || !GetUserObjectSecurity(input, [4 /*the rights list*/], descriptor, 4096, out _)) return $"(cannot read: error {Marshal.GetLastWin32Error()})";
+            return ConvertSecurityDescriptorToStringSecurityDescriptor(descriptor, 1, 4, out var text, out _) ? Marshal.PtrToStringUni(text)! : $"(no text: error {Marshal.GetLastWin32Error()})";
+        }
+        finally { Marshal.FreeHGlobal(descriptor); CloseDesktop(input); }
+    }
+    [DllImport("user32.dll", SetLastError = true)] static extern bool GetUserObjectSecurity(IntPtr handle, int[] what, IntPtr descriptor, int length, out int needed);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool ConvertSecurityDescriptorToStringSecurityDescriptor(IntPtr descriptor, uint revision, int what, out IntPtr text, out uint length);
     public static string InputDesktop()
     {
         var input = OpenInputDesktop(0, false, 0x0001 /*DESKTOP_READOBJECTS*/);
