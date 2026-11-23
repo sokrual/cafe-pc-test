@@ -78,8 +78,8 @@ static class ProcessAccessProbe
     {
         var index = Array.FindIndex(args, value => value.Equals("--test-process-access", StringComparison.OrdinalIgnoreCase));
         if (index < 0 || index + 1 >= args.Length || !uint.TryParse(args[index + 1], out var processId)) return 2;
-        // exit 11 VM_WRITE, 12 CREATE_THREAD, 13 DUP_HANDLE, 14 WRITE_DAC granted; 2 unexpected error; 0 all refused
-        var rights = new uint[] { 0x0020, 0x0002, 0x0040, 0x00040000 };
+        // exit 11 VM_WRITE, 12 CREATE_THREAD, 13 DUP_HANDLE, 14 WRITE_DAC, 15 TERMINATE, 16 VM_READ granted; 2 unexpected error; 0 all refused
+        var rights = new uint[] { 0x0020, 0x0002, 0x0040, 0x00040000, 0x0001, 0x0010 };
         for (var i = 0; i < rights.Length; i++)
         {
             var handle = OpenProcess(rights[i], false, processId);
