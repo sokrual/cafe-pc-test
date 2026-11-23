@@ -69,6 +69,7 @@ static class Program
         Log($"started v{typeof(Program).Assembly.GetName().Version}");
         LockDesktop.Make(args.Contains("--test-lock-on-default", StringComparer.OrdinalIgnoreCase));
         LockDesktop.TestRefuseLockThread = args.Contains("--test-lock-thread-refused", StringComparer.OrdinalIgnoreCase);
+        LockDesktop.TestRefuseUnlock = args.Contains("--test-unlock-refused-once", StringComparer.OrdinalIgnoreCase);
         ApplicationConfiguration.Initialize();
         Application.Run(new Agent(Arg("--name") ?? "Gaming Cafe"));
     }
@@ -431,7 +432,7 @@ sealed class LockScreen : Form
         var keepFront = new System.Windows.Forms.Timer { Interval = 500 };
         keepFront.Tick += (_, _) =>
         {
-            if (!Visible) return;
+            if (!Visible) { LockDesktop.GiveBack(); return; }
             LockDesktop.Keep();
             if (WindowState == FormWindowState.Minimized) // Show desktop (Win+D) minimises windows
             { WindowState = FormWindowState.Normal; Bounds = SystemInformation.VirtualScreen; }
@@ -498,6 +499,7 @@ static class LockDesktop
     static string _name = "";
     public static bool Own => _own != IntPtr.Zero;
     public static bool TestRefuseLockThread; // UI test: as if Windows moved the key blocker's thread and refused the lock screen's
+    public static bool TestRefuseUnlock;     // UI test: as if Windows refused the normal desktop at the next unlock
     // Who may use the lock screen's desktop: Windows itself, admins (the owner's tools, the tests) and this program
     // through the handle it gets when it makes the desktop. Measured as a standard user: with these rights another
     // program of the same account cannot open the desktop for anything; with the rights Windows gives by itself it can
@@ -536,8 +538,22 @@ static class LockDesktop
 
     public static void Show(bool locked)
     {
-        if (Own && !SwitchDesktop(locked ? _own : _normal))
-            Program.Log($"could not give the screen to the {(locked ? "lock screen's" : "normal")} desktop (error {Marshal.GetLastWin32Error()})");
+        if (!Own) return;
+        var given = !(TestRefuseUnlock && !locked) && SwitchDesktop(locked ? _own : _normal);
+        if (!given) Program.Log($"could not give the screen to the {(locked ? "lock screen's" : "normal")} desktop (error {Marshal.GetLastWin32Error()})");
+        if (!locked) TestRefuseUnlock = false;
+        _owed = !locked && !given;
+    }
+
+    // Windows refuses to switch desktops while its own secure screen is up (measured: the screen that Ctrl+Alt+Del and
+    // "lock this computer" show). A refused lock is asked again by Keep. A refused unlock is asked again here, by the same
+    // timer: without it the customer stays on the lock screen's empty desktop while the time runs.
+    static bool _owed; // an unlock still owes the normal desktop the screen
+    public static void GiveBack()
+    {
+        if (!_owed || !SwitchDesktop(_normal)) return;
+        _owed = false;
+        Program.Log("the normal desktop has the screen (asked again after a refusal)");
     }
 
     // Any program can give the screen to the normal desktop while the PC is locked (measured), so the lock screen's

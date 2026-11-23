@@ -218,6 +218,24 @@ public sealed class LockScreenTests : IDisposable
         catch { Rig.Screenshot(); throw; }
     }
 
+    // Windows refuses to give the normal desktop the screen while its own secure screen is up (measured on x64, run
+    // 45119963759: the PC program's unlock was refused). The lock screen must ask again, or the customer is left on its
+    // empty desktop while the time runs.
+    [Fact]
+    public void E3b_normal_desktop_comes_back_after_Windows_refused_it_at_the_unlock()
+    {
+        try
+        {
+            _agent = _rig.StartAgent(unlockRefusedOnce: true);
+            _app = Application.Attach(_agent.Id);
+            Window("LockScreen");
+            LogIn("9000000003", "2222");
+            Rig.WaitFor(() => Rig.InputDesktop() == "Default", 5, "the normal desktop did not come back after a refused unlock", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+            Window("TimerWidget"); // the customer's timer, on the normal desktop
+        }
+        catch { Rig.Screenshot(); throw; }
+    }
+
     // The key blocker's thread moves to the lock screen's desktop first. If Windows then refuses the lock screen's thread,
     // the lock screen stays a window on the normal desktop, and the keys must still be blocked there.
     [Fact]
@@ -866,7 +884,7 @@ sealed class Rig : IDisposable
             throw;
         }
     }
-    public Process StartAgent(bool lockOnNormalDesktop = false, bool lockThreadRefused = false)
+    public Process StartAgent(bool lockOnNormalDesktop = false, bool lockThreadRefused = false, bool unlockRefusedOnce = false)
     {
         var sid = WindowsIdentity.GetCurrent().User!.Value;
         var proxy = new ProcessStartInfo(Env("CAFE_WATCHDOG_EXE")) { UseShellExecute = false };
@@ -885,6 +903,7 @@ sealed class Rig : IDisposable
         var agent = new ProcessStartInfo(Env("CAFE_AGENT_EXE")) { UseShellExecute = false };
         foreach (var a in new[] { "--name", "Test Cafe", "--logs", Path.Combine(_pcDir, "logs") }) agent.ArgumentList.Add(a);
         if (lockOnNormalDesktop) agent.ArgumentList.Add("--test-lock-on-default"); // what the PC falls back to when Windows refuses the lock screen's own desktop
+        if (unlockRefusedOnce) agent.ArgumentList.Add("--test-unlock-refused-once"); // Windows refuses the normal desktop at the first unlock, as it does while its own secure screen is up
         if (lockThreadRefused) agent.ArgumentList.Add("--test-lock-thread-refused"); // Windows moves the key blocker's thread to that desktop, then refuses the lock screen's
         return Process.Start(agent)!;
     }
