@@ -1,5 +1,6 @@
 PROJECT STATUS - what is built, what is left
-Last updated: 22 Nov 2026. Version 0.3.0. Latest green test run: 44987549217 (all 8 jobs pass, lockdown 151/151, pull request #9).
+Last updated: 23 Nov 2026. Version 0.3.0. Latest green test run on main: 44993200175 (all 8 jobs pass, lockdown 151/151, pull request #9).
+E3b branch feature/e3b-own-desktop (not merged yet): run 45013304111 (all 8 jobs pass, lockdown 152/152). See 23 Nov at the end.
 
 Read README.txt for the layout, CHECKS.txt for the backend and security checks every phase must pass, and CLAUDE.md for the rules (commit as "Turyos Ventures" with an empty email,
 no AI signature anywhere, simple English in everything people see, smallest change that fully works).
@@ -135,7 +136,9 @@ B3  Lockdown and installers                                         BUILT - fina
               hardware; switch off the Xbox Game Bar by policy. Today the lock screen is a TopMost window.
               E3a Game Bar off (BUILT 15 Nov): Windows' policy AllowGameDVR=0 (game recording and Win+G overlay),
                  and AppLocker refuses the Game Bar app (Microsoft.XboxGamingOverlay) to the Customer; the owner keeps
-                 it. Lockdown D1.C1b, E3.G1. Real Win+G check in Phase 0. E3b own desktop: next.
+                 it. Lockdown D1.C1b, E3.G1. Real Win+G check in Phase 0.
+              E3b own desktop: BUILT 19-22 Nov on branch feature/e3b-own-desktop, see 23 Nov at the end. Left: the
+                 security pass on it, then the pull request.
               Decided 14 Nov: record each PC's hardware at install and show it on the counter (B5.13 below).
     B5.13 PC hardware list and PC groups (decided 14 Nov): each PC reports its processor, graphics card, memory,
           Windows version and monitors at install; the counter lists them. The owner puts PCs into groups (e.g.
@@ -237,6 +240,11 @@ TEST PHASES ON REAL PCS (after the build)
     update pop-ups; every monitor covered; AppLocker with Riot, Epic, Steam and Riot Vanguard; the owner's
     allowed-folder dialog with real launcher folders; nothing breaks that runs from C:\ProgramData; time for the
     AppLocker rules to compile after install; the lock screen takes focus back when another window appears.
+    The lock screen's own desktop (E3b; none of this can be tested in CI), on each build: the PC program's log says
+    "lock screen has its own desktop" (in CI the lock screen runs as the test machine's admin, not as the Customer
+    signed in at the screen); typing the phone number and PIN with a language input tool and with the touch keyboard;
+    Ctrl+Alt+Del and back while locked (the lock screen must have the screen again); a game in exclusive fullscreen
+    when the PC locks; the owner's screen view (B5.12) of a locked PC.
     Pen drives (D2; CI has no USB, so all of this is only tested here), with a USB 2 stick, a USB 3 stick or
     USB hard disk (UASP), and an SD card in a USB reader: plugged in during a visit, nothing opens and the counter
     shows the prompt within 10 s; Block keeps it hidden; Allow read-only shows it and copying a file onto it fails;
@@ -339,3 +347,54 @@ OWNER DECISIONS (10 Nov 2026)
               the time of the PC's last restart are still counted; how long those are on a real PC is not measured.
               Tests: BillingTests Setup_mode_on_a_PC_pauses_the_customers_time_and_gives_it_back_by_itself, lockdown S7.1
               (the real watchdog and counter: flag made, time stops within 30 s; flag removed, the same visit runs on).
+23 Nov  E3b, the lock screen on its own Windows desktop, like the Windows sign-in screen (built 19-22 Nov; decided 13 Nov
+              as needed before the Phase 0 build). Branch feature/e3b-own-desktop, not merged yet. Before, the lock
+              screen was an always-on-top window on the normal desktop: a Windows system dialog could sit above it, and
+              a window that kept the focus let keys through. Now a locked PC shows a second desktop that holds only the
+              lock screen. The customer's programs and windows stay on the normal desktop, out of sight and out of reach
+              of the keyboard and mouse. Code: pc/Cafe.Agent/Program.cs (LockDesktop, LockScreen, KeyBlocker).
+              1 The PC program makes a desktop named CafeLock-<its process number> and runs the lock screen there on its
+                own thread. Locking gives that desktop the screen; unlocking gives the normal desktop back. The thread is
+                made by Windows itself, moved first, then started as STA: a .NET-made STA thread could not move (error
+                170), and without STA a click sent by UI Automation froze the lock screen (both measured).
+              2 While locked, the lock screen's 0.5 s timer asks Windows to give its desktop the screen, every time. Any
+                program can switch the screen to the normal desktop (measured); the lock screen has it again within
+                0.5 s. Asking while it already has the screen does nothing (measured: 0.02 ms, no lost key).
+              3 The desktop is made with rights for Windows itself, admins and the maker's own handle only. Another
+                program of the Customer is refused for everything (measured as a standard user). With the rights Windows
+                gives by itself, such a program could open the desktop fully (measured).
+              4 The key blocker's thread sits on the lock screen's desktop: a keyboard hook sees only the keys typed on
+                its own desktop (measured). Left on the normal desktop, it let Ctrl+Shift+Esc open Task Manager on the
+                lock screen's desktop and Win+U open Settings (measured).
+              5 A restarted program (the watchdog brings a killed one back) makes a new desktop and gives it the screen.
+              Fallback (Kushagra, 19 Nov): if Windows refuses to make the desktop or to move a thread to it, the lock
+              screen stays a window on the normal desktop exactly as before, and the log says why. The "back to front"
+              code and its E2 test are kept for that case (the E2 test uses the switch --test-lock-on-default).
+              Tests: UI tests E3b_lock_screen_has_its_own_desktop..., E3b_lock_screen_takes_the_screen_back_within_1_second...,
+              T1.1 (now also Ctrl+Shift+Esc and Win+U; fails if Task Manager, Utilman or Settings start), T1.2 (the restarted
+              program's own desktop has the screen); lockdown E3b.L1 (the lock screen program, run as the Customer, makes
+              the desktop; a second program in the same sign-in is refused for 7 kinds of access). Each was shown to fail
+              without its change (branches proof/e3b-1-negative to proof/e3b-5-negative). Run 45013304111: 8 of 8 jobs,
+              server tests 81/81, UI tests 20/20, lockdown 152/152, x64 and ARM.
+              Known limits, kept for the security pass before the pull request (Kushagra, 22 Nov):
+              - A program that switches the screen to the normal desktop again and again beats the 0.5 s timer: the
+                normal desktop had the screen in 96-98% of the looks over 5 s (measured). One switch is undone.
+              - When the PC program is killed, the screen is open (normal desktop, no lock screen) for about 1.0 s, until
+                the watchdog's new program covers it: 0.6 to 1.1 s in 40 kills. With the program as on main it was 0.5 to
+                1.1 s in 20 kills, so E3b did not add this. To be made shorter.
+              Not tested: everything in the E3b lines under TEST PHASES ON REAL PCS above.
+              Test fix found on the way (no product change): UI tests left lock screen desktops behind. A test thread that
+              had looked at the lock screen was still on its desktop when the test ended the PC program, and the dead
+              desktop stayed; the screen stayed on it or went to it later (measured, run 45011269480). The test rig now
+              moves the thread back to the normal desktop before it ends a program and before every server call (after
+              one, a test can go on, on another thread). Every UI test now ends with a check: no CafeLock desktop is left
+              and the screen is on the normal desktop. Without the fix 13 of 20 tests fail on it (run 45012260116).
+              Found, not fixed yet: the Phase 0 kit's report line T0.1d "Every game was recognised" can be a false alarm.
+              The kit's timer looks once a second and judges a window only at its first look. When that look finds a game
+              window in front but still starting (not yet visible, not yet full screen), the report says "not recognised",
+              though the timer recognises the game one second later (measured, run 45016762015: 2 of 40 x64 rounds; also
+              6 of 60 x64 and 0 of 60 ARM rounds in the last 30 runs; the kit job stays green because T0.1d is not a
+              must-pass). Not measured: real games on a cafe PC, which often show a small window first. Decided
+              (Kushagra, 23 Nov): the kit calls a game missed only if it was never recognised during its whole time in
+              front; CI's fake game starts small and goes full screen after about 2 s; T0.1d becomes a must-pass in CI.
+              Its own pull request, after the E3b one.
