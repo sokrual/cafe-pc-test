@@ -1,6 +1,7 @@
 PROJECT STATUS - what is built, what is left
-Last updated: 23 Nov 2026. Version 0.3.0. Latest green test run on main: 44993200175 (all 8 jobs pass, lockdown 151/151, pull request #9).
-E3b branch feature/e3b-own-desktop (not merged yet): run 45013304111 (all 8 jobs pass, lockdown 152/152). See 23 Nov at the end.
+Last updated: 24 Nov 2026. Version 0.3.0. Latest green test run on main: 44993200175 (all 8 jobs pass, lockdown 151/151, pull request #9).
+E3b branch feature/e3b-own-desktop (not merged yet): run 45190479815 (all 8 jobs pass, UI tests 24/24, lockdown 152/152). See 23 and
+24 Nov at the end.
 
 Read README.txt for the layout, CHECKS.txt for the backend and security checks every phase must pass, and CLAUDE.md for the rules (commit as "Turyos Ventures" with an empty email,
 no AI signature anywhere, simple English in everything people see, smallest change that fully works).
@@ -123,6 +124,7 @@ B3  Lockdown and installers                                         BUILT - fina
               S5.2 found, address saved, DNS moved, a website resolves through it).
          E1 the remembered lock setting survives a reset (F4); Customer programs cannot open or rewrite
               the lock screen process (F14)                                                 DONE (PR #27, 14 Nov)
+              Since the E3b security pass they also cannot end it or read its memory (see 24 Nov at the end).
          E2 show PcState.Notice; offline "30/60/90 min" text when the block changes; check the lock screen
               takes focus back when another program's window appears (seen once in CI: Win+D left wsl.exe in front)
               BUILT 15 Nov: the counter's note shows on the customer's timer and as a balloon; the offline rate card
@@ -137,8 +139,8 @@ B3  Lockdown and installers                                         BUILT - fina
               E3a Game Bar off (BUILT 15 Nov): Windows' policy AllowGameDVR=0 (game recording and Win+G overlay),
                  and AppLocker refuses the Game Bar app (Microsoft.XboxGamingOverlay) to the Customer; the owner keeps
                  it. Lockdown D1.C1b, E3.G1. Real Win+G check in Phase 0.
-              E3b own desktop: BUILT 19-22 Nov on branch feature/e3b-own-desktop, see 23 Nov at the end. Left: the
-                 security pass on it, then the pull request.
+              E3b own desktop: BUILT 19-22 Nov on branch feature/e3b-own-desktop, see 23 Nov at the end. Security pass
+                 done 23-24 Nov, see 24 Nov at the end. Left: the pull request.
               Decided 14 Nov: record each PC's hardware at install and show it on the counter (B5.13 below).
     B5.13 PC hardware list and PC groups (decided 14 Nov): each PC reports its processor, graphics card, memory,
           Windows version and monitors at install; the counter lists them. The owner puts PCs into groups (e.g.
@@ -170,6 +172,11 @@ B5  Owner features                                                  IN PROGRESS
          Code: server/Cafe.Core/Accounts.cs. Tests: server/Cafe.Tests/AccountTests.cs.
     B5.2 Counter screen (web page): all PCs, start/stop/add time, lock to pause, payments, shifts   DONE
     B5.3 Alerts on the owner's PC (voice and popup) and the "allow or not" prompt for blocked programs
+         Built with it (Kushagra, 23 Nov): the answer to the E3b known limits (see 24 Nov at the end). The PC program
+         counts the times its lock desktop has lost the screen; past a limit, or when the PC program is ended again and
+         again, the watchdog closes the Customer's programs with the clean-up's own list (no profile reset). Only while
+         the counter says the PC should be locked, and the counter is told. A frozen PC program needs it to report to
+         the watchdog at set times; not designed yet.
     B5.4 Reports: revenue by day, week, month, PC, cash/UPI, staff, discounts and corrections; PDF and Excel
     B5.5 Daily encrypted backup, with a restore test
     B5.6 Messages to PCs read aloud, "Call staff" button
@@ -381,7 +388,7 @@ OWNER DECISIONS (10 Nov 2026)
                 normal desktop had the screen in 96-98% of the looks over 5 s (measured). One switch is undone.
               - When the PC program is killed, the screen is open (normal desktop, no lock screen) for about 1.0 s, until
                 the watchdog's new program covers it: 0.6 to 1.1 s in 40 kills. With the program as on main it was 0.5 to
-                1.1 s in 20 kills, so E3b did not add this. To be made shorter.
+                1.1 s in 20 kills, so E3b did not add this. To be made shorter. (Both handled on 24 Nov, see there.)
               Not tested: everything in the E3b lines under TEST PHASES ON REAL PCS above.
               Test fix found on the way (no product change): UI tests left lock screen desktops behind. A test thread that
               had looked at the lock screen was still on its desktop when the test ended the PC program, and the dead
@@ -398,3 +405,48 @@ OWNER DECISIONS (10 Nov 2026)
               (Kushagra, 23 Nov): the kit calls a game missed only if it was never recognised during its whole time in
               front; CI's fake game starts small and goes full screen after about 2 s; T0.1d becomes a must-pass in CI.
               Its own pull request, after the E3b one.
+24 Nov  E3b security pass (23-24 Nov), on branch feature/e3b-own-desktop, against CHECKS.txt. Each fix has its own test, and
+              each test was shown to fail without its fix (proof runs on the branches named).
+              1 The lock desktop's name could be made first by another program (measured, run 45110576185: Windows then
+                hands back that program's desktop with its rights, and the lock screen's rights are not applied). The name
+                is now CafeLock-<process number>-<32 random hex digits>. Test: UI E3b_lock_screen_desktop_has_the_lock_
+                screens_rights_when_another_program_made_one_for_its_process_number. Proof: proof/e3b-pass1-negative.
+              2 An unlock that Windows refused was not asked again, so the screen stayed on the lock desktop (measured on
+                x64 while Windows' own secure screen was up, run 45119963759). The 0.5 s timer now asks again until Windows
+                gives the normal desktop. Test: UI E3b_normal_desktop_comes_back_after_Windows_refused_it_at_the_unlock
+                (switch --test-unlock-refused-once). Proof: proof/e3b-pass2-negative.
+              3 If Windows moved the key blocker's thread but refused the lock screen's, the key blocker sat on the wrong
+                desktop and saw no keys (read in the code). A second key blocker now starts on the normal desktop in that
+                case. Test: UI E3b_keys_stay_blocked_when_Windows_refuses_the_lock_screens_thread_after_the_key_blockers
+                (switch --test-lock-thread-refused). Proof: proof/e3b-pass3-negative.
+              4 Dropped (Kushagra, 24 Nov): the line in KeyBlocker.Install that sets "keys are blocked" is not dead. It
+                keeps the escape keys blocked until the lock screen is made. No change.
+              5 The lock screen program's own rights (on main too): other Customer programs could end it and read its
+                memory, where the PIN was found after a login (measured, runs 45149120379 and 45150408616). The rights
+                given to them went from 0x00121411 to 0x00121400: no "terminate", no "read memory". Windows itself and
+                admins keep every right. Test: lockdown F14.1 now also asks for TERMINATE and VM_READ as the Customer.
+                Proofs: proof/e3b-pass5-negative (old rights) and proof/e3b-pass5b-negative (read memory allowed).
+              Kill gap: after the PC program is killed, the watchdog started a new one at its next look, up to a second
+              later. It now waits for the program to end and starts the next one at once. A program that ends within a
+              second of its start still waits out that second, so there is never more than one start a second. From the
+              kill until a new lock desktop has the screen, middle of 10 kills: before 1.01 s (x64) and 1.03 s (ARM), run
+              45187776918; now 0.17 to 0.31 s (runs 45187772292 and 45190479815). Test: UI E3b_lock_screen_covers_again_
+              within_half_a_second_of_a_kill (middle under 0.5 s). Proof: proof/e3b-pass6-negative.
+              Test switches in the lock screen program: checked by reading, nothing to change. A switch gives a Customer
+              nothing a second copy of the program does not, and a second copy cannot unlock the first.
+              Run 45190479815 (head 8932934): 8 of 8 jobs first time, server tests 81/81, UI tests 24/24, lockdown 152/152.
+              Known limits (decided by Kushagra, 23 Nov: written down, no product change in E3b). Each needs a Customer
+              program that gets past D1 (nothing runs from a folder the Customer can write to), on a PC locked while its
+              session is still open: a lock from the counter during a session, the customer's own Lock button, time
+              running out while the counter cannot be reached, or the seconds of a logout's clean-up (5 to 41 s in CI).
+              With "lock when time runs out" on and the counter reachable, the clean-up closes such a program.
+              - A program that gives the screen to the normal desktop again and again keeps it there 97-98% of the time
+                (measured, run 45127624618). Main's lock screen loses to it the same way, and loses for good to a single
+                switch, which E3b undoes within 0.5 s.
+              - A program can end the lock screen program with a "quit" message or by ending its threads, again and
+                again; each time the screen is open for up to a second (measured, runs 45149120379 and 45150408616).
+              - A program can freeze the lock screen program's threads (measured, same runs).
+              The answer to all three is built with the counter alerts, B5.3 (see there).
+              Not measured: Windows 11 behind Windows' own secure screen (fix 2 does not depend on it); whether the case of
+              fix 3 happens on a real PC; a real Customer's Windows sign-out, a crash report or anti-cheat with the new
+              rights of fix 5; the kill gap on a real PC.
