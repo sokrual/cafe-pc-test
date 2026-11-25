@@ -54,6 +54,7 @@ $sawTimer = [bool]($la | Where-Object { $_.path -like "$root\CafeTimerTest.exe" 
 # the game checks (T0.1c, T0.1d, T0.3) only test something if the fake game really came to the front; on the ARM
 # machine Windows' own "Microsoft account" window keeps the front and nothing the test starts can take it (measured 25 Nov)
 $inFront = [bool](Get-ChildItem $done.FullName -Filter "timer-*.log" -Recurse | Select-String -SimpleMatch "`tFG FakeGame ")
+if (-not $inFront -and $env:PROCESSOR_ARCHITECTURE -ne "ARM64") { $hard.Add("the fake game never came to the front, so the game checks tested nothing") }
 foreach ($f in "installed-programs.csv", "services-and-drivers.csv", "startup.csv") { if (-not (Test-Path (Join-Path $done.FullName $f))) { $hard.Add("$f missing") } }
 foreach ($r in $res) { $summary.Add("| $($r.r) | $($r.id) | $($r.text -replace '\|', '/') |") }
 
@@ -63,6 +64,5 @@ $out = @("## Round $Round on $((Get-CimInstance Win32_OperatingSystem).Caption)"
 $out | Write-Host
 if ($env:GITHUB_STEP_SUMMARY) { $out | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
 if (-not $sawTimer) { $hard.Add("Level A watch-only did not list CafeTimerTest.exe"); $la | Select-Object -First 20 | Format-Table | Out-String | Write-Host }
-if (-not $inFront -and $env:PROCESSOR_ARCHITECTURE -ne "ARM64") { $hard.Add("the fake game never came to the front, so the game checks tested nothing") }
 if (-not $sawDownload) { $hard.Add("audit log did not record the program run from Downloads") }
 if ($hard.Count) { exit 1 }
