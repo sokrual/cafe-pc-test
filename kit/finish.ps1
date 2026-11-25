@@ -228,6 +228,8 @@ if ($vDone.Count) {
 # Level B audit: did anything game-related try to run from a blocked folder?
 $wb = @(); $wbFile = Join-Path $logs "would-be-blocked.csv"
 if (Test-Path $wbFile) { $wb = @(Import-Csv $wbFile) } # Import-Csv stops on a missing file even with -ErrorAction
+# PowerShell writes and checks its own randomly named probe script in TEMP; a random name can contain "amd" or "riot"
+$wb = @($wb | Where-Object { $_.path -notmatch '\\__PSScriptPolicyTest_[^\\]*\.ps1$' })
 $gameWords = "steam|epic|riot|vanguard|valorant|battle\.net|blizzard|ubisoft|uplay|\bea\b|\borigin\b|rockstar|garena|faceit|easyanticheat|battleye|discord|nvidia|amd"
 $gameHits = @($wb | Where-Object { $_.path -match $gameWords } | Select-Object -ExpandProperty path -Unique)
 $otherHits = @($wb | Where-Object { $_.path -notmatch $gameWords } | Select-Object -ExpandProperty path -Unique)

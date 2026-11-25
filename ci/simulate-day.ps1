@@ -18,7 +18,9 @@ Add-Content "$root\games.txt" "FakeGame"
 $game = @'
 Add-Type -AssemblyName System.Windows.Forms
 $f = New-Object System.Windows.Forms.Form
-$f.FormBorderStyle = "None"; $f.WindowState = "Maximized"; $f.TopMost = $true; $f.BackColor = "Black"
+$f.FormBorderStyle = "None"; $f.TopMost = $true; $f.BackColor = "Black"; $f.Width = 400; $f.Height = 300
+# like many real games: a small window first, full screen 2 s later (T0.1d must not call this missed)
+$s = New-Object System.Windows.Forms.Timer; $s.Interval = 2000; $s.Add_Tick({ $s.Stop(); $f.WindowState = "Maximized" }); $s.Start()
 $t = New-Object System.Windows.Forms.Timer; $t.Interval = 150000; $t.Add_Tick({ $f.Close() }); $t.Start()
 [System.Windows.Forms.Application]::Run($f)
 '@
@@ -36,6 +38,10 @@ $dl = Join-Path $env:USERPROFILE "Downloads"
 New-Item $dl -ItemType Directory -Force | Out-Null
 Copy-Item "$env:WINDIR\System32\whoami.exe" "$dl\cafe-ci-download.exe" -Force
 & "$dl\cafe-ci-download.exe" | Out-Null
+# a PowerShell probe script whose random name holds a game word (T0.2f must not count it as a game)
+$probe = "$env:TEMP\__PSScriptPolicyTest_ciamd000.ci0.ps1"
+"exit 0" | Out-File $probe -Encoding ascii
+powershell -NoProfile -ExecutionPolicy Bypass -File $probe
 
 if ($g) { $g.WaitForExit(170000) | Out-Null } else { Start-Sleep -Seconds 150 }   # 2.5 min of "play": long enough for the voice rule (2 min in a game)
 Start-Sleep -Seconds 15             # a few samples after the game
