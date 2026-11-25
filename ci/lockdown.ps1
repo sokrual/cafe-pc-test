@@ -196,10 +196,10 @@ try {
     # B5.3: a PC the software cannot run on is told so before anything changes (own folder, so the real install's log stays apart)
     $stageW = Join-Path $env:TEMP "stage-checks"; New-Item $stageW -ItemType Directory -Force | Out-Null
     Copy-Item "$repo\install\install-admin.ps1", "$repo\install\install-pc.ps1" $stageW
-    $oldWindows = & "$stageW\install-admin.ps1" -Ci -TestBuild 19045 *>&1 | Out-String; $oldWindowsExit = $LASTEXITCODE
-    Stop-Transcript | Out-Null
-    $noWebView2 = & "$stageW\install-admin.ps1" -Ci -TestNoWebView2 *>&1 | Out-String; $noWebView2Exit = $LASTEXITCODE
-    Stop-Transcript | Out-Null
+    $oldWindows = try { & "$stageW\install-admin.ps1" -Ci -TestBuild 19045 *>&1 | Out-String } catch { "did not stop cleanly: $_" }; $oldWindowsExit = $LASTEXITCODE
+    Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
+    $noWebView2 = try { & "$stageW\install-admin.ps1" -Ci -TestNoWebView2 *>&1 | Out-String } catch { "did not stop cleanly: $_" }; $noWebView2Exit = $LASTEXITCODE
+    Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
     $untouched = -not (Test-Path "$env:ProgramFiles\GamingCafe\Server") -and -not (Get-Service CafeServer -ErrorAction SilentlyContinue)
     Check "A.W1" "INSTALL-ADMIN stops on a Windows older than Windows 11 and says so, before it changes anything" ($oldWindowsExit -eq 1 -and $oldWindows -match "needs Windows 11 Pro" -and $untouched) "exit $oldWindowsExit"
     Check "A.W2" "INSTALL-ADMIN stops when Microsoft WebView2 is missing, with Microsoft's download page as a link, before it changes anything" ($noWebView2Exit -eq 1 -and $noWebView2.Contains("https://developer.microsoft.com/microsoft-edge/webview2/") -and $untouched) "exit $noWebView2Exit"
@@ -338,8 +338,8 @@ try {
     Copy-Item "$tdata\server.pin" $stage
     Set-Content "$stage\counter-address.txt" "127.0.0.1" -Encoding ascii   # as INSTALL-ADMIN writes it; the test server is on this machine
     $secureBootExpected = try { if (Confirm-SecureBootUEFI -ErrorAction Stop) { "On" } else { "Off" } } catch { "Unknown" }
-    $oldPc = & "$stageW\install-pc.ps1" -Ci -TestBuild 19045 -AllowFolders "" *>&1 | Out-String; $oldPcExit = $LASTEXITCODE
-    Stop-Transcript | Out-Null
+    $oldPc = try { & "$stageW\install-pc.ps1" -Ci -TestBuild 19045 -AllowFolders "" *>&1 | Out-String } catch { "did not stop cleanly: $_" }; $oldPcExit = $LASTEXITCODE
+    Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
     Check "C.W1" "INSTALL-PC stops on a Windows older than Windows 11 and says so, before it changes anything" ($oldPcExit -eq 1 -and $oldPc -match "needs Windows 11 Pro" -and -not (Get-Service CafeWatchdog -ErrorAction SilentlyContinue) -and -not (Get-LocalUser Customer -ErrorAction SilentlyContinue)) "exit $oldPcExit"
     & "$stage\install-pc.ps1" -DnsServer $runnerDns -Ci -AllowFolders ""   # the counter address comes from counter-address.txt
     Stop-Transcript | Out-Null   # close the installer's log before reading it (see the first INSTALL-ADMIN run above)
