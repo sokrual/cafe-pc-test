@@ -10,6 +10,7 @@ function Check($id, $test, $ok, $detail) {
     $results.Add([pscustomobject]@{ id = $id; result = $res; test = $test; detail = "$detail" })
     Write-Host "[$res] $id $test - $detail"
 }
+function CounterWindows { "counter windows running: " + ((@(Get-Process Cafe.Counter -ErrorAction SilentlyContinue) | ForEach-Object { "$($_.Id) session $($_.SessionId) since $($_.StartTime.ToString('HH:mm:ss'))" }) -join "; ") }
 function WaitFor($seconds, $test) { for ($i = 0; $i -lt $seconds * 2; $i++) { if (& $test) { return $true }; Start-Sleep -Milliseconds 500 }; $false }
 function Get-QueuedActionCount($path) {
     if (-not (Test-Path -LiteralPath $path)) { return 0 }
@@ -1526,7 +1527,7 @@ try {
         ForEach-Object { Write-Host "$_" }
     $afterIfIndexes = @(Get-NetRoute -DestinationPrefix "0.0.0.0/0" | Sort-Object RouteMetric | Select-Object -ExpandProperty InterfaceIndex -Unique)
     $dnsAfter = @($afterIfIndexes | ForEach-Object { $i = $_; "$i=$((Get-DnsClientServerAddress -InterfaceIndex $i -AddressFamily IPv4).ServerAddresses -join ',')" })
-    Check "B3.I1" "PC uninstall: service, account, files, data and rules gone" (-not (Get-Service CafeWatchdog -ErrorAction SilentlyContinue) -and -not (Get-LocalUser Customer -ErrorAction SilentlyContinue) -and -not (Test-Path $app) -and -not (Test-Path $data) -and -not (Get-NetFirewallRule -Group "Cafe PC" -ErrorAction SilentlyContinue)) ""
+    Check "B3.I1" "PC uninstall: service, account, files, data and rules gone" (-not (Get-Service CafeWatchdog -ErrorAction SilentlyContinue) -and -not (Get-LocalUser Customer -ErrorAction SilentlyContinue) -and -not (Test-Path $app) -and -not (Test-Path $data) -and -not (Get-NetFirewallRule -Group "Cafe PC" -ErrorAction SilentlyContinue)) "left: $(@(Get-ChildItem $app, $data -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 5 | ForEach-Object FullName) -join ', '); $(CounterWindows)"
     $blockedNames = @("Cafe: block SMB (TCP 445)", "Cafe: block NetBIOS name service (UDP 137-138)",
         "Cafe: block NetBIOS session service (TCP 139)", "Cafe: block Remote Desktop (TCP 3389)",
         "Cafe: block Remote Desktop (UDP 3389)", "Cafe: block Windows Remote Management (TCP 5985-5986)")
@@ -1628,7 +1629,7 @@ try {
 
     & "$stageA\install-admin.ps1" -Uninstall -Ci
     Check "B3.I4" "Counter PC uninstall: server and filter gone" (-not (Get-Service CafeServer, AdGuardHome -ErrorAction SilentlyContinue)) ""
-    Check "B3.I4d" "Counter PC uninstall: the counter window program and its two icons gone" (-not (Test-Path "$counterApp\Cafe.Counter.exe") -and -not ($counterIcons | Where-Object { Test-Path $_ })) ""
+    Check "B3.I4d" "Counter PC uninstall: the counter window program and its two icons gone" (-not (Test-Path "$counterApp\Cafe.Counter.exe") -and -not ($counterIcons | Where-Object { Test-Path $_ })) "program left $(Test-Path "$counterApp\Cafe.Counter.exe"); icons left $(@($counterIcons | Where-Object { Test-Path $_ }).Count); $(CounterWindows)"
     Check "B3.I4b" "Counter PC uninstall: clock settings back as before" ((Get-ItemProperty $ntpKey).NtpServer -eq $ntpOriginal) "$ntpOriginal"
     $idleAfter = Get-ItemProperty $idleKey -ErrorAction SilentlyContinue
     $idleBefore = if ($null -eq $idleOriginal) { $null } else { $idleOriginal.InactivityTimeoutSecs }
