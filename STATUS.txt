@@ -171,6 +171,9 @@ B5  Owner features                                                  IN PROGRESS
          Code: server/Cafe.Core/Accounts.cs. Tests: server/Cafe.Tests/AccountTests.cs.
     B5.2 Counter screen (web page): all PCs, start/stop/add time, lock to pause, payments, shifts   DONE
     B5.3 Alerts on the owner's PC (voice and popup) and the "allow or not" prompt for blocked programs
+         Decided 25 Nov (Kushagra), in this order, each its own pull request: (1) the counter window with the alerts,
+         BUILT 25 Nov, see there; (2) the owner's own PC gets the same window and alerts (optional install); (3) the
+         answer to the E3b known limits below; (4) the "allow or not" prompt, once Level A blocks after the cafe trial.
          Built with it (Kushagra, 23 Nov): the answer to the E3b known limits (see 24 Nov at the end). The PC program
          counts the times its lock desktop has lost the screen; past a limit, or when the PC program is ended again and
          again, the watchdog closes the Customer's programs with the clean-up's own list (no profile reset). Only while
@@ -471,3 +474,22 @@ OWNER DECISIONS (10 Nov 2026)
               Decided (Kushagra, 25 Nov), choice A: the kit check now fails on x64 if the fake game never came to the
               front, and on ARM the job summary says the game checks did not test it. Proof: with the fake game never
               started, the x64 kit job fails on exactly that line and ARM passes with the warning (run 45560845587).
+25 Nov  B5.3 part 1: the counter window and its alerts (decided by Kushagra the same day).
+              Cafe.Counter.exe (new, on the counter PC) shows the counter page in its own window (Microsoft WebView2,
+              part of Windows 11), with a desktop icon, and starts with Windows. Closing the window keeps it in the tray.
+              The window trusts the counter's own certificate only by its fingerprint (server.pin, copied beside the
+              program) and stays on the counter's own pages. Measured first (run 45590388068): WebView2 is on both test
+              machines; without the fingerprint check the page does not open; a popup that never takes the keyboard
+              stays on top of a full-screen game on x64; the voice cannot be tested in CI (no sound device).
+              Alerts, while someone is signed in (they use that same login, read every 3 s), each told once by voice
+              and popup: a pen drive waiting for an answer, a PC that stops reaching the counter during a visit, a
+              Microsoft Defender threat on a pen drive. Offline unlocks and Wi-Fi alerts stay on the screen only. Staff
+              and the owner both hear them (decided). If the voice fails (no sound device), the popup still shows.
+              INSTALL-ADMIN and INSTALL-PC stop before changing anything on a Windows older than Windows 11; INSTALL-ADMIN
+              also stops without WebView2 and gives Microsoft's download page as a link (decided: no bundling).
+              HOW-TO-INSTALL now says which program goes where and what each one does.
+              Tests: UI tests B53 (window and certificate; alerts), lockdown A.W1, A.W2, A.C1, A.C2, C.W1, B3.I4d. Proofs:
+              run 45601744539 (window without its fingerprint check and without reading alerts: both UI tests fail),
+              45605750170 (installers without the checks and the window), 45605755676 (uninstall leaves the window).
+              Not measured: the voice on a real PC; a game in exclusive full screen (no graphics card in CI); alerts
+              while nobody is signed in to the counter window (there are none: known limit).
