@@ -105,18 +105,29 @@ public static class CafeWindowProbe {
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder text, int max);
+    [DllImport("user32.dll")] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+    [DllImport("user32.dll")] static extern bool SetThreadDesktop(IntPtr desktop);
+    [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr desktop);
+    // The lock screen has its own Windows desktop, and a thread only sees the windows of the desktop it is on:
+    // the look happens on a new thread moved to the desktop that has the screen.
     public static bool HasVisibleWindow(int pid) {
         bool found = false;
-        EnumWindows((window, state) => {
-            uint owner;
-            GetWindowThreadProcessId(window, out owner);
-            if (owner == (uint)pid && IsWindowVisible(window)) {
-                var title = new StringBuilder(256);
-                GetWindowText(window, title, title.Capacity);
-                if (title.Length > 0) { found = true; return false; }
-            }
-            return true;
-        }, IntPtr.Zero);
+        IntPtr input = OpenInputDesktop(0, false, 0x10000000 /*GENERIC_ALL*/);
+        var look = new System.Threading.Thread(() => {
+            if (input != IntPtr.Zero) SetThreadDesktop(input);
+            EnumWindows((window, state) => {
+                uint owner;
+                GetWindowThreadProcessId(window, out owner);
+                if (owner == (uint)pid && IsWindowVisible(window)) {
+                    var title = new StringBuilder(256);
+                    GetWindowText(window, title, title.Capacity);
+                    if (title.Length > 0) { found = true; return false; }
+                }
+                return true;
+            }, IntPtr.Zero);
+        });
+        look.Start(); look.Join();
+        if (input != IntPtr.Zero) CloseDesktop(input);
         return found;
     }
 }
@@ -1250,7 +1261,7 @@ try {
         } catch { $processAccessDetail = $_.Exception.Message }
         finally { Remove-Item -LiteralPath $processTestDir -Recurse -Force -ErrorAction SilentlyContinue }
     }
-    Check "F14.1" "Customer program from a Program Files test folder cannot open Cafe.Agent for VM_WRITE, CREATE_THREAD, DUP_HANDLE or WRITE_DAC" $processAccessDenied $processAccessDetail
+    Check "F14.1" "Customer program from a Program Files test folder cannot open Cafe.Agent for VM_WRITE, CREATE_THREAD, DUP_HANDLE, WRITE_DAC, TERMINATE or VM_READ" $processAccessDenied $processAccessDetail
     if ($customerAgentProbe -and -not $customerAgentProbe.HasExited) { Stop-Process -Id $customerAgentProbe.Id -Force -ErrorAction SilentlyContinue }
     # An unreachable counter server must also leave the request pending; reconnecting lets the next loop retry.
     Set-Content "$data\wipe\request" ""
@@ -1282,6 +1293,12 @@ try {
     Check "B3.F10" "Customer's autostart entry removed, the owner's kept" ($runMade -eq 0 -and $ownerRun -eq 0 -and $resetOwnerRunOk) "made: customer exit $runMade, owner exit $ownerRun"
     cmd.exe /c "schtasks /query /tn CafeCustomerTask >nul 2>&1"
     Check "B3.F11" "Customer's scheduled task removed" ($taskMade -eq 0 -and $LASTEXITCODE -ne 0) "made: exit $taskMade"
+    # E3b: the lock screen's own desktop refuses every other program of the Customer. The lock screen program, run as the
+    # Customer (a standard user), makes the desktop exactly as the lock screen does, uses its own handle, then starts itself
+    # once more in the same sign-in to try to open the desktop by name.
+    $lockDesktop = AsCustomer "$app\Cafe.Agent.exe" "--test-lock-desktop make"
+    $lockDesktopDone = $lockDesktop.WaitForExit(60000)
+    Check "E3b.L1" "The lock screen's own desktop, made by the Customer, cannot be opened by another program of the Customer: not to switch the screen, read or make windows, set hooks, or read or change its rights" ($lockDesktopDone -and $lockDesktop.ExitCode -eq 0) "finished $lockDesktopDone; exit code $($lockDesktop.ExitCode) (0 = made, the maker's own handle works, the other program was refused every time; 1 = Windows refused to make the desktop; 2 = the maker's handle could not move a thread to it; 3 = the other program OPENED it; 4 = the other program did not finish; 5 = refused, but not as 'access denied')"
     # Verify final server state and the bill through staff endpoints; queue-empty alone is not proof.
     $loginState = Pc "/pc/login" @{ phone = "9000000003"; pin = "2222" }
     $sessionBeforeLogout = $loginState.Session

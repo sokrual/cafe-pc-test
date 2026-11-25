@@ -86,19 +86,27 @@ public sealed class LockScreenTests : IDisposable
         Assert.True(lockWin.BoundingRectangle.Contains(desk) || lockWin.BoundingRectangle == desk, $"lock screen {lockWin.BoundingRectangle} does not cover the screen {desk}");
 
         // T1.1 escape attempts while locked
+        var escaped = new List<string>();
         foreach (var (name, keys) in new (string, VirtualKeyShort[])[]
         {
             ("Alt+Tab", [VirtualKeyShort.ALT, VirtualKeyShort.TAB]), ("Win", [VirtualKeyShort.LWIN]),
             ("Win+R", [VirtualKeyShort.LWIN, VirtualKeyShort.KEY_R]), ("Win+D", [VirtualKeyShort.LWIN, VirtualKeyShort.KEY_D]),
             ("Alt+F4", [VirtualKeyShort.ALT, VirtualKeyShort.F4]), ("Ctrl+Esc", [VirtualKeyShort.CONTROL, VirtualKeyShort.ESCAPE]),
             ("Alt+Esc", [VirtualKeyShort.ALT, VirtualKeyShort.ESCAPE]),
+            // E3b, measured with no key blocker: Task Manager opened on the lock screen's desktop; Settings opened on the normal one
+            ("Ctrl+Shift+Esc", [VirtualKeyShort.CONTROL, VirtualKeyShort.SHIFT, VirtualKeyShort.ESCAPE]), ("Win+U", [VirtualKeyShort.LWIN, VirtualKeyShort.KEY_U]),
         })
         {
+            var running = Process.GetProcesses().Select(p => p.Id).ToHashSet();
             Keyboard.TypeSimultaneously(keys);
-            Thread.Sleep(1200);
-            Assert.False(_agent.HasExited, $"{name} closed the PC program");
-            Assert.True(OnTop("LockScreen"), $"{name} got past the lock screen (foreground is now '{Rig.ForegroundTitle()}')");
+            Thread.Sleep(2500); // the measurement's wait: Settings and Task Manager were open by then
+            var opened = Process.GetProcesses().Where(p => !running.Contains(p.Id) && p.ProcessName is "Taskmgr" or "Utilman" or "SystemSettings").ToList();
+            if (opened.Count > 0) escaped.Add($"{name} opened {string.Join(", ", opened.Select(p => p.ProcessName))}");
+            opened.ForEach(Rig.Kill);
+            if (_agent.HasExited) escaped.Add($"{name} closed the PC program");
+            else if (!OnTop("LockScreen")) escaped.Add($"{name} got past the lock screen (foreground is now '{Rig.ForegroundTitle()}')");
         }
+        Assert.True(escaped.Count == 0, string.Join("\n", escaped)); // every key is tried, so one run shows each one that got through
         using (var other = Process.Start(new ProcessStartInfo("cmd.exe", "/k title Escape-attempt") { UseShellExecute = true }))
         {
             Thread.Sleep(2500);
@@ -159,9 +167,12 @@ public sealed class LockScreenTests : IDisposable
         Process? other = null;
         try
         {
-            _agent = _rig.StartAgent();
+            // E3b: other programs' windows are on the normal desktop. The lock screen meets them only when Windows
+            // refuses its own desktop and it stays there too, so that is how this test starts it.
+            _agent = _rig.StartAgent(lockOnNormalDesktop: true);
             _app = Application.Attach(_agent.Id);
             var handle = Window("LockScreen").Properties.NativeWindowHandle.Value;
+            Assert.Equal("Default", Rig.InputDesktop());
             Rig.ShowWindow(handle, 6); // SW_MINIMIZE: what Show desktop (Win+D) does to every window
             Rig.WaitFor(() => !Rig.IsIconic(handle) && Rig.GetForegroundWindow() == handle, 2, "the minimised lock screen did not come back in front within 2 s",
                 () => $"minimised {Rig.IsIconic(handle)}; foreground '{Rig.ForegroundTitle()}'");
@@ -182,6 +193,127 @@ public sealed class LockScreenTests : IDisposable
         }
         catch { Rig.Screenshot(); throw; }
         finally { Rig.Kill(other); }
+    }
+
+    [Fact]
+    public async Task E3b_lock_screen_has_its_own_desktop_and_the_normal_desktop_comes_back_for_the_customer()
+    {
+        try
+        {
+            _agent = _rig.StartAgent();
+            _app = Application.Attach(_agent.Id);
+            Window("LockScreen"); // found on the desktop that has the screen
+            var own = Rig.InputDesktop();
+            Assert.StartsWith($"CafeLock-{_agent.Id}-", own);
+            LogIn("9000000003", "2222");
+            Rig.WaitFor(() => Rig.InputDesktop() == "Default" && Hidden("LockScreen"), 10, "login did not give the normal desktop back", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+            Window("TimerWidget"); // the timer is on the normal desktop, with the games
+            var staff = await _rig.StaffToken();
+            await _rig.Post("/staff/lock", new { pc = "PC1", message = "Please come to the counter" }, staff);
+            Rig.WaitFor(() => Rig.InputDesktop() == own && Text(Window("LockScreen"), "Message") == "Please come to the counter", 10,
+                "a lock from the counter did not give the screen to the lock screen's desktop", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+            await _rig.Post("/staff/unlock", new { pc = "PC1", message = (string?)null }, staff);
+            Rig.WaitFor(() => Rig.InputDesktop() == "Default" && Hidden("LockScreen"), 10, "the counter's unlock did not give the normal desktop back", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+        }
+        catch { Rig.Screenshot(); throw; }
+    }
+
+    // Windows refuses to give the normal desktop the screen while its own secure screen is up (measured on x64, run
+    // 45119963759: the PC program's unlock was refused). The lock screen must ask again, or the customer is left on its
+    // empty desktop while the time runs.
+    [Fact]
+    public void E3b_normal_desktop_comes_back_after_Windows_refused_it_at_the_unlock()
+    {
+        try
+        {
+            _agent = _rig.StartAgent(unlockRefusedOnce: true);
+            _app = Application.Attach(_agent.Id);
+            Window("LockScreen");
+            LogIn("9000000003", "2222");
+            Rig.WaitFor(() => Rig.InputDesktop() == "Default", 5, "the normal desktop did not come back after a refused unlock", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+            Window("TimerWidget"); // the customer's timer, on the normal desktop
+        }
+        catch { Rig.Screenshot(); throw; }
+    }
+
+    // The key blocker's thread moves to the lock screen's desktop first. If Windows then refuses the lock screen's thread,
+    // the lock screen stays a window on the normal desktop, and the keys must still be blocked there.
+    [Fact]
+    public void E3b_keys_stay_blocked_when_Windows_refuses_the_lock_screens_thread_after_the_key_blockers()
+    {
+        try
+        {
+            _agent = _rig.StartAgent(lockThreadRefused: true);
+            _app = Application.Attach(_agent.Id);
+            Window("LockScreen");
+            Assert.Equal("Default", Rig.InputDesktop());
+            var escaped = new List<string>();
+            foreach (var (name, keys) in new (string, VirtualKeyShort[])[]
+            {
+                ("Alt+Tab", [VirtualKeyShort.ALT, VirtualKeyShort.TAB]),
+                ("Ctrl+Shift+Esc", [VirtualKeyShort.CONTROL, VirtualKeyShort.SHIFT, VirtualKeyShort.ESCAPE]),
+            })
+            {
+                var running = Process.GetProcesses().Select(p => p.Id).ToHashSet();
+                Keyboard.TypeSimultaneously(keys);
+                Thread.Sleep(2500);
+                var opened = Process.GetProcesses().Where(p => !running.Contains(p.Id) && p.ProcessName is "Taskmgr").ToList();
+                if (opened.Count > 0) escaped.Add($"{name} opened Task Manager");
+                opened.ForEach(Rig.Kill);
+                if (!OnTop("LockScreen")) escaped.Add($"{name} got past the lock screen (foreground is now '{Rig.ForegroundTitle()}')");
+            }
+            Assert.True(escaped.Count == 0, string.Join("\n", escaped));
+        }
+        catch { Rig.Screenshot(); throw; }
+    }
+
+    // Windows hands back a desktop that already has the asked name, with its maker's rights, and does not say so (measured,
+    // run 45110576185). So no other program may be able to make the lock screen's desktop first: here one made
+    // "CafeLock-<process number>", the name the lock screen used before its name got a random part.
+    [Fact]
+    public void E3b_lock_screen_desktop_has_the_lock_screens_rights_when_another_program_made_one_for_its_process_number()
+    {
+        var taken = IntPtr.Zero;
+        try
+        {
+            _agent = _rig.StartAgent();
+            Rig.Pause(_agent, true);
+            Assert.DoesNotContain(Rig.Desktops(), d => d.StartsWith($"CafeLock-{_agent.Id}")); // paused before it made its desktop
+            taken = Rig.MakeDesktop($"CafeLock-{_agent.Id}");
+            Assert.NotEqual(IntPtr.Zero, taken);
+            Rig.Pause(_agent, false);
+            Rig.WaitFor(() => Rig.InputDesktop().StartsWith($"CafeLock-{_agent.Id}"), 20, "the lock screen's desktop never had the screen", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+            // Windows itself and admins everything, the maker "read the rights" only; nothing for the sign-in the customer's programs share
+            Assert.Equal("D:P(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;RC;;;OW)", Rig.InputDesktopRights());
+        }
+        catch { Rig.Screenshot(); throw; }
+        finally { if (taken != IntPtr.Zero) Rig.CloseTaken(taken); }
+    }
+
+    [Fact]
+    public void E3b_lock_screen_takes_the_screen_back_within_1_second_when_another_program_gives_it_to_the_normal_desktop()
+    {
+        try
+        {
+            _agent = _rig.StartAgent();
+            _app = Application.Attach(_agent.Id);
+            Window("LockScreen");
+            var own = Rig.InputDesktop();
+            Assert.StartsWith($"CafeLock-{_agent.Id}-", own);
+            for (var round = 1; round <= 5; round++)
+            {
+                Thread.Sleep(600 + round * 130); // a different moment of the lock screen's 0.5 s timer each round
+                Assert.True(Rig.SwitchToNormalDesktop(), $"round {round}: the test could not give the screen to the normal desktop");
+                var since = Stopwatch.StartNew();
+                while (Rig.InputDesktop() != own && since.ElapsedMilliseconds < 1000) Thread.Sleep(10);
+                Assert.True(Rig.InputDesktop() == own, $"round {round}: the lock screen did not have the screen again within 1 s (the screen shows desktop '{Rig.InputDesktop()}')");
+            }
+            LogIn("9000000003", "2222"); // the lock screen still works after that
+            Rig.WaitFor(() => Rig.InputDesktop() == "Default" && Hidden("LockScreen"), 10, "login did not give the normal desktop back", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+            Thread.Sleep(1500); // three turns of the timer: it must leave an unlocked PC's screen alone
+            Assert.Equal("Default", Rig.InputDesktop());
+        }
+        catch { Rig.Screenshot(); throw; }
     }
 
     [Fact]
@@ -444,6 +576,7 @@ public sealed class WatchdogTests : IDisposable
 
     public void Dispose()
     {
+        Rig.ToNormalDesktop();
         Sc("stop CafeWatchdog"); Thread.Sleep(1500); Sc("delete CafeWatchdog");
         foreach (var p in Process.GetProcessesByName("Cafe.Agent")) Rig.Kill(p);
         _rig.Dispose();
@@ -481,6 +614,7 @@ public sealed class WatchdogTests : IDisposable
         }
         finally
         {
+            Rig.ToNormalDesktop();
             Sc("stop CafeWatchdog"); Thread.Sleep(1000); Sc("delete CafeWatchdog");
             foreach (var p in Process.GetProcessesByName("Cafe.Agent")) Rig.Kill(p);
             if (File.Exists(backup)) File.Move(backup, _rig.TokenFile, true);
@@ -517,6 +651,11 @@ public sealed class WatchdogTests : IDisposable
             Process? back = null;
             Rig.WaitFor(() => (back = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault(p => p.Id != first.Id)) is not null, 10, "PC program was not restarted");
             Assert.True(gone.Elapsed < TimeSpan.FromSeconds(5), $"restart took {gone.Elapsed.TotalSeconds:F1} s (limit 5 s)");
+            // E3b: a killed program's desktop goes, and the screen goes to the normal desktop (measured: within 0.3 s).
+            // The restarted program must make its own desktop and give it the screen.
+            Rig.WaitFor(() => Rig.InputDesktop().StartsWith($"CafeLock-{back!.Id}-"), 15, "the restarted PC program's lock screen desktop does not have the screen",
+                () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+            TestContext.Current.TestOutputHelper?.WriteLine($"T1.2: {gone.Elapsed.TotalSeconds:F1} s from the kill until the new lock screen desktop had the screen (checked every 0.3 s)");
             // a fake "Cafe.Agent" (a renamed copy of cmd.exe) must not fool the watchdog
             var fake = Path.Combine(_rig.Data, "Cafe.Agent.exe");
             File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), fake);
@@ -529,6 +668,58 @@ public sealed class WatchdogTests : IDisposable
             Rig.Kill(decoy);
             var app = Application.Attach(back2!.Id);
             Rig.WaitFor(() => app.GetAllTopLevelWindows(_rig.Ui).Any(w => w.Properties.AutomationId.ValueOrDefault == "LockScreen" && !w.IsOffscreen), 15, "restarted PC program does not show the lock screen");
+        }
+        catch
+        {
+            Rig.Screenshot();
+            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "logs");
+            if (Directory.Exists(logs)) foreach (var f in Directory.GetFiles(logs, "watchdog-*")) Console.WriteLine($"--- {f}\n{File.ReadAllText(f)}");
+            throw;
+        }
+    }
+
+    // The watchdog starts the PC program again when it ends, not at its next look up to a second later.
+    // Measured: 1.0 s from a kill until the new lock screen covered the screen before, 0.17 s (x64) and 0.31 s (ARM) now.
+    // 10 kills; the middle value counts. A program killed within a second of its start still waits out that second.
+    [Fact]
+    public void E3b_lock_screen_covers_again_within_half_a_second_of_a_kill()
+    {
+        try
+        {
+            File.WriteAllText(Path.Combine(Path.GetDirectoryName(_exe)!, "watchdog.args"), $"\"{Rig.Env("CAFE_AGENT_EXE")}\" {_rig.AgentArgs} --pipe-sid {WindowsIdentity.GetCurrent().User!.Value}");
+            foreach (var dir in new[] { Path.GetDirectoryName(_exe)!, Path.GetDirectoryName(Rig.Env("CAFE_AGENT_EXE"))! })
+            {
+                Grant(dir, "/inheritance:r", "/grant:r", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX");
+                Grant(dir, "/remove:g", "*S-1-5-11", "*S-1-1-0", "*S-1-5-4");
+                Grant(Path.Combine(dir, "*"), "/reset", "/T");
+            }
+            Assert.Equal(0, Sc($"create CafeWatchdog binPath= \"{_exe}\" start= demand"));
+            Assert.Equal(0, Sc("start CafeWatchdog"));
+            string Mine(int pid) => $"CafeLock-{pid}-";
+            var covered = new List<double>();
+            var lines = new List<string>();
+            for (var round = 1; round <= 10; round++)
+            {
+                Process? agent = null;
+                Rig.WaitFor(() => (agent = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault(p => Rig.InputDesktop().StartsWith(Mine(p.Id)))) is not null, 20,
+                    $"round {round}: no PC program's lock screen desktop has the screen", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+                Thread.Sleep(2000); // a program that has been running for a while, as on a cafe PC
+                agent!.Kill();
+                var t = Stopwatch.StartNew();
+                double? open = null;
+                string desktop;
+                while (!((desktop = Rig.InputDesktop()).StartsWith("CafeLock-") && !desktop.StartsWith(Mine(agent.Id))) && t.Elapsed < TimeSpan.FromSeconds(20))
+                {
+                    if (desktop == "Default") open ??= t.Elapsed.TotalSeconds;
+                    Thread.Sleep(10);
+                }
+                covered.Add(t.Elapsed.TotalSeconds);
+                lines.Add($"round {round}: covered again after {covered[^1]:F2} s; the normal desktop had the screen {(open is null ? "at no look" : $"from {open:F2} s, so for {covered[^1] - open:F2} s")}");
+            }
+            var sorted = covered.Order().ToList();
+            var middle = (sorted[4] + sorted[5]) / 2;
+            TestContext.Current.TestOutputHelper?.WriteLine($"KILLGAP seconds from a kill until a new lock screen desktop had the screen: min {sorted[0]:F2}, middle {middle:F2}, max {sorted[9]:F2}\n" + string.Join("\n", lines));
+            Assert.True(middle < 0.5, $"the middle of 10 kills was {middle:F2} s (limit 0.5 s): {string.Join(", ", covered.Select(c => c.ToString("F2")))}");
         }
         catch
         {
@@ -701,7 +892,11 @@ sealed class Rig : IDisposable
     const string Url = "https://127.0.0.1:5443";
     public readonly string Data = Path.Combine(Path.GetTempPath(), $"cafe-ui-{Guid.NewGuid():N}");
     readonly string _pcDir = Path.Combine(Path.GetTempPath(), $"cafe-pc-{Guid.NewGuid():N}"); // what a gaming PC holds: its token + the server's pin
-    public readonly UIA3Automation Ui = new();
+    readonly UIA3Automation _ui = new();
+    // The lock screen has its own Windows desktop, and a thread only reaches the windows of the desktop it is on.
+    // So before every look at the windows, the calling thread moves to the desktop that has the screen: the tests
+    // see what a person at the PC sees. Measured: the same objects, simulated keys and screenshots then work.
+    public UIA3Automation Ui { get { FollowScreen(); return _ui; } }
     readonly System.Text.StringBuilder _serverLog = new();
     Process? _server;
     Process? _watchdogProxy;
@@ -741,7 +936,7 @@ sealed class Rig : IDisposable
             throw;
         }
     }
-    public Process StartAgent()
+    public Process StartAgent(bool lockOnNormalDesktop = false, bool lockThreadRefused = false, bool unlockRefusedOnce = false)
     {
         var sid = WindowsIdentity.GetCurrent().User!.Value;
         var proxy = new ProcessStartInfo(Env("CAFE_WATCHDOG_EXE")) { UseShellExecute = false };
@@ -759,6 +954,9 @@ sealed class Rig : IDisposable
         if (_watchdogProxy.HasExited) throw new InvalidOperationException("watchdog proxy exited with code " + _watchdogProxy.ExitCode);
         var agent = new ProcessStartInfo(Env("CAFE_AGENT_EXE")) { UseShellExecute = false };
         foreach (var a in new[] { "--name", "Test Cafe", "--logs", Path.Combine(_pcDir, "logs") }) agent.ArgumentList.Add(a);
+        if (lockOnNormalDesktop) agent.ArgumentList.Add("--test-lock-on-default"); // what the PC falls back to when Windows refuses the lock screen's own desktop
+        if (unlockRefusedOnce) agent.ArgumentList.Add("--test-unlock-refused-once"); // Windows refuses the normal desktop at the first unlock, as it does while its own secure screen is up
+        if (lockThreadRefused) agent.ArgumentList.Add("--test-lock-thread-refused"); // Windows moves the key blocker's thread to that desktop, then refuses the lock screen's
         return Process.Start(agent)!;
     }
 
@@ -778,7 +976,10 @@ sealed class Rig : IDisposable
 
     public void Dispose()
     {
-        Kill(_watchdogProxy); Kill(_server); Ui.Dispose(); _http.Dispose();
+        Kill(_watchdogProxy); Kill(_server); _ui.Dispose(); _http.Dispose();
+        // every test's PC programs have ended by now: their lock screen desktops must be gone and the screen back on the normal one
+        WaitFor(() => InputDesktop() == "Default" && !Desktops().Any(d => d.StartsWith("CafeLock-")), 5, "a test left a lock screen desktop behind",
+            () => $"desktops [{string.Join(", ", Desktops())}]; the screen shows desktop '{InputDesktop()}'");
         foreach (var dir in new[] { Path.Combine(Data, "logs"), Path.Combine(_pcDir, "logs") }) // logs end up in the test output
             if (Directory.Exists(dir)) foreach (var f in Directory.GetFiles(dir)) Console.WriteLine($"--- {Path.GetFileName(f)}\n{File.ReadAllText(f)}");
         foreach (var dir in new[] { Data, _pcDir }) try { Directory.Delete(dir, true); } catch (IOException) { }
@@ -795,13 +996,13 @@ sealed class Rig : IDisposable
 
     public async Task<string> StaffToken()
     {
-        var r = await _http.PostAsJsonAsync("/staff/login", new { phone = "9000000002", pin = "111111" });
+        var r = await Http.PostAsJsonAsync("/staff/login", new { phone = "9000000002", pin = "111111" });
         r.EnsureSuccessStatusCode();
         return (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["token"];
     }
     public async Task<string> OwnerToken()
     {
-        var r = await _http.PostAsJsonAsync("/staff/login", new { phone = "9000000001", pin = "432100" });
+        var r = await Http.PostAsJsonAsync("/staff/login", new { phone = "9000000001", pin = "432100" });
         r.EnsureSuccessStatusCode();
         return (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["token"];
     }
@@ -810,26 +1011,26 @@ sealed class Rig : IDisposable
         var token = await OwnerToken();
         using var start = new HttpRequestMessage(HttpMethod.Post, "/staff/two-step/staff/start") { Content = JsonContent.Create(new { phone = "9000000002" }) };
         start.Headers.Authorization = new("Bearer", token);
-        using var started = await _http.SendAsync(start);
+        using var started = await Http.SendAsync(start);
         started.EnsureSuccessStatusCode();
         var secret = (await started.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["secret"];
         using var confirm = new HttpRequestMessage(HttpMethod.Post, "/staff/two-step/staff/on")
         { Content = JsonContent.Create(new { phone = "9000000002", secret, code = AppCode(secret) }) };
         confirm.Headers.Authorization = new("Bearer", token);
-        using var enabled = await _http.SendAsync(confirm);
+        using var enabled = await Http.SendAsync(confirm);
         enabled.EnsureSuccessStatusCode();
 
         using var offlineStart = new HttpRequestMessage(HttpMethod.Post, "/staff/two-step/offline/start")
         { Content = JsonContent.Create(new { phone = "9000000002" }) };
         offlineStart.Headers.Authorization = new("Bearer", token);
-        using var offlineStarted = await _http.SendAsync(offlineStart);
+        using var offlineStarted = await Http.SendAsync(offlineStart);
         offlineStarted.EnsureSuccessStatusCode();
         var offlineSecret = (await offlineStarted.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["secret"];
         Assert.NotEqual(secret, offlineSecret);
         using var offlineConfirm = new HttpRequestMessage(HttpMethod.Post, "/staff/two-step/offline/on")
         { Content = JsonContent.Create(new { phone = "9000000002", secret = offlineSecret, code = AppCode(offlineSecret) }) };
         offlineConfirm.Headers.Authorization = new("Bearer", token);
-        using var offlineEnabled = await _http.SendAsync(offlineConfirm);
+        using var offlineEnabled = await Http.SendAsync(offlineConfirm);
         offlineEnabled.EnsureSuccessStatusCode();
         return offlineSecret;
     }
@@ -848,14 +1049,16 @@ sealed class Rig : IDisposable
         var binary = ((hash[offset] & 127) << 24) | (hash[offset + 1] << 16) | (hash[offset + 2] << 8) | hash[offset + 3];
         return (binary % 1_000_000).ToString("D6");
     }
-    public async Task<int> TryStaffLogin(string phone, string pin) => (int)(await _http.PostAsJsonAsync("/staff/login", new { phone, pin })).StatusCode;
+    public async Task<int> TryStaffLogin(string phone, string pin) => (int)(await Http.PostAsJsonAsync("/staff/login", new { phone, pin })).StatusCode;
     public async Task Post(string path, object body, string token)
     {
         using var m = new HttpRequestMessage(HttpMethod.Post, path) { Content = JsonContent.Create(body) };
         m.Headers.Authorization = new("Bearer", token);
-        (await _http.SendAsync(m)).EnsureSuccessStatusCode();
+        (await Http.SendAsync(m)).EnsureSuccessStatusCode();
     }
-    public HttpClient Http => _http;
+    // Server calls are the only awaits in these tests, and after an await a test can go on, on another thread. The thread it
+    // leaves must not stay on the lock screen's desktop (see ToNormalDesktop; seen in T1.1, runs 45011269480 and 45012237116).
+    public HttpClient Http { get { ToNormalDesktop(); return _http; } }
     public HttpResponseMessage Raw(HttpMethod method, string path, string? token)
     {
         using var m = new HttpRequestMessage(method, path);
@@ -879,7 +1082,7 @@ sealed class Rig : IDisposable
     public long ElapsedSec(string token) => long.Parse(State(token)["elapsedSec"]!.ToString()!);
 
     public static string Env(string name) => Environment.GetEnvironmentVariable(name) ?? throw new InvalidOperationException($"set {name}");
-    public static void Kill(Process? p) { try { if (p is { HasExited: false }) { p.Kill(true); p.WaitForExit(5000); } } catch (InvalidOperationException) { } }
+    public static void Kill(Process? p) { ToNormalDesktop(); try { if (p is { HasExited: false }) { p.Kill(true); p.WaitForExit(5000); } } catch (InvalidOperationException) { } }
 
     public static void WaitFor(Func<bool> ok, int seconds, string why, Func<string>? more = null)
     {
@@ -888,7 +1091,74 @@ sealed class Rig : IDisposable
         Assert.Fail(more is null ? why : $"{why}\n{more()}");
     }
 
-    public static void Screenshot() => FlaUI.Core.Capturing.Capture.Screen().ToFile(Path.Combine(Environment.GetEnvironmentVariable("GITHUB_WORKSPACE") ?? ".", $"screen-{DateTime.Now:HHmmss}.png"));
+    [ThreadStatic] static IntPtr _followed; // the desktop handle this thread opened for itself
+    public static void FollowScreen() => MoveThread(OpenInputDesktop(0, false, 0x10000000 /*GENERIC_ALL*/));
+    // Before a PC program is ended. A test thread still on its lock screen's desktop keeps that desktop alive after the
+    // program is gone: the screen stays on it, or goes to it when a later program is killed (measured in run 45011269480).
+    public static void ToNormalDesktop() => MoveThread(OpenDesktop("Default", 0, false, 0x10000000 /*GENERIC_ALL*/));
+    static void MoveThread(IntPtr desktop)
+    {
+        if (desktop == IntPtr.Zero) return;
+        if (DesktopName(desktop) == DesktopName(GetThreadDesktop(GetCurrentThreadId())) || !SetThreadDesktop(desktop)) { CloseDesktop(desktop); return; }
+        if (_followed != IntPtr.Zero) CloseDesktop(_followed);
+        _followed = desktop;
+    }
+    public static List<string> Desktops()
+    {
+        var names = new List<string>();
+        EnumDesktops(GetProcessWindowStation(), (name, _) => { names.Add(name); return true; }, IntPtr.Zero);
+        return names;
+    }
+    delegate bool DesktopProc([MarshalAs(UnmanagedType.LPWStr)] string name, IntPtr state);
+    [DllImport("user32.dll")] static extern IntPtr GetProcessWindowStation();
+    [DllImport("user32.dll", EntryPoint = "EnumDesktopsW")] static extern bool EnumDesktops(IntPtr station, DesktopProc callback, IntPtr state);
+    public static void Pause(Process program, bool pause) => Assert.Equal(0, pause ? NtSuspendProcess(program.Handle) : NtResumeProcess(program.Handle));
+    [DllImport("ntdll.dll")] static extern int NtSuspendProcess(IntPtr process);
+    [DllImport("ntdll.dll")] static extern int NtResumeProcess(IntPtr process);
+    public static IntPtr MakeDesktop(string name) => CreateDesktop(name, IntPtr.Zero, IntPtr.Zero, 0, 0x10000000 /*GENERIC_ALL*/, IntPtr.Zero); // rights: what Windows gives by itself
+    public static void CloseTaken(IntPtr desktop) => CloseDesktop(desktop);
+    [DllImport("user32.dll", EntryPoint = "CreateDesktopW", CharSet = CharSet.Unicode)] static extern IntPtr CreateDesktop(string name, IntPtr device, IntPtr mode, uint flags, uint access, IntPtr security);
+    public static string InputDesktopRights()
+    {
+        var input = OpenInputDesktop(0, false, 0x00020000 /*READ_CONTROL*/);
+        var descriptor = Marshal.AllocHGlobal(4096);
+        try
+        {
+            if (input == IntPtr.Zero || !GetUserObjectSecurity(input, [4 /*the rights list*/], descriptor, 4096, out _)) return $"(cannot read: error {Marshal.GetLastWin32Error()})";
+            return ConvertSecurityDescriptorToStringSecurityDescriptor(descriptor, 1, 4, out var text, out _) ? Marshal.PtrToStringUni(text)! : $"(no text: error {Marshal.GetLastWin32Error()})";
+        }
+        finally { Marshal.FreeHGlobal(descriptor); CloseDesktop(input); }
+    }
+    [DllImport("user32.dll", SetLastError = true)] static extern bool GetUserObjectSecurity(IntPtr handle, int[] what, IntPtr descriptor, int length, out int needed);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool ConvertSecurityDescriptorToStringSecurityDescriptor(IntPtr descriptor, uint revision, int what, out IntPtr text, out uint length);
+    public static string InputDesktop()
+    {
+        var input = OpenInputDesktop(0, false, 0x0001 /*DESKTOP_READOBJECTS*/);
+        if (input == IntPtr.Zero) return $"(cannot open: error {Marshal.GetLastWin32Error()})";
+        try { return DesktopName(input); } finally { CloseDesktop(input); }
+    }
+    // what any program of the customer's can do while the PC is locked (measured): give the screen to the normal desktop
+    public static bool SwitchToNormalDesktop()
+    {
+        var normal = OpenDesktop("Default", 0, false, 0x0100 /*DESKTOP_SWITCHDESKTOP*/);
+        try { return normal != IntPtr.Zero && SwitchDesktop(normal); } finally { CloseDesktop(normal); }
+    }
+    [DllImport("user32.dll", EntryPoint = "OpenDesktopW", CharSet = CharSet.Unicode)] static extern IntPtr OpenDesktop(string name, uint flags, bool inherit, uint access);
+    [DllImport("user32.dll")] static extern bool SwitchDesktop(IntPtr desktop);
+    static string DesktopName(IntPtr desktop)
+    {
+        var name = new char[256];
+        return GetUserObjectInformation(desktop, 2 /*UOI_NAME*/, name, (uint)name.Length * 2, out _) ? new string(name).TrimEnd('\0') : "";
+    }
+    [DllImport("user32.dll", SetLastError = true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+    [DllImport("user32.dll")] static extern IntPtr GetThreadDesktop(uint thread);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] static extern bool SetThreadDesktop(IntPtr desktop);
+    [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr desktop);
+    [DllImport("user32.dll", EntryPoint = "GetUserObjectInformationW", CharSet = CharSet.Unicode)] static extern bool GetUserObjectInformation(IntPtr handle, int index, [Out] char[] info, uint bytes, out uint needed);
+
+    public static void Screenshot() { FollowScreen(); ScreenToFile(); }
+    static void ScreenToFile() => FlaUI.Core.Capturing.Capture.Screen().ToFile(Path.Combine(Environment.GetEnvironmentVariable("GITHUB_WORKSPACE") ?? ".", $"screen-{DateTime.Now:HHmmss}.png"));
     public static string Describe(IntPtr h)
     {
         var title = new System.Text.StringBuilder(256); GetWindowText(h, title, 256);

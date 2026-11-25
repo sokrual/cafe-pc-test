@@ -41,7 +41,11 @@ F12 MED    Offline sale writes not flushed                         Fixed (Flush(
 F13 MED    No certificate or PC key rotation                       Reduced (steps in HOW-TO-INSTALL.txt "Certificate
     renewal" and LOST-PHONE.txt; LOST-PHONE.txt says the full key replacement has not been tested)
 F14 MED    Pipe check is path-based                                Fixed for Customer programs (lock screen process
-    DACL, Agent Program.cs:20-41; PR E1). A program running as admin or SYSTEM is out of scope.
+    DACL, Agent Program.cs:11-49; PR E1). A program running as admin or SYSTEM is out of scope.
+    Update 24 Nov (E3b security pass): the DACL let other Customer programs end the lock screen program and read its
+    memory, where the PIN was found after a login (0x00121411). They now get 0x00121400: no terminate, no read memory
+    (lockdown F14.1 also asks for TERMINATE and VM_READ). Still open: a Customer program can end it with a "quit"
+    message or by ending its threads, and can freeze its threads (STATUS.txt, 24 Nov; the answer comes with B5.3).
 F15 MED    No power-cut test of the profile reset                  Open
 F16 LOW    Review queue has no alert                               Reduced (owner alerts on the counter screen,
     Cafe.cs:804)

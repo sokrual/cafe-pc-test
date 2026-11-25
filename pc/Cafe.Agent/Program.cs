@@ -14,13 +14,13 @@ static class ProcessSecurity
     static extern IntPtr GetCurrentProcess();
 
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string sddl, uint revision, out IntPtr descriptor, out uint size);
+    internal static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string sddl, uint revision, out IntPtr descriptor, out uint size);
 
     [DllImport("advapi32.dll", SetLastError = true)]
     static extern bool SetKernelObjectSecurity(IntPtr handle, uint securityInformation, IntPtr securityDescriptor);
 
     [DllImport("kernel32.dll")]
-    static extern IntPtr LocalFree(IntPtr memory);
+    internal static extern IntPtr LocalFree(IntPtr memory);
 
     public static void Harden()
     {
@@ -32,8 +32,10 @@ static class ProcessSecurity
             Program.Log($"process DACL skipped for non-Customer identity {identityName}");
             return;
         }
-        // OW (OWNER RIGHTS), not the Customer SID: without an OW entry Windows always lets the owner rewrite the DACL
-        const string sddl = "D:P(A;;GA;;;SY)(D;;0x00040062;;;OW)(A;;GA;;;BA)(A;;0x00121411;;;OW)";
+        // OW (OWNER RIGHTS), not the Customer SID: without an OW entry Windows always lets the owner rewrite the DACL.
+        // Other Customer programs may look at this program and wait for it, no more. Not "terminate": another Customer
+        // program ended the lock screen with it. Not "read memory": after a login the PIN was found there (both measured).
+        const string sddl = "D:P(A;;GA;;;SY)(D;;0x00040062;;;OW)(A;;GA;;;BA)(A;;0x00121400;;;OW)";
         if (!ConvertStringSecurityDescriptorToSecurityDescriptor(sddl, 1, out var descriptor, out _))
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
         try
@@ -58,6 +60,8 @@ static class Program
         ProcessSecurity.Harden();
         var testQueuePath = args.Contains("--test-queue-selflock", StringComparer.OrdinalIgnoreCase) ? "/pc/selflock"
             : args.Contains("--test-queue-logout", StringComparer.OrdinalIgnoreCase) ? "/pc/logout" : null;
+        // lockdown check E3b.L1, run as Customer: see LockDesktop.Test
+        if (Arg("--test-lock-desktop") is string lockDesktopTest) { Environment.ExitCode = LockDesktop.Test(lockDesktopTest); return; }
         if (testQueuePath is not null)
         {
             using var response = new WatchdogPipeClient().PostAsJsonAsync("/local/queue-action", new { path = testQueuePath }).GetAwaiter().GetResult();
@@ -65,6 +69,9 @@ static class Program
             return;
         }
         Log($"started v{typeof(Program).Assembly.GetName().Version}");
+        LockDesktop.Make(args.Contains("--test-lock-on-default", StringComparer.OrdinalIgnoreCase));
+        LockDesktop.TestRefuseLockThread = args.Contains("--test-lock-thread-refused", StringComparer.OrdinalIgnoreCase);
+        LockDesktop.TestRefuseUnlock = args.Contains("--test-unlock-refused-once", StringComparer.OrdinalIgnoreCase);
         ApplicationConfiguration.Initialize();
         Application.Run(new Agent(Arg("--name") ?? "Gaming Cafe"));
     }
@@ -95,6 +102,7 @@ sealed class Agent : ApplicationContext
     readonly SemaphoreSlim _sendGate = new(1, 1);
     readonly LockScreen _lock;
     readonly TimerWidget _timer;
+    readonly SynchronizationContext _main = new WindowsFormsSynchronizationContext(); // this thread: all state stays here
     PcState _state = new(true, null, null, null, 0, null); // locked until the admin PC says otherwise
     DateTime _stateAt = DateTime.UtcNow;
     bool _online = true;
@@ -103,9 +111,15 @@ sealed class Agent : ApplicationContext
 
     public Agent(string name)
     {
-        _lock = new LockScreen(name, Login, OfflineUnlock);
+        KeyBlocker.Install(); // first: if Windows will not move its thread, the lock screen stays on the normal desktop with it
+        var blockerMoved = LockDesktop.Own;
+        _lock = LockScreen.Start(name, (phone, pin) => OnMain(() => Login(phone, pin)),
+            (phone, code, minutes, method, upi) => OnMain(() => OfflineUnlock(phone, code, minutes, method, upi)));
+        // Windows moved the key blocker's thread, then refused the lock screen's: the lock screen is a window on the normal
+        // desktop, where that key blocker sees no keys. A second one, there.
+        if (blockerMoved && !LockDesktop.Own) KeyBlocker.Install();
         _timer = new TimerWidget(Now, () => Send("/pc/logout", lockNow: true), () => Send("/pc/selflock", lockNow: true), () => Apply(_state with { Locked = true, Message = "Time is up. Please ask at the counter." }));
-        KeyBlocker.Install(_lock);
+        KeyBlocker.Follow(_lock);
         var poll = new System.Windows.Forms.Timer { Interval = 2000 };
         poll.Tick += async (_, _) =>
         {
@@ -176,7 +190,15 @@ sealed class Agent : ApplicationContext
         if (s.Locked != _state.Locked) Program.Log(s.Locked ? $"locked: {s.Message}" : $"unlocked, session {s.Session} ({s.Mode})");
         (_state, _stateAt) = (s, DateTime.UtcNow);
         if (s.Locked) { _timer.Hide(); _lock.ShowLocked(s.Message); }
-        else { _lock.Hide(); _timer.Tick(); }
+        else { _lock.Unlock(); _timer.Tick(); }
+    }
+
+    // the lock screen has its own thread (see LockScreen.Start); what it asks for runs here, so the state has one thread
+    Task<T> OnMain<T>(Func<Task<T>> work)
+    {
+        var done = new TaskCompletionSource<T>();
+        _main.Post(async _ => { try { done.SetResult(await work()); } catch (Exception e) { done.SetException(e); } }, null);
+        return done.Task;
     }
 
     async Task<string?> Login(string phone, string pin)
@@ -334,7 +356,40 @@ sealed class LockScreen : Form
 
     readonly Func<string, string, int, string, string?, Task<string?>> _offlineUnlock;
 
-    public LockScreen(string cafeName, Func<string, string, Task<string?>> login,
+    // The lock screen gets its own thread, moved to the lock screen's own desktop before it makes any window.
+    // Windows makes the thread (CreateThread), not .NET: .NET starts COM on its own threads before our code runs, and
+    // then either Windows refuses the move (an STA thread, error 170) or WinForms runs without STA, where a click sent
+    // by UI Automation ran on another thread and froze the screen (both measured). Here the order is ours: move
+    // first, then start COM as STA. Other threads reach the lock screen through the public methods below, which post to it.
+    public static LockScreen Start(string cafeName, Func<string, string, Task<string?>> login,
+        Func<string, string, int, string, string?, Task<string?>> offlineUnlock)
+    {
+        LockScreen? screen = null;
+        using var ready = new ManualResetEventSlim();
+        _thread = _ =>
+        {
+            try
+            {
+                LockDesktop.MoveThreadHere(LockDesktop.TestRefuseLockThread);
+                OleInitialize(IntPtr.Zero);
+                screen = new LockScreen(cafeName, login, offlineUnlock);
+                _ = screen.Handle; // made now, so that other threads can post to it
+            }
+            finally { ready.Set(); }
+            Application.Run();
+            return 0;
+        };
+        if (CreateThread(IntPtr.Zero, IntPtr.Zero, Marshal.GetFunctionPointerForDelegate(_thread), IntPtr.Zero, 0, out _) == IntPtr.Zero)
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        ready.Wait();
+        return screen ?? throw new InvalidOperationException("the lock screen could not start");
+    }
+    delegate uint ThreadBody(IntPtr state);
+    static ThreadBody? _thread; // kept alive so the garbage collector cannot free the thread's code
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr CreateThread(IntPtr security, IntPtr stack, IntPtr start, IntPtr state, uint flags, out uint id);
+    [DllImport("ole32.dll")] static extern int OleInitialize(IntPtr reserved);
+
+    LockScreen(string cafeName, Func<string, string, Task<string?>> login,
         Func<string, string, int, string, string?, Task<string?>> offlineUnlock)
     {
         _offlineUnlock = offlineUnlock;
@@ -379,7 +434,8 @@ sealed class LockScreen : Form
         var keepFront = new System.Windows.Forms.Timer { Interval = 500 };
         keepFront.Tick += (_, _) =>
         {
-            if (!Visible) return;
+            if (!Visible) { LockDesktop.GiveBack(); return; }
+            LockDesktop.Keep();
             if (WindowState == FormWindowState.Minimized) // Show desktop (Win+D) minimises windows
             { WindowState = FormWindowState.Normal; Bounds = SystemInformation.VirtualScreen; }
             Native.ToTop(Handle); // back above any newer always-on-top window, even one that did not take the focus
@@ -401,37 +457,149 @@ sealed class LockScreen : Form
         { _offlineRate.Text = "Could not read the saved rate card. Please ask at the counter."; }
     }
 
-    public void SetOffline(bool offline)
+    public void SetOffline(bool offline) => BeginInvoke(() =>
     {
         _staffUnlock.Visible = offline;
         if (!offline) _offlinePanel = false;
         foreach (var c in new Control[] { _offlineRate, _staffPhone, _staffCode, _minutes, _method, _submitOffline })
             c.Visible = offline && _offlinePanel;
         _upi.Visible = offline && _offlinePanel && _method.SelectedItem?.ToString() == "upi";
-    }
+    });
 
-    public void ShowLocked(string? message)
+    public void ShowLocked(string? message) => BeginInvoke(() =>
     {
         _message.Text = message ?? "Log in with your phone number and PIN.";
         _offlinePanel = false;
         foreach (var c in new Control[] { _offlineRate, _staffPhone, _staffCode, _minutes, _method, _submitOffline, _upi }) c.Visible = false;
         _go.Text = message?.StartsWith("Locked by the customer") == true ? "Unlock" : "Log in";
         Bounds = SystemInformation.VirtualScreen; // every monitor
-        if (!Visible) { _error.Text = ""; _phone.Text = ""; Show(); }
+        if (!Visible) { _error.Text = ""; _phone.Text = ""; Show(); LockDesktop.Show(true); }
         Native.TakeForeground(Handle);
         _phone.Focus();
-    }
+    });
+
+    public void Unlock() => BeginInvoke(() => { if (Visible) { LockDesktop.Show(false); Hide(); } });
 
     // nobody logs in while the last customer's apps and logins are being cleared
-    public void SetBusy(bool busy)
+    public void SetBusy(bool busy) => BeginInvoke(() =>
     {
         _busy = busy;
         _go.Enabled = !busy;
         _staffUnlock.Enabled = !busy;
         _submitOffline.Enabled = !busy;
-    }
+    });
 
     protected override void OnFormClosing(FormClosingEventArgs e) { if (e.CloseReason == CloseReason.UserClosing) e.Cancel = true; base.OnFormClosing(e); }
+}
+
+// The lock screen's own Windows desktop, like the Windows sign-in screen. Games in exclusive fullscreen, graphics-card
+// overlays and Windows' own dialogs stay on the normal desktop, so they cannot sit above the lock screen.
+// If Windows refuses any step, the lock screen stays a window on the normal desktop, as before, and the log says why.
+static class LockDesktop
+{
+    static IntPtr _own, _normal;
+    static string _name = "";
+    public static bool Own => _own != IntPtr.Zero;
+    public static bool TestRefuseLockThread; // UI test: as if Windows moved the key blocker's thread and refused the lock screen's
+    public static bool TestRefuseUnlock;     // UI test: as if Windows refused the normal desktop at the next unlock
+    // Who may use the lock screen's desktop: Windows itself, admins (the owner's tools, the tests) and this program
+    // through the handle it gets when it makes the desktop. Measured as a standard user: with these rights another
+    // program of the same account cannot open the desktop for anything; with the rights Windows gives by itself it can
+    // open it for everything. OW: the maker may read the rights, not change them.
+    const string Rights = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;RC;;;OW)";
+
+    public static void Make(bool testOnNormal)
+    {
+        if (!testOnNormal)
+        {
+            _normal = OpenDesktop("Default", 0, false, 0x0100 /*DESKTOP_SWITCHDESKTOP*/);
+            // The process number in the name: a restarted program never meets the last one's desktop. The random part: no
+            // other program can make a desktop with this name first. Windows would hand that one back, with its maker's
+            // rights instead of ours, and not say so (measured).
+            _name = $"CafeLock-{Environment.ProcessId}-{System.Security.Cryptography.RandomNumberGenerator.GetHexString(32)}";
+            if (_normal != IntPtr.Zero && ProcessSecurity.ConvertStringSecurityDescriptorToSecurityDescriptor(Rights, 1, out var descriptor, out _))
+            {
+                var security = new SecurityAttributes { Length = Marshal.SizeOf<SecurityAttributes>(), Descriptor = descriptor };
+                _own = CreateDesktop(_name, IntPtr.Zero, IntPtr.Zero, 0, 0x10000000 /*GENERIC_ALL*/, ref security);
+                ProcessSecurity.LocalFree(descriptor);   // keeps CreateDesktop's error for the log line below
+            }
+        }
+        Program.Log(Own ? "lock screen has its own desktop"
+            : testOnNormal ? "lock screen stays on the normal desktop (test switch)"
+            : $"lock screen stays on the normal desktop: Windows refused the second desktop (error {Marshal.GetLastWin32Error()})");
+    }
+
+    // the key blocker's thread, then the lock screen's, call this before they make any window or hook (Windows moves no
+    // thread that has one). A refusal for the first leaves both on the normal desktop.
+    public static void MoveThreadHere(bool testRefused = false)
+    {
+        if (!Own || (!testRefused && SetThreadDesktop(_own))) return;
+        Program.Log($"lock screen stays on the normal desktop: Windows refused to move its thread (error {Marshal.GetLastWin32Error()})");
+        _own = IntPtr.Zero;
+    }
+
+    public static void Show(bool locked)
+    {
+        if (!Own) return;
+        var given = !(TestRefuseUnlock && !locked) && SwitchDesktop(locked ? _own : _normal);
+        if (!given) Program.Log($"could not give the screen to the {(locked ? "lock screen's" : "normal")} desktop (error {Marshal.GetLastWin32Error()})");
+        if (!locked) TestRefuseUnlock = false;
+        _owed = !locked && !given;
+    }
+
+    // Windows refuses to switch desktops while its own secure screen is up (measured: the screen that Ctrl+Alt+Del and
+    // "lock this computer" show). A refused lock is asked again by Keep. A refused unlock is asked again here, by the same
+    // timer: without it the customer stays on the lock screen's empty desktop while the time runs.
+    static bool _owed; // an unlock still owes the normal desktop the screen
+    public static void GiveBack()
+    {
+        if (!_owed || !SwitchDesktop(_normal)) return;
+        _owed = false;
+        Program.Log("the normal desktop has the screen (asked again after a refusal)");
+    }
+
+    // Any program can give the screen to the normal desktop while the PC is locked (measured), so the lock screen's
+    // 0.5 s timer calls this. Asking for the desktop that already has the screen does nothing (measured: 0.02 ms,
+    // no message reaches the lock screen, typing goes on), so it asks every time and never has to look first.
+    static bool _refused; // one log line per refusal, not one every 0.5 s
+    public static void Keep()
+    {
+        if (!Own) return;
+        var refused = !SwitchDesktop(_own);
+        if (refused && !_refused) Program.Log($"Windows refused to give the screen back to the lock screen's desktop (error {Marshal.GetLastWin32Error()}); asking again every 0.5 s");
+        _refused = refused;
+    }
+
+    // Lockdown check E3b.L1 starts the program with this as Customer, a standard user. "make": make the desktop exactly as
+    // the lock screen does, use the maker's own handle, then start this program once more, in the same Windows sign-in, to
+    // try to open the desktop by name. 0 = made, own handle works, the other program was refused every time.
+    public static int Test(string name)
+    {
+        if (name != "make")
+        {
+            // everything, switch the screen to it, read its windows, make a window, hooks, change its rights, read its rights
+            foreach (var access in new uint[] { 0x10000000, 0x0100, 0x0001, 0x0002, 0x0008, 0x00040000, 0x00020000 })
+            {
+                if (OpenDesktop(name, 0, false, access) != IntPtr.Zero) return 3;   // opened
+                if (Marshal.GetLastWin32Error() != 5) return 5;                      // refused, but not as "access denied"
+            }
+            return 0;
+        }
+        Make(false);
+        if (!Own) return 1;
+        var moved = false;
+        var mover = new Thread(() => moved = SetThreadDesktop(_own));
+        mover.Start(); mover.Join();
+        if (!moved) return 2;
+        using var other = Process.Start(Environment.ProcessPath!, ["--test-lock-desktop", _name]);
+        return other.WaitForExit(30000) ? other.ExitCode : 4;
+    }
+
+    [StructLayout(LayoutKind.Sequential)] struct SecurityAttributes { public int Length; public IntPtr Descriptor; public int Inherit; }
+    [DllImport("user32.dll", EntryPoint = "CreateDesktopW", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr CreateDesktop(string name, IntPtr device, IntPtr mode, uint flags, uint access, ref SecurityAttributes security);
+    [DllImport("user32.dll", EntryPoint = "OpenDesktopW", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr OpenDesktop(string name, uint flags, bool inherit, uint access);
+    [DllImport("user32.dll", SetLastError = true)] static extern bool SetThreadDesktop(IntPtr desktop);
+    [DllImport("user32.dll", SetLastError = true)] static extern bool SwitchDesktop(IntPtr desktop);
 }
 
 sealed class TimerWidget : Form
@@ -522,15 +690,17 @@ static class KeyBlocker
 
     // The hook gets its own thread and message loop. On the screen's thread, any slow moment there (taking the
     // focus back, a redraw) delays every key; Windows lets a late key through and, after a few, drops the hook.
-    public static void Install(Form lockScreen)
+    // The thread sits on the lock screen's desktop: a hook sees only the keys typed on its own thread's desktop (measured).
+    // Without it, Ctrl+Shift+Esc opened Task Manager on the lock screen's desktop and Win+U opened Settings (measured).
+    public static void Install()
     {
-        _on = lockScreen.Visible;
-        lockScreen.VisibleChanged += (_, _) => _on = lockScreen.Visible;
+        _on = true; // the PC starts locked
         var ready = new ManualResetEventSlim();
         var ok = false;
         var thread = new Thread(() =>
         {
-            _proc = Hook;
+            LockDesktop.MoveThreadHere();
+            _proc ??= Hook; // one for every key blocker thread: Windows keeps calling it, so it must never be collected
             ok = SetWindowsHookEx(13 /*WH_KEYBOARD_LL*/, _proc, GetModuleHandle(null), 0) != IntPtr.Zero;
             ready.Set();
             if (ok) Application.Run(); // Windows calls the hook through this thread's message loop
@@ -538,6 +708,12 @@ static class KeyBlocker
         thread.Start();
         ready.Wait();
         if (!ok) throw new InvalidOperationException("keyboard hook failed");
+    }
+
+    public static void Follow(Form lockScreen)
+    {
+        _on = lockScreen.Visible;
+        lockScreen.VisibleChanged += (_, _) => _on = lockScreen.Visible;
     }
 
     static IntPtr Hook(int code, IntPtr wParam, IntPtr lParam)
