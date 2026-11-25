@@ -494,5 +494,11 @@ OWNER DECISIONS (10 Nov 2026)
               A.C2, C.W1 fail), 45612319795 (uninstall leaves the window: only B3.I4d fails).
               Seen once on ARM (run 45612311343): Windows' voice never answered (CI has no sound device). The window now
               gives up on a voice after 15 s and logs it, so later voice alerts are not blocked. Cause not known.
+              Found and fixed on the way: unescaped quotes cut INSTALL-ADMIN's last message short (caught by A.K6); an
+              update found Cafe.Counter.exe still in use (ARM), so the installer now waits for the window to close; the
+              counter window's start-with-Windows icon ran on the CI machine, which is the gaming PC too (the lockdown
+              test removes it after A.C1, measured run 45636476287). Uninstall now tries for 10 s to remove the program
+              folder and says why if it cannot; that retry was not needed in the green run, so it is not proven.
+              Full run 45645465242: 8 of 8 jobs first time, server 81/81, UI 26/26, lockdown 158/158, x64 and ARM.
               Not measured: the voice on a real PC; a game in exclusive full screen (no graphics card in CI); alerts
               while nobody is signed in to the counter window (there are none: known limit).
