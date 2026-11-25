@@ -10,7 +10,7 @@ function Check($id, $test, $ok, $detail) {
     $results.Add([pscustomobject]@{ id = $id; result = $res; test = $test; detail = "$detail" })
     Write-Host "[$res] $id $test - $detail"
 }
-function CounterWindows { "counter windows running: " + ((@(Get-Process Cafe.Counter -ErrorAction SilentlyContinue) | ForEach-Object { "$($_.Id) session $($_.SessionId) since $($_.StartTime.ToString('HH:mm:ss'))" }) -join "; ") }
+function CounterWindows { "counter windows running: " + ((@(Get-CimInstance Win32_Process -Filter "Name='Cafe.Counter.exe'") | ForEach-Object { $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($_.ParentProcessId)"; "$($_.ProcessId) session $($_.SessionId) since $($_.CreationDate.ToString('HH:mm:ss')) from $($parent.Name) ($($parent.CommandLine)) as: $($_.CommandLine)" }) -join "; ") }
 function WaitFor($seconds, $test) { for ($i = 0; $i -lt $seconds * 2; $i++) { if (& $test) { return $true }; Start-Sleep -Milliseconds 500 }; $false }
 function Get-QueuedActionCount($path) {
     if (-not (Test-Path -LiteralPath $path)) { return 0 }
@@ -230,6 +230,7 @@ try {
     $counterRun = try { Start-Process "$counterApp\Cafe.Counter.exe" -ArgumentList "--log `"$counterLog`"" -PassThru } catch { $null }   # as installed, against the installed counter
     $counterOpened = $counterRun -and (WaitFor 60 { (Test-Path $counterLog) -and (Get-Content $counterLog -Raw) -match "counter page opened" })
     if ($counterRun) { Stop-Process -Id $counterRun.Id -Force -ErrorAction SilentlyContinue }
+    Write-Host "after A.C2: $(CounterWindows)"
     Check "A.C2" "The installed counter window opens the installed counter's page, trusting its certificate by the fingerprint" $counterOpened "$(Get-Content $counterLog -Raw -ErrorAction SilentlyContinue)"
     $addressFile = (Get-Content "$stageA\counter-address.txt" -ErrorAction SilentlyContinue | Select-Object -First 1)
     $myAddresses = @(Get-NetIPAddress -AddressFamily IPv4 | ForEach-Object IPAddress)
@@ -247,6 +248,7 @@ try {
     & "$stageA\install-admin.ps1" -Ci -Pcs 5
     Stop-Transcript | Out-Null   # close the installer's log before reading it (see the first INSTALL-ADMIN run above)
     $adminLogAfter = Get-Content "$stageA\install-log.txt" -Raw
+    Write-Host "after the update: $(CounterWindows)"
     $keyNamesAfter = @(Get-ChildItem $stageA -Filter "PC*.token" -File | ForEach-Object BaseName | Sort-Object)
     $null = WaitFor 30 { (KeyState) -eq "200" }; $pc2After = KeyState
     function KeyCode($k, $secret) { if (-not $k) { return "no key file" }; (curl.exe -sk --max-time 10 -o NUL -w "%{http_code}" -H "X-Pc-Token: $($k.Trim())" -H "X-Pc-Bind: $secret" https://127.0.0.1:5443/pc/state) -join "" }
@@ -1627,6 +1629,7 @@ try {
     }
     Check "D1.I3" "After uninstall, Customer can run PING.EXE from Downloads and the previous AppLocker policy is restored" ($postUninstallRuns -and $policyRestored -and -not $d1RulesRemain) $postUninstallDetail
 
+    Write-Host "before the counter uninstall: $(CounterWindows)"
     & "$stageA\install-admin.ps1" -Uninstall -Ci
     Check "B3.I4" "Counter PC uninstall: server and filter gone" (-not (Get-Service CafeServer, AdGuardHome -ErrorAction SilentlyContinue)) ""
     Check "B3.I4d" "Counter PC uninstall: the counter window program and its two icons gone" (-not (Test-Path "$counterApp\Cafe.Counter.exe") -and -not ($counterIcons | Where-Object { Test-Path $_ })) "program left $(Test-Path "$counterApp\Cafe.Counter.exe"); icons left $(@($counterIcons | Where-Object { Test-Path $_ }).Count); $(CounterWindows)"
