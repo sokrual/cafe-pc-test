@@ -64,6 +64,7 @@ sealed class CounterWindow : Form
     readonly NotifyIcon _tray;
     readonly Popup _popup = new();
     readonly SpeechSynthesizer _voice = new();
+    readonly System.Windows.Forms.Timer _voiceWait = new() { Interval = 15000 }; // a voice that never answers must not block the next ones
     readonly HashSet<string> _told = new(); // what is going on now and was already told, so each thing is told once
     string? _token;                         // the counter login of whoever is on shift, from the page; only in memory
     bool _fresh = true, _busy, _exiting, _quiet;
@@ -87,7 +88,8 @@ sealed class CounterWindow : Form
         // closing the window keeps the alerts: it goes to the tray; only Exit in the tray menu ends the program
         FormClosing += (_, e) => { if (!_exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } };
         FormClosed += (_, _) => { _tray.Visible = false; Application.Exit(); };
-        _voice.SpeakCompleted += (_, e) => Log(e.Error is null ? "voice: spoke" : $"voice: could not speak ({e.Error.GetBaseException().Message})");
+        _voice.SpeakCompleted += (_, e) => { _voiceWait.Stop(); Log(e.Cancelled ? "voice: stopped" : e.Error is null ? "voice: spoke" : $"voice: could not speak ({e.Error.GetBaseException().Message})"); };
+        _voiceWait.Tick += (_, _) => { _voiceWait.Stop(); Log("voice: no answer from Windows' voice in 15 s; skipped"); _voice.SpeakAsyncCancelAll(); };
         try { _voice.SetOutputToDefaultAudioDevice(); } catch (Exception e) { Log($"voice: no sound output ({e.Message})"); }
         Load += async (_, _) => await Open(web, viewData);
         var poll = new System.Windows.Forms.Timer { Interval = 3000 };
@@ -168,6 +170,7 @@ sealed class CounterWindow : Form
         Log("alert: " + text);
         _popup.Tell(text);
         _voice.SpeakAsync(text);
+        _voiceWait.Stop(); _voiceWait.Start();
     }
 
     void Log(string line)
