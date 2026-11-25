@@ -50,7 +50,9 @@ if ($Uninstall) {
     }
     $running = @(Get-Process Cafe.Counter -ErrorAction SilentlyContinue); $running | Stop-Process -Force; $running | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
     Remove-Item $counterIcons -Force -ErrorAction SilentlyContinue
-    Remove-Item $app, $agh -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $agh -Recurse -Force -ErrorAction SilentlyContinue
+    for ($i = 0; $i -lt 10 -and (Test-Path $app); $i++) { Remove-Item $app -Recurse -Force -ErrorAction SilentlyContinue; if (Test-Path $app) { Start-Sleep -Seconds 1 } }   # Windows can hold a just-closed program's file a moment
+    if (Test-Path $app) { try { Remove-Item $app -Recurse -Force } catch { Write-Host "Could not remove $app : $_" } }
     Say "The cafe server and the internet filter are off this PC. The cafe data in C:\ProgramData\Cafe is kept."
     exit 0
 }

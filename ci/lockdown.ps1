@@ -231,6 +231,10 @@ try {
     $counterOpened = $counterRun -and (WaitFor 60 { (Test-Path $counterLog) -and (Get-Content $counterLog -Raw) -match "counter page opened" })
     if ($counterRun) { Stop-Process -Id $counterRun.Id -Force -ErrorAction SilentlyContinue }
     Write-Host "after A.C2: $(CounterWindows)"
+    # This test machine is also the gaming PC (a cafe's counter PC is another machine), and Windows runs the counter window's
+    # start-with-Windows icon whenever its shell starts (measured: ARM run 45636476287). A.C1 has checked the icon; it goes
+    # now, with any counter window, so the gaming PC part runs as on a real gaming PC.
+    Remove-Item $counterIcons[1] -Force; Get-Process Cafe.Counter -ErrorAction SilentlyContinue | Stop-Process -Force
     Check "A.C2" "The installed counter window opens the installed counter's page, trusting its certificate by the fingerprint" $counterOpened "$(Get-Content $counterLog -Raw -ErrorAction SilentlyContinue)"
     $addressFile = (Get-Content "$stageA\counter-address.txt" -ErrorAction SilentlyContinue | Select-Object -First 1)
     $myAddresses = @(Get-NetIPAddress -AddressFamily IPv4 | ForEach-Object IPAddress)
