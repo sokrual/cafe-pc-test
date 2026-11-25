@@ -489,7 +489,10 @@ OWNER DECISIONS (10 Nov 2026)
               also stops without WebView2 and gives Microsoft's download page as a link (decided: no bundling).
               HOW-TO-INSTALL now says which program goes where and what each one does.
               Tests: UI tests B53 (window and certificate; alerts), lockdown A.W1, A.W2, A.C1, A.C2, C.W1, B3.I4d. Proofs:
-              run 45601744539 (window without its fingerprint check and without reading alerts: both UI tests fail),
-              45605750170 (installers without the checks and the window), 45605755676 (uninstall leaves the window).
+              run 45601744539 (window without its fingerprint check and without reading alerts: only those 2 UI tests
+              fail, both machines), 45612315653 (installers without the checks and the window: only A.W1, A.W2, A.C1,
+              A.C2, C.W1 fail), 45612319795 (uninstall leaves the window: only B3.I4d fails).
+              Seen once on ARM (run 45612311343): Windows' voice never answered (CI has no sound device). The window now
+              gives up on a voice after 15 s and logs it, so later voice alerts are not blocked. Cause not known.
               Not measured: the voice on a real PC; a game in exclusive full screen (no graphics card in CI); alerts
               while nobody is signed in to the counter window (there are none: known limit).
