@@ -1,7 +1,6 @@
 PROJECT STATUS - what is built, what is left
-Last updated: 24 Nov 2026. Version 0.3.0. Latest green test run on main: 44993200175 (all 8 jobs pass, lockdown 151/151, pull request #9).
-E3b branch feature/e3b-own-desktop (not merged yet): run 45190479815 (all 8 jobs pass, UI tests 24/24, lockdown 152/152). See 23 and
-24 Nov at the end.
+Last updated: 25 Nov 2026. Version 0.3.0. Latest green test run on main: 45544183663 (all 8 jobs pass, UI tests 24/24, lockdown
+152/152, pull request #10).
 
 Read README.txt for the layout, CHECKS.txt for the backend and security checks every phase must pass, and CLAUDE.md for the rules (commit as "Turyos Ventures" with an empty email,
 no AI signature anywhere, simple English in everything people see, smallest change that fully works).
@@ -139,8 +138,8 @@ B3  Lockdown and installers                                         BUILT - fina
               E3a Game Bar off (BUILT 15 Nov): Windows' policy AllowGameDVR=0 (game recording and Win+G overlay),
                  and AppLocker refuses the Game Bar app (Microsoft.XboxGamingOverlay) to the Customer; the owner keeps
                  it. Lockdown D1.C1b, E3.G1. Real Win+G check in Phase 0.
-              E3b own desktop: BUILT 19-22 Nov on branch feature/e3b-own-desktop, see 23 Nov at the end. Security pass
-                 done 23-24 Nov, see 24 Nov at the end. Left: the pull request.
+              E3b own desktop: DONE (pull request #10, 25 Nov). Built 19-22 Nov, security pass 23-24 Nov, see 23 and 24 Nov
+                 at the end.
               Decided 14 Nov: record each PC's hardware at install and show it on the counter (B5.13 below).
     B5.13 PC hardware list and PC groups (decided 14 Nov): each PC reports its processor, graphics card, memory,
           Windows version and monitors at install; the counter lists them. The owner puts PCs into groups (e.g.
@@ -404,7 +403,7 @@ OWNER DECISIONS (10 Nov 2026)
               must-pass). Not measured: real games on a cafe PC, which often show a small window first. Decided
               (Kushagra, 23 Nov): the kit calls a game missed only if it was never recognised during its whole time in
               front; CI's fake game starts small and goes full screen after about 2 s; T0.1d becomes a must-pass in CI.
-              Its own pull request, after the E3b one.
+              Its own pull request, after the E3b one. (Fixed 25 Nov, see there.)
 24 Nov  E3b security pass (23-24 Nov), on branch feature/e3b-own-desktop, against CHECKS.txt. Each fix has its own test, and
               each test was shown to fail without its fix (proof runs on the branches named).
               1 The lock desktop's name could be made first by another program (measured, run 45110576185: Windows then
@@ -450,3 +449,17 @@ OWNER DECISIONS (10 Nov 2026)
               Not measured: Windows 11 behind Windows' own secure screen (fix 2 does not depend on it); whether the case of
               fix 3 happens on a real PC; a real Customer's Windows sign-out, a crash report or anti-cheat with the new
               rights of fix 5; the kill gap on a real PC.
+25 Nov  Phase 0 kit: two false alarms in the report fixed (no change to what the kit does on a PC).
+              T0.1d "Every game was recognised" (decided by Kushagra, 23 Nov, option A): the timer now calls a known game
+              missed only if it leaves the front, or the timer closes, without ever being recognised. Before, it judged
+              only its first look, and a game window still starting up failed that look (see 23 Nov).
+              T0.2f "No game ... would be blocked by Level B": PowerShell writes and checks its own probe scripts in TEMP
+              (__PSScriptPolicyTest_<random>.ps1, about 3 per round, measured). One random name held "amd", which the
+              game word list matched (run 45120643919). These probe scripts are now left out of the Level B list.
+              CI: the fake game starts as a small window and goes full screen after 2 s; a probe script with "amd" in its
+              name is run from TEMP; T0.1d and T0.2f are must-pass. Proofs: without the T0.2f fix, T0.2f fails on both
+              machines (run 45549211928); without the T0.1d fix, T0.1d fails on x64 (run 45549208754).
+              Found (measured): on the ARM test machine the fake game never comes to the front. A full-screen Windows app
+              window (WWAHost) is in front for the whole kit run, and the timer counts it as a game. So on ARM, T0.1c,
+              T0.1d and T0.3a/b have never tested the fake game; the "0 of 60 ARM rounds" on 23 Nov means nothing. Next,
+              as its own small item, measured first (Kushagra, 25 Nov).

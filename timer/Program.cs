@@ -49,7 +49,7 @@ sealed class TimerWidget : Form
     readonly string? _log;
     readonly HashSet<string> _games = new(StringComparer.OrdinalIgnoreCase);
     bool _peek; DateTime _peekUntil;
-    IntPtr _lastFg; DateTime? _gameSince; DateTime _lastSpoke = DateTime.MinValue; int _spoken;
+    IntPtr _lastFg; string? _unseen; DateTime? _gameSince; DateTime _lastSpoke = DateTime.MinValue; int _spoken;
     System.Speech.Synthesis.SpeechSynthesizer? _tts;
 
     public TimerWidget(string? logDir, string? gamesFile)
@@ -92,11 +92,13 @@ sealed class TimerWidget : Form
         var game = Native.GameInFront(fg, Handle);
         if (fg != _lastFg)
         {
+            if (_unseen != null) Log($"MISSED {_unseen}"); // a known game left the front without ever being detected
             _lastFg = fg;
             var name = Native.ProcessName(fg);
             Log($"FG {name} game={game}");
-            if (!game && _games.Contains(name)) Log($"MISSED {name}"); // a known game is in front but was not detected
+            _unseen = _games.Contains(name) ? name : null;
         }
+        if (game) _unseen = null; // games often show a small window first, so judge their whole time in front
 
         _gameSince = game ? _gameSince ?? DateTime.Now : null;
         if (_log != null && game && Program.ShouldSpeak(DateTime.Now - _gameSince!.Value, DateTime.Now - _lastSpoke, _spoken)) Speak(fg);
@@ -129,7 +131,7 @@ sealed class TimerWidget : Form
         get { var p = base.CreateParams; p.ExStyle |= 0x08000000 /*NOACTIVATE*/ | 0x00000080 /*TOOLWINDOW*/; return p; }
     }
 
-    protected override void OnFormClosed(FormClosedEventArgs e) { Log("STOP"); _tray.Visible = false; _tray.Dispose(); _tts?.Dispose(); base.OnFormClosed(e); }
+    protected override void OnFormClosed(FormClosedEventArgs e) { if (_unseen != null) Log($"MISSED {_unseen}"); Log("STOP"); _tray.Visible = false; _tray.Dispose(); _tts?.Dispose(); base.OnFormClosed(e); }
 }
 
 static class Native
