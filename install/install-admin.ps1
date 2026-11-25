@@ -48,7 +48,7 @@ if ($Uninstall) {
         Restart-Service w32time -ErrorAction SilentlyContinue
         Remove-Item $keep
     }
-    Get-Process Cafe.Counter -ErrorAction SilentlyContinue | Stop-Process -Force
+    $running = @(Get-Process Cafe.Counter -ErrorAction SilentlyContinue); $running | Stop-Process -Force; $running | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
     Remove-Item $counterIcons -Force -ErrorAction SilentlyContinue
     Remove-Item $app, $agh -Recurse -Force -ErrorAction SilentlyContinue
     Say "The cafe server and the internet filter are off this PC. The cafe data in C:\ProgramData\Cafe is kept."
@@ -91,7 +91,8 @@ if (-not (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue)) {
 
 # --- the cafe server ---
 if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force }
-Get-Process Cafe.Server, Cafe.Counter -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Seconds 1
+$running = @(Get-Process Cafe.Server, Cafe.Counter -ErrorAction SilentlyContinue)   # the counter window may be open: wait until it is closed
+$running | Stop-Process -Force; $running | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1
 New-Item $app -ItemType Directory -Force | Out-Null   # inside Program Files: only admins can change it
 Copy-Item "$src\Cafe.Server.exe", "$src\Cafe.Counter.exe" $app -Force
 if (-not (Get-Service $svc -ErrorAction SilentlyContinue)) {
