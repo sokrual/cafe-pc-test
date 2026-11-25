@@ -53,6 +53,7 @@ jobs:
           dotnet publish server/Cafe.Server -c Release -o out/server
           dotnet publish pc/Cafe.Agent -c Release -o out/agent
           dotnet publish pc/Cafe.Watchdog -c Release -o out/watchdog
+          dotnet publish server/Cafe.Counter -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -o out/counter
       - name: Close Windows first-time setup if the test machine never finished it (a set-up cafe PC never shows it)
         shell: powershell
         run: Get-Process WWAHost -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -62,6 +63,7 @@ jobs:
           $env:CAFE_SERVER_EXE = "$PWD\out\server\Cafe.Server.exe"
           $env:CAFE_AGENT_EXE = "$PWD\out\agent\Cafe.Agent.exe"
           $env:CAFE_WATCHDOG_EXE = "$PWD\out\watchdog\Cafe.Watchdog.exe"
+          $env:CAFE_COUNTER_EXE = "$PWD\out\counter\Cafe.Counter.exe"
           dotnet test --project pc/Cafe.UiTests --output Detailed
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -97,13 +99,14 @@ jobs:
           dotnet publish pc/Cafe.Watchdog @singleFile -o out/watchdog
           dotnet publish timer @singleFile -o out/timer
           dotnet publish server/Cafe.Server @singleFile -p:IncludeNativeLibrariesForSelfExtract=true -o out/server
+          dotnet publish server/Cafe.Counter @singleFile -p:IncludeNativeLibrariesForSelfExtract=true -o out/counter
           $agentFiles = @(Get-ChildItem out/agent -File)
           $agentNativeFiles = @(Get-ChildItem out/agent -File -Filter "*.dll")
           if (-not (Test-Path out/agent/Cafe.Agent.exe) -or $agentFiles.Count -lt 2 -or $agentNativeFiles.Count -eq 0) {
             Get-ChildItem out/agent
             throw "Cafe.Agent must publish with its native/runtime DLLs beside the EXE; no runtime extraction is allowed."
           }
-          foreach ($d in "watchdog", "timer") { if (@(Get-ChildItem out/$d -File).Count -ne 1) { Get-ChildItem out/$d; throw "$d is more than one file" } }
+          foreach ($d in "watchdog", "timer", "counter") { if (@(Get-ChildItem out/$d -File).Count -ne 1) { Get-ChildItem out/$d; throw "$d is more than one file" } }
       - name: Close Windows first-time setup if the test machine never finished it
         shell: powershell
         run: Get-Process WWAHost -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -120,11 +123,11 @@ jobs:
         run: |
           $pkg = "GamingCafe"; New-Item "$pkg/agent-runtime" -ItemType Directory -Force | Out-Null
           Copy-Item install/* $pkg -Recurse   # with the licences folder
-          Copy-Item out/server/Cafe.Server.exe, out/watchdog/Cafe.Watchdog.exe $pkg
+          Copy-Item out/server/Cafe.Server.exe, out/counter/Cafe.Counter.exe, out/watchdog/Cafe.Watchdog.exe $pkg
           Copy-Item out/agent/* "$pkg/agent-runtime"
           Copy-Item SECURITY-GUIDE.txt, LOST-PHONE.txt $pkg
           "Built from commit $env:GITHUB_SHA, test run $env:GITHUB_RUN_ID" | Set-Content "$pkg/VERSION.txt"
-          foreach ($f in "THIRD-PARTY.txt", "licences/DOTNET-MIT-LICENSE.txt", "licences/APACHE-2.0.txt") { if (-not (Test-Path "$pkg/$f")) { throw "$f is missing from the package" } }
+          foreach ($f in "THIRD-PARTY.txt", "licences/DOTNET-MIT-LICENSE.txt", "licences/APACHE-2.0.txt", "licences/WEBVIEW2-LICENSE.txt") { if (-not (Test-Path "$pkg/$f")) { throw "$f is missing from the package" } }
           ./ci/sign-update.ps1 -Folder $pkg -Version $env:GITHUB_RUN_NUMBER   # so the counter can hand it to the gaming PCs
           Compress-Archive "$pkg/*" GamingCafe.zip
       - uses: actions/upload-artifact@v4

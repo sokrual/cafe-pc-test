@@ -3,18 +3,34 @@
 #   - a firewall rule: only PCs on the shop network may reach it
 #   - AdGuard Home, the free internet filter the gaming PCs use for every web address (downloaded from its maker)
 #   - on a new install: one key file per gaming PC (PC1.token, PC2.token ...) in this folder, for INSTALL-PC
+#   - the counter window (Cafe.Counter.exe): the counter screen with the alerts, an icon on the desktop, starts with Windows
 # -Uninstall: take it all off again. -Ci: unattended test run (no pop-ups; -Pcs gives the number of gaming PCs).
+# -TestBuild, -TestNoWebView2: tests only; act as if this PC had that Windows build, or no WebView2.
 #Requires -RunAsAdministrator
-param([switch]$Uninstall, [switch]$Ci, [int]$Pcs)
+param([switch]$Uninstall, [switch]$Ci, [int]$Pcs, [int]$TestBuild, [switch]$TestNoWebView2)
 $ErrorActionPreference = "Stop"
 $src = $PSScriptRoot
 $app = "$env:ProgramFiles\GamingCafe\Server"
 $agh = "$env:ProgramFiles\AdGuardHome"
 $svc = "CafeServer"
+$counterIcons = "$env:PUBLIC\Desktop\Gaming Cafe counter.lnk", "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\Gaming Cafe counter.lnk"
 function Say($text) {
     if ($Ci) { Write-Host $text; return }
     Add-Type -AssemblyName System.Windows.Forms
     [System.Windows.Forms.MessageBox]::Show($text, "Gaming Cafe setup") | Out-Null
+}
+# A stop before anything is changed, with the page to fix it one click away.
+function Stop-Setup($text, $url) {
+    Write-Host "Setup stopped: $text $url"
+    if (-not $Ci) {
+        Add-Type -AssemblyName System.Windows.Forms
+        $f = New-Object System.Windows.Forms.Form -Property @{ Text = "Gaming Cafe setup"; Width = 580; Height = 240; StartPosition = "CenterScreen"; TopMost = $true }
+        $l = New-Object System.Windows.Forms.LinkLabel -Property @{ Text = "$text`n`n$url"; Dock = "Fill"; Padding = New-Object System.Windows.Forms.Padding 12 }
+        $l.Links.Add($text.Length + 2, $url.Length, $url) | Out-Null
+        $l.Add_LinkClicked({ Start-Process $_.Link.LinkData })
+        $f.Controls.Add($l); $f.ShowDialog() | Out-Null
+    }
+    exit 1
 }
 trap { Say "Setup stopped:`n$_`n`nRun it again. If it stops again, take a photo of this window. Send the photo and the file install-log.txt (in this folder) on Discord to the person who gave you this software."; break }
 Start-Transcript "$src\install-log.txt" -Append | Out-Null   # what happened, step by step: send this file on Discord if setup stops
@@ -32,9 +48,20 @@ if ($Uninstall) {
         Restart-Service w32time -ErrorAction SilentlyContinue
         Remove-Item $keep
     }
+    Get-Process Cafe.Counter -ErrorAction SilentlyContinue | Stop-Process -Force
+    Remove-Item $counterIcons -Force -ErrorAction SilentlyContinue
     Remove-Item $app, $agh -Recurse -Force -ErrorAction SilentlyContinue
     Say "The cafe server and the internet filter are off this PC. The cafe data in C:\ProgramData\Cafe is kept."
     exit 0
+}
+
+# --- this PC can run the software: Windows 11, and Microsoft WebView2 for the counter window (part of Windows 11) ---
+$build = if ($TestBuild) { $TestBuild } else { [int](Get-CimInstance Win32_OperatingSystem).BuildNumber }
+if ($build -lt 22000) { Say "This PC runs an older Windows (build $build). The cafe software needs Windows 11 Pro. Update this PC to Windows 11, then run INSTALL-ADMIN again."; exit 1 }
+$wv2 = "Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"   # how Microsoft says to find it
+$wv2Version = foreach ($k in "HKLM:\SOFTWARE\WOW6432Node\$wv2", "HKLM:\SOFTWARE\$wv2", "HKCU:\Software\$wv2") { (Get-ItemProperty $k -ErrorAction SilentlyContinue).pv }
+if ($TestNoWebView2 -or -not ($wv2Version | Where-Object { $_ -and $_ -ne "0.0.0.0" })) {
+    Stop-Setup "This PC is missing Microsoft WebView2, which the counter window needs. Open the page below, download the `"Evergreen Bootstrapper`" and run it. Then run INSTALL-ADMIN again." "https://developer.microsoft.com/microsoft-edge/webview2/"
 }
 
 # --- counter PC disk encryption: warn, but never enable BitLocker or stop setup ---
@@ -64,9 +91,9 @@ if (-not (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue)) {
 
 # --- the cafe server ---
 if (Get-Service $svc -ErrorAction SilentlyContinue) { Stop-Service $svc -Force }
-Get-Process Cafe.Server -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Seconds 1
+Get-Process Cafe.Server, Cafe.Counter -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Seconds 1
 New-Item $app -ItemType Directory -Force | Out-Null   # inside Program Files: only admins can change it
-Copy-Item "$src\Cafe.Server.exe" $app -Force
+Copy-Item "$src\Cafe.Server.exe", "$src\Cafe.Counter.exe" $app -Force
 if (-not (Get-Service $svc -ErrorAction SilentlyContinue)) {
     New-Service -Name $svc -BinaryPathName "`"$app\Cafe.Server.exe`"" -DisplayName "Gaming Cafe server" -StartupType Automatic | Out-Null
 }
@@ -197,11 +224,14 @@ $out = Join-Path $src "for-gaming-PCs"
 New-Item $out -ItemType Directory -Force | Out-Null
 Copy-Item $pin $out -Force
 Copy-Item $pin $src -Force   # the same folder then goes to every gaming PC as it is
+Copy-Item $pin $app -Force   # public: the counter window trusts only the certificate with this fingerprint
+$shell = New-Object -ComObject WScript.Shell
+foreach ($i in $counterIcons) { $link = $shell.CreateShortcut($i); $link.TargetPath = "$app\Cafe.Counter.exe"; $link.Save() }
 # the address Windows itself uses towards the router: not a virtual adapter (WSL, Hyper-V, VirtualBox, VPN) that also has one
 $ip = try { (Find-NetRoute -RemoteIPAddress "8.8.8.8" -ErrorAction Stop | Where-Object IPAddress | Select-Object -First 1).IPAddress } catch { $null }
 if (-not $ip) { $ip = (Get-NetIPAddress -AddressFamily IPv4 -PrefixOrigin Dhcp, Manual -ErrorAction SilentlyContinue | Where-Object IPAddress -notlike "169.254.*" | Select-Object -First 1).IPAddress }
 if ($ip) { Set-Content "$src\counter-address.txt" $ip -Encoding ascii }   # INSTALL-PC reads it: nobody types the address
 $keysStep = if ($renewed -and $madeKeys.Count) { "New keys for the $($madeKeys.Count) gaming PCs not installed yet ($($madeKeys -join ', ')) are in this folder. Older key files no longer work." } elseif ($renewed) { "Every gaming PC keeps its key." } elseif ($madeKeys.Count) { "The keys for $($madeKeys.Count) gaming PCs ($($madeKeys[0]) to $($madeKeys[-1])) are in this folder." } else { "Then add each gaming PC under Owner security, PC keys. Save each key file into this folder." }
 $filterNote = if ($filterJustSetUp) { "The internet filter is set up. You rarely need its page; its password is in $filterPasswordFile (only admins can open it).`n`n" } else { "" }
-Say "The counter PC is ready.`n`nThis PC's address: $ip`n`n$($filterNote)Next:`n1. On the counter screen (https://127.0.0.1:5443/staff/), make your owner account. $keysStep`n2. Take this whole folder (for example on a pen drive) to each gaming PC and run INSTALL-PC.`n`nThe counter screen opens now."
-if (-not $Ci) { Start-Process "https://127.0.0.1:5443/staff/" }   # one less address to type
+Say "The counter PC is ready.`n`nThis PC's address: $ip`n`n$($filterNote)Next:`n1. In the counter window (it opens now; later: the "Gaming Cafe counter" icon on the desktop), make your owner account. $keysStep`n2. Take this whole folder (for example on a pen drive) to each gaming PC and run INSTALL-PC.`n`nThe counter screen opens now."
+if (-not $Ci) { Start-Process explorer.exe "`"$app\Cafe.Counter.exe`"" }   # through Explorer: as the signed-in person, not as admin

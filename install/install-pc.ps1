@@ -4,13 +4,14 @@
 #   2nd time: saves a clean copy of the Customer account, locks the account down, and switches the lock screen on.
 # -Server: the counter PC's address (asked once, kept after that). -DnsServer: the internet filter's address (normally the
 # counter PC; only for tests). -Setup: open the Customer account for changes again.
-# -Uninstall: take everything off this PC. -Ci: unattended test run (no pop-ups, no restart).
+# -Uninstall: take everything off this PC. -Ci: unattended test run (no pop-ups, no restart). -TestBuild: tests only; act
+# as if this PC had that Windows build.
 # -Auto: an update the gaming PC installs by itself (the watchdog, as SYSTEM, from the counter's signed update): no
 #        windows; the lock screen stays up; the PC restarts at the end, or after a failure, so it never stays unlocked.
 # -Finish: the 2nd time, started by the "Finish cafe setup" icon (finish-setup.ps1) through the scheduled task
 #          CafeFinishSetup, which Windows runs as SYSTEM: no admin password. It works only in setup mode.
 #Requires -RunAsAdministrator
-param([string]$Server, [string]$DnsServer, [switch]$Setup, [switch]$Uninstall, [switch]$Ci, [switch]$Finish, [switch]$Detached, [switch]$Auto, [AllowEmptyString()][string]$AllowFolders)
+param([string]$Server, [string]$DnsServer, [switch]$Setup, [switch]$Uninstall, [switch]$Ci, [switch]$Finish, [switch]$Detached, [switch]$Auto, [int]$TestBuild, [AllowEmptyString()][string]$AllowFolders)
 $ErrorActionPreference = "Stop"
 if ($Finish -and -not $Detached) {
     # Windows runs a scheduled task's program at background speed (CI: step 2 took 14 minutes instead of 2, even at task
@@ -50,6 +51,8 @@ trap {
     Say "Setup stopped:`n$_`n`nRun it again. If it stops again, take a photo of this window. Send the photo and the file install-log.txt (in this folder) on Discord to the person who gave you this software."; break }
 if (-not $Uninstall) {
     Start-Transcript "$src\install-log.txt" -Append | Out-Null   # what happened, step by step: send this file on Discord if setup stops
+    $build = if ($TestBuild) { $TestBuild } else { [int](Get-CimInstance Win32_OperatingSystem).BuildNumber }
+    if ($build -lt 22000) { Say "This PC runs an older Windows (build $build). The cafe software needs Windows 11 Pro. Update this PC to Windows 11, then run INSTALL-PC again."; exit 1 }
     # Firmware protection is the owner's job; warn only and keep the installer running.
     $secureBootWarning = "Secure Boot is off on this gaming PC. Turn it on: see SECURITY-GUIDE.txt, part 2."
     $secureBootUnknown = "Secure Boot could not be checked on this gaming PC. Check it: see SECURITY-GUIDE.txt, part 2."

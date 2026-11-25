@@ -182,7 +182,7 @@ $runnerDns = (Get-DnsClientServerAddress -InterfaceIndex $defaultIfIndexes[0] -A
 try {
     # ===== A. counter (admin) PC =====
     $stageA = Join-Path $env:TEMP "stage-admin"; New-Item $stageA -ItemType Directory -Force | Out-Null
-    Copy-Item "$repo\install\install-admin.ps1", "$out\server\Cafe.Server.exe" $stageA
+    Copy-Item "$repo\install\install-admin.ps1", "$out\server\Cafe.Server.exe", "$out\counter\Cafe.Counter.exe" $stageA
     $bitLockerExpected = try {
         if (-not (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue)) { "Unavailable" }
         else {
@@ -193,6 +193,16 @@ try {
     # a signed update in the folder, as the build makes it: INSTALL-ADMIN hands it to the gaming PCs
     Copy-Item "$repo\install\install-pc.ps1", "$repo\install\HOW-TO-INSTALL.txt" $stageA
     pwsh -NoProfile -File "$repo\ci\sign-update.ps1" -Folder $stageA -Version 3 | Out-Host
+    # B5.3: a PC the software cannot run on is told so before anything changes (own folder, so the real install's log stays apart)
+    $stageW = Join-Path $env:TEMP "stage-checks"; New-Item $stageW -ItemType Directory -Force | Out-Null
+    Copy-Item "$repo\install\install-admin.ps1", "$repo\install\install-pc.ps1" $stageW
+    $oldWindows = & "$stageW\install-admin.ps1" -Ci -TestBuild 19045 *>&1 | Out-String; $oldWindowsExit = $LASTEXITCODE
+    Stop-Transcript | Out-Null
+    $noWebView2 = & "$stageW\install-admin.ps1" -Ci -TestNoWebView2 *>&1 | Out-String; $noWebView2Exit = $LASTEXITCODE
+    Stop-Transcript | Out-Null
+    $untouched = -not (Test-Path "$env:ProgramFiles\GamingCafe\Server") -and -not (Get-Service CafeServer -ErrorAction SilentlyContinue)
+    Check "A.W1" "INSTALL-ADMIN stops on a Windows older than Windows 11 and says so, before it changes anything" ($oldWindowsExit -eq 1 -and $oldWindows -match "needs Windows 11 Pro" -and $untouched) "exit $oldWindowsExit"
+    Check "A.W2" "INSTALL-ADMIN stops when Microsoft WebView2 is missing, with Microsoft's download page as a link, before it changes anything" ($noWebView2Exit -eq 1 -and $noWebView2.Contains("https://developer.microsoft.com/microsoft-edge/webview2/") -and $untouched) "exit $noWebView2Exit"
     & "$stageA\install-admin.ps1" -Ci -Pcs 3   # a new install: keys for 3 gaming PCs
     Stop-Transcript | Out-Null   # the installer leaves its log open; on a real PC its own PowerShell ends and closes it. Read here before that, the log can lack the last message (seen on ARM, check A.K6)
     $adminInstallLog = Get-Content "$stageA\install-log.txt" -Raw
@@ -209,6 +219,17 @@ try {
         default { $adminInstallLog -match "BitLocker status: Unknown" -and $hasUnknownBitLockerWarning -and -not $hasOffBitLockerWarning -and -not $hasUnavailableBitLockerWarning }
     }
     Check "B3.A8" "Counter installer warns only when BitLocker is not confirmed On" $bitLockerCheck "runner state $bitLockerExpected; install log contains matching status and warning"
+    $counterApp = "$env:ProgramFiles\GamingCafe\Server"
+    $counterIcons = "$env:PUBLIC\Desktop\Gaming Cafe counter.lnk", "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\Gaming Cafe counter.lnk"
+    $shell = New-Object -ComObject WScript.Shell
+    $iconsOk = @($counterIcons | Where-Object { (Test-Path $_) -and $shell.CreateShortcut($_).TargetPath -eq "$counterApp\Cafe.Counter.exe" }).Count
+    $pinCopied = (Test-Path "$counterApp\server.pin") -and (Get-Content "$counterApp\server.pin" -Raw).Trim() -eq (Get-Content "$env:ProgramData\Cafe\server.pin" -Raw).Trim()
+    Check "A.C1" "INSTALL-ADMIN puts the counter window on the counter PC: the program, the counter's fingerprint beside it (readable without admin), a desktop icon and a start with Windows" ((Test-Path "$counterApp\Cafe.Counter.exe") -and $pinCopied -and $iconsOk -eq 2) "icons $iconsOk of 2; fingerprint copied $pinCopied"
+    $counterLog = Join-Path $env:TEMP "counter-window-log.txt"; Remove-Item $counterLog -ErrorAction SilentlyContinue
+    $counterRun = Start-Process "$counterApp\Cafe.Counter.exe" -ArgumentList "--log `"$counterLog`"" -PassThru   # as installed, against the installed counter
+    $counterOpened = WaitFor 60 { (Test-Path $counterLog) -and (Get-Content $counterLog -Raw) -match "counter page opened" }
+    Stop-Process -Id $counterRun.Id -Force -ErrorAction SilentlyContinue
+    Check "A.C2" "The installed counter window opens the installed counter's page, trusting its certificate by the fingerprint" $counterOpened "$(Get-Content $counterLog -Raw -ErrorAction SilentlyContinue)"
     $addressFile = (Get-Content "$stageA\counter-address.txt" -ErrorAction SilentlyContinue | Select-Object -First 1)
     $myAddresses = @(Get-NetIPAddress -AddressFamily IPv4 | ForEach-Object IPAddress)
     # the right one is on the network adapter that leads to the router; the runners also have a Hyper-V adapter (172.x)
@@ -317,6 +338,9 @@ try {
     Copy-Item "$tdata\server.pin" $stage
     Set-Content "$stage\counter-address.txt" "127.0.0.1" -Encoding ascii   # as INSTALL-ADMIN writes it; the test server is on this machine
     $secureBootExpected = try { if (Confirm-SecureBootUEFI -ErrorAction Stop) { "On" } else { "Off" } } catch { "Unknown" }
+    $oldPc = & "$stageW\install-pc.ps1" -Ci -TestBuild 19045 -AllowFolders "" *>&1 | Out-String; $oldPcExit = $LASTEXITCODE
+    Stop-Transcript | Out-Null
+    Check "C.W1" "INSTALL-PC stops on a Windows older than Windows 11 and says so, before it changes anything" ($oldPcExit -eq 1 -and $oldPc -match "needs Windows 11 Pro" -and -not (Get-Service CafeWatchdog -ErrorAction SilentlyContinue) -and -not (Get-LocalUser Customer -ErrorAction SilentlyContinue)) "exit $oldPcExit"
     & "$stage\install-pc.ps1" -DnsServer $runnerDns -Ci -AllowFolders ""   # the counter address comes from counter-address.txt
     Stop-Transcript | Out-Null   # close the installer's log before reading it (see the first INSTALL-ADMIN run above)
     $pcInstallLog = Get-Content "$stage\install-log.txt" -Raw
@@ -1604,6 +1628,7 @@ try {
 
     & "$stageA\install-admin.ps1" -Uninstall -Ci
     Check "B3.I4" "Counter PC uninstall: server and filter gone" (-not (Get-Service CafeServer, AdGuardHome -ErrorAction SilentlyContinue)) ""
+    Check "B3.I4d" "Counter PC uninstall: the counter window program and its two icons gone" (-not (Test-Path "$counterApp\Cafe.Counter.exe") -and -not ($counterIcons | Where-Object { Test-Path $_ })) ""
     Check "B3.I4b" "Counter PC uninstall: clock settings back as before" ((Get-ItemProperty $ntpKey).NtpServer -eq $ntpOriginal) "$ntpOriginal"
     $idleAfter = Get-ItemProperty $idleKey -ErrorAction SilentlyContinue
     $idleBefore = if ($null -eq $idleOriginal) { $null } else { $idleOriginal.InactivityTimeoutSecs }
