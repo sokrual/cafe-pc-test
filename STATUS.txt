@@ -1,6 +1,6 @@
 PROJECT STATUS - what is built, what is left
-Last updated: 25 Nov 2026. Version 0.3.0. Latest green test run on main: 45544183663 (all 8 jobs pass, UI tests 24/24, lockdown
-152/152, pull request #10).
+Last updated: 25 Nov 2026. Version 0.3.0. Latest green test run on main: 45557407273 (all 8 jobs pass, UI tests 24/24, lockdown
+152/152, pull request #11).
 
 Read README.txt for the layout, CHECKS.txt for the backend and security checks every phase must pass, and CLAUDE.md for the rules (commit as "Turyos Ventures" with an empty email,
 no AI signature anywhere, simple English in everything people see, smallest change that fully works).
@@ -463,3 +463,11 @@ OWNER DECISIONS (10 Nov 2026)
               window (WWAHost) is in front for the whole kit run, and the timer counts it as a game. So on ARM, T0.1c,
               T0.1d and T0.3a/b have never tested the fake game; the "0 of 60 ARM rounds" on 23 Nov means nothing. Next,
               as its own small item, measured first (Kushagra, 25 Nov).
+              Measured the same day (runs 45557798966, 45558070390, 45558465582): on ARM the front is Windows' own "Microsoft
+              account" sign-in window, full screen from boot. Nothing the test starts got the front: not as started, not
+              asking for it, not after an Alt key press, not after asking Windows to drop its front lock (refused on both
+              machines). Closing the sign-in window gave the front to Windows Search instead. On x64 the fake game gets
+              the front in about 1.5 s. On a cafe PC the player clicks the game, so this is a test-machine matter only.
+              Decided (Kushagra, 25 Nov), choice A: the kit check now fails on x64 if the fake game never came to the
+              front, and on ARM the job summary says the game checks did not test it. Proof: with the fake game never
+              started, the x64 kit job fails on exactly that line and ARM passes with the warning (run 45560845587).

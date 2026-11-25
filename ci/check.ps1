@@ -51,11 +51,15 @@ $sawDownload = [bool]($wb | Where-Object path -match "cafe-ci-download")
 # Level A watch-only must have logged our own unsigned timer (proves the events are read and the paths decoded)
 $la = @(Import-Csv (Join-Path $done.FullName "levelA-would-block.csv"))
 $sawTimer = [bool]($la | Where-Object { $_.path -like "$root\CafeTimerTest.exe" })
+# the game checks (T0.1c, T0.1d, T0.3) only test something if the fake game really came to the front; on the ARM
+# machine Windows' own "Microsoft account" window keeps the front and nothing the test starts can take it (measured 25 Nov)
+$inFront = [bool](Get-ChildItem $done.FullName -Filter "timer-*.log" -Recurse | Select-String -SimpleMatch "`tFG FakeGame ")
+if (-not $inFront -and $env:PROCESSOR_ARCHITECTURE -ne "ARM64") { $hard.Add("the fake game never came to the front, so the game checks tested nothing") }
 foreach ($f in "installed-programs.csv", "services-and-drivers.csv", "startup.csv") { if (-not (Test-Path (Join-Path $done.FullName $f))) { $hard.Add("$f missing") } }
 foreach ($r in $res) { $summary.Add("| $($r.r) | $($r.id) | $($r.text -replace '\|', '/') |") }
 
 $out = @("## Round $Round on $((Get-CimInstance Win32_OperatingSystem).Caption)", "",
-    "Audit log caught the Downloads program: $sawDownload", "Level A log caught the unsigned timer: $sawTimer ($($la.Count) files listed)", "",
+    "Audit log caught the Downloads program: $sawDownload", "Fake game came to the front: $inFront$(if (-not $inFront) { ' - T0.1c, T0.1d and T0.3a/b did not test it on this machine' })","Level A log caught the unsigned timer: $sawTimer ($($la.Count) files listed)", "",
     "| Result | ID | Check |", "|---|---|---|") + $summary + @("", "**Must-pass problems: $($hard.Count)**") + ($hard | ForEach-Object { "- $_" })
 $out | Write-Host
 if ($env:GITHUB_STEP_SUMMARY) { $out | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
