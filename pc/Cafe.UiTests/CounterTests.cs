@@ -18,7 +18,15 @@ public sealed class CounterTests : IDisposable
 
     string Pin => Path.Combine(_rig.Data, "server.pin");
     string Log => Path.Combine(_dir, "counter-log.txt");
-    string LogText() => File.Exists(Log) ? File.ReadAllText(Log) : "";
+    // Read without blocking the window's writes: it drops a log line when its file is busy (File.AppendAllText, IOException
+    // ignored), and File.ReadAllText kept it busy. Measured: lost lines or a read error in 6 of 90 rounds on ARM (run
+    // 45844004839); with this read, 0 of 180 rounds on both machines (run 45845923283).
+    string LogText()
+    {
+        if (!File.Exists(Log)) return "";
+        using var file = new FileStream(Log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        return new StreamReader(file).ReadToEnd();
+    }
 
     Process Start(string pinFile, params string[] more)
     {
@@ -47,8 +55,8 @@ public sealed class CounterTests : IDisposable
         File.WriteAllText(wrong, new string('0', 64));
         _counter = Start(wrong);
         Rig.WaitFor(() => LogText().Contains("counter page did not open"), 60, "with a wrong fingerprint the window did not report a refusal", LogText);
-        Assert.Contains("refused a certificate that is not the counter's", LogText());
-        Assert.DoesNotContain("counter page opened", LogText());
+        Assert.True(LogText().Contains("refused a certificate that is not the counter's"), "no refusal in the counter window's log:\n" + LogText());
+        Assert.False(LogText().Contains("counter page opened"), "the page opened with a wrong fingerprint:\n" + LogText());
     }
 
     [Fact]
