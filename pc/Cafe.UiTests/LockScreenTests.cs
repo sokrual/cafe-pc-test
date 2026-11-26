@@ -737,9 +737,11 @@ public sealed class WatchdogTests : IDisposable
     }
 
     // Any program of the same account can post "quit" to the PC program's threads (measured 32 and 38); WinForms then closes
-    // that thread's windows at once (read in its source). Round 1 posts it to every thread but the main one (the lock
-    // screen's and the key blocker's loops are there), round 2 to the main thread. Each round: within 3 s a lock screen
-    // desktop has the screen again, the normal desktop had it for under 0.5 s, and Ctrl+Shift+Esc opens no Task Manager.
+    // that thread's windows at once (read in its source). A customer's program posts from the normal desktop. The lock
+    // screen's and the key blocker's threads are on the lock screen's desktop, which only Windows and admins can open,
+    // so round 2 posts from there as an admin, to show what would happen if a program ever got there. Each round: within
+    // 3 s a lock screen desktop has the screen again, the normal desktop had it for under 0.5 s, and Ctrl+Shift+Esc opens
+    // no Task Manager.
     [Fact]
     public void B53_a_quit_message_to_the_PC_programs_threads_leaves_the_PC_locked()
     {
@@ -748,9 +750,9 @@ public sealed class WatchdogTests : IDisposable
             StartWatchdog();
             var failures = new List<string>();
             var lines = new List<string>();
-            foreach (var mainOnly in new[] { false, true })
+            foreach (var (mainOnly, fromLockDesktop) in new[] { (false, false), (false, true), (true, false) })
             {
-                var round = mainOnly ? "the main thread" : "every thread but the main one";
+                var round = (mainOnly ? "the main thread" : "every thread but the main one") + (fromLockDesktop ? ", from the lock screen's desktop" : ", from the normal desktop");
                 Process? agent = null;
                 Rig.WaitFor(() => (agent = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault(p => Rig.InputDesktop().StartsWith($"CafeLock-{p.Id}-"))) is not null, 20,
                     $"{round}: no PC program's lock screen desktop has the screen", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
@@ -759,7 +761,10 @@ public sealed class WatchdogTests : IDisposable
                 agent!.Refresh();
                 var main = (uint)agent.Threads.Cast<ProcessThread>().MinBy(t => t.StartTime)!.Id; // the first thread made is Main's
                 var targets = agent.Threads.Cast<ProcessThread>().Select(t => (uint)t.Id).Where(id => (id == main) == mainOnly).ToList();
-                var posted = targets.Count(id => PostThreadMessage(id, 0x0012 /*WM_QUIT*/, IntPtr.Zero, IntPtr.Zero));
+                if (fromLockDesktop) Rig.FollowScreen();
+                var errors = targets.Select(id => PostThreadMessage(id, 0x0012 /*WM_QUIT*/, IntPtr.Zero, IntPtr.Zero) ? 0 : Marshal.GetLastWin32Error()).ToList();
+                var posted = errors.Count(e => e == 0);
+                Rig.ToNormalDesktop();
                 var watch = Stopwatch.StartNew();
                 var open = 0.0;
                 for (var last = 0.0; watch.Elapsed < TimeSpan.FromSeconds(3); Thread.Sleep(10))
@@ -776,7 +781,7 @@ public sealed class WatchdogTests : IDisposable
                 var taskManager = Process.GetProcesses().Where(p => !running.Contains(p.Id) && p.ProcessName == "Taskmgr").ToList();
                 taskManager.ForEach(Rig.Kill);
                 var who = locking is null ? "no lock screen has the screen" : locking.Id == agent.Id ? "the same program still locks the PC" : $"a new program (pid {locking.Id}) locks the PC";
-                lines.Add($"{round}: quit posted to {posted} of {targets.Count} threads; the normal desktop had the screen for {open:F2} s; {who}; Task Manager {(taskManager.Count > 0 ? "OPENED" : "did not open")}");
+                lines.Add($"{round}: quit posted to {posted} of {targets.Count} threads (refused with {string.Join(", ", errors.Where(e => e != 0).Distinct())}); the normal desktop had the screen for {open:F2} s; {who}; Task Manager {(taskManager.Count > 0 ? "OPENED" : "did not open")}");
                 if (locking is null || open >= 0.5 || taskManager.Count > 0) failures.Add(lines[^1]);
             }
             TestContext.Current.TestOutputHelper?.WriteLine("QUIT " + string.Join("\nQUIT ", lines));
