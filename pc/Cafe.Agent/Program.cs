@@ -475,8 +475,9 @@ sealed class LockScreen : Form
         var keepFront = new System.Windows.Forms.Timer { Interval = 500 };
         keepFront.Tick += (_, _) =>
         {
+            if (!Visible) { LockDesktop.Lost = 0; Alive.Send(); LockDesktop.GiveBack(); return; }
+            LockDesktop.CountLost(); // who has the screen at this look, before taking it back
             Alive.Send();
-            if (!Visible) { LockDesktop.GiveBack(); return; }
             LockDesktop.Keep();
             if (WindowState == FormWindowState.Minimized) // Show desktop (Win+D) minimises windows
             { WindowState = FormWindowState.Normal; Bounds = SystemInformation.VirtualScreen; }
@@ -558,7 +559,7 @@ static class Alive
         _sent = now;
         _ = Task.Run(async () =>
         {
-            try { using var _ = await Pipe.PostAsJsonAsync("/local/alive", new { oldest }); }
+            try { using var _ = await Pipe.PostAsJsonAsync("/local/alive", new { oldest, lost = LockDesktop.Lost }); }
             catch (HttpRequestException) { } // the watchdog's silence rule covers it
             finally { _sending = 0; }
         });
@@ -658,6 +659,25 @@ static class LockDesktop
     // 0.5 s timer calls this. Asking for the desktop that already has the screen does nothing (measured: 0.02 ms,
     // no message reaches the lock screen, typing goes on), so it asks every time and never has to look first.
     static bool _refused; // one log line per refusal, not one every 0.5 s
+    // Looks in a row at which another desktop had the screen; the heartbeat carries it to the watchdog (B5.3 part 3). Windows
+    // opens the desktop that has the screen only if this program may open it: its own does (by name), a Customer's
+    // program's own does, Windows' secure screen does not (then nobody else has it either). Measured as a standard user:
+    // 0 false looks in 25 min of idle, full load, monitor off, screen savers and Windows' lock; 20 of 20 against a program
+    // that kept switching.
+    public static volatile int Lost;
+    public static void CountLost()
+    {
+        var input = Own ? OpenInputDesktop(0, false, 0x0001 /*READOBJECTS*/) : IntPtr.Zero;
+        if (input == IntPtr.Zero) { Lost = 0; return; }
+        var buffer = new char[256];
+        var named = GetUserObjectInformation(input, 2 /*UOI_NAME*/, buffer, buffer.Length * 2, out var length);
+        CloseDesktop(input);
+        Lost = named && new string(buffer, 0, Math.Max(0, length / 2 - 1)) == _name ? 0 : Lost + 1;
+    }
+    [DllImport("user32.dll", SetLastError = true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+    [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr desktop);
+    [DllImport("user32.dll", EntryPoint = "GetUserObjectInformationW", CharSet = CharSet.Unicode)] static extern bool GetUserObjectInformation(IntPtr handle, int index, char[] info, int length, out int needed);
+
     public static void Keep()
     {
         if (!Own) return;

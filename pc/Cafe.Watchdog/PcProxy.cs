@@ -524,7 +524,8 @@ static class PcProxy
                 {
                     // only the lock screen program this watchdog runs: a Customer can start a second copy of the same file
                     var ours = clientPid == WatchedAgent;
-                    if (ours) Tamper.Alive((int)clientPid, JsonSerializer.Deserialize<AliveReport>(request.Body, new JsonSerializerOptions(JsonSerializerDefaults.Web))?.Oldest ?? 0);
+                    if (ours && JsonSerializer.Deserialize<AliveReport>(request.Body, new JsonSerializerOptions(JsonSerializerDefaults.Web)) is { } report)
+                        Tamper.Alive((int)clientPid, report.Oldest, report.Lost);
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(ours ? 200 : 403, "{}"))).WaitAsync(TimeSpan.FromSeconds(2));
                     return;
                 }
@@ -630,7 +631,7 @@ static class PcProxy
     }
 
     public static volatile uint WatchedAgent; // set by the watchdog's loop
-    sealed record AliveReport(long Oldest);
+    sealed record AliveReport(long Oldest, int Lost);
 
     static bool IsLockScreenClient(NamedPipeServerStream pipe, out string? clientPath, out uint pid)
     {

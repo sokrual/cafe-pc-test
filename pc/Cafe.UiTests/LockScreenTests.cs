@@ -859,6 +859,43 @@ public sealed class WatchdogTests : IDisposable
         }
     }
 
+    // B5.3 part 3: a program that keeps giving the screen to the normal desktop held it 97 to 98% of the time against the lock
+    // screen's 0.5 s timer (measured 17). Now, after 4 looks in a row (2 s), the watchdog closes the Customer's programs and
+    // tells the counter, once per run of such looks.
+    [Fact]
+    public async Task B53_a_program_that_keeps_taking_the_screen_from_the_lock_screen_is_reported_to_the_counter()
+    {
+        try
+        {
+            StartWatchdog();
+            var staff = await _rig.StaffToken();
+            Process? agent = null;
+            Rig.WaitFor(() => (agent = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault(p => Rig.InputDesktop().StartsWith($"CafeLock-{p.Id}-"))) is not null, 20,
+                "no PC program's lock screen desktop has the screen", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+            Thread.Sleep(3000); // it has reported to the watchdog, and polled the counter
+            int Told() => _rig.Review(staff).Count(t => t.EndsWith(" PC1: another program kept taking the screen from the lock screen; the Customer's programs were closed"));
+            Assert.Equal(0, Told());
+            var watch = Stopwatch.StartNew();
+            while (Told() == 0 && watch.Elapsed < TimeSpan.FromSeconds(15))
+                for (var burst = Stopwatch.StartNew(); burst.ElapsedMilliseconds < 500; Thread.Sleep(5)) Rig.SwitchToNormalDesktop();
+            var told = watch.Elapsed.TotalSeconds;
+            for (var more = Stopwatch.StartNew(); more.Elapsed < TimeSpan.FromSeconds(3); Thread.Sleep(5)) Rig.SwitchToNormalDesktop(); // the same run goes on
+            var back = Stopwatch.StartNew();
+            while (!Rig.InputDesktop().StartsWith($"CafeLock-{agent!.Id}-") && back.Elapsed < TimeSpan.FromSeconds(5)) Thread.Sleep(10);
+            TestContext.Current.TestOutputHelper?.WriteLine($"SCREEN reported after {told:F1} s of switching; the lock screen had the screen again {back.Elapsed.TotalSeconds:F2} s after it stopped");
+            Assert.True(told < 10, $"not reported within 10 s of switching ({told:F1} s)");
+            Assert.Equal(1, Told());
+            Assert.StartsWith($"CafeLock-{agent.Id}-", Rig.InputDesktop());
+        }
+        catch
+        {
+            Rig.Screenshot();
+            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "logs");
+            if (Directory.Exists(logs)) foreach (var f in Directory.GetFiles(logs)) Console.WriteLine($"--- {f}\n{File.ReadAllText(f)}");
+            throw;
+        }
+    }
+
     // B5.3 part 3: ended 3 times within a minute while locked, by someone other than the watchdog, a clean-up or setup mode.
     [Fact]
     public async Task B53_a_lock_screen_program_ended_3_times_within_a_minute_while_locked_is_reported_to_the_counter()

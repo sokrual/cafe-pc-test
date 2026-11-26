@@ -6,7 +6,8 @@ using System.Text.Json;
 // (26 Nov): no report for 15 s, or a thread of it stuck for 15 s, ends it (a new one covers the screen in 0.17 to 0.31 s,
 // measured). If the counter's last word was "locked", the Customer's programs are closed too and the counter is told, which
 // speaks it; if unlocked, the counter only shows it. Ended 3 times within a minute while locked, other than by this
-// watchdog, a clean-up or setup mode: the Customer's programs are closed and the counter is told.
+// watchdog, a clean-up or setup mode: the Customer's programs are closed and the counter is told. Another desktop holding the
+// screen at 4 of the lock screen's looks in a row (2 s) while locked: the same.
 static class Tamper
 {
     const long Limit = 15_000; // the worst stall of the whole PC measured under full load was 9.1 s
@@ -16,8 +17,12 @@ static class Tamper
     static readonly Queue<long> Ends = new();
     static readonly ConcurrentQueue<(string What, bool Locked)> Unsent = new();
 
-    public static void Alive(int pid, long oldest)
+    static volatile int _lost;
+    static bool _screenTold;
+
+    public static void Alive(int pid, long oldest, int lost)
     {
+        _lost = lost;
         Interlocked.Exchange(ref _oldest, oldest);
         Interlocked.Exchange(ref _aliveAt, Environment.TickCount64);
         _reporter = pid;
@@ -46,6 +51,14 @@ static class Tamper
         // Silence counts only for a program that has reported. One that never could (signed in as someone other than the
         // Customer, whom the pipe refuses, as in CI's lockdown run 45793638146) is left alone, as before this check existed.
         if (agent is null || _reporter != agent.Id) { Interlocked.Exchange(ref _aliveAt, now); return; }
+        // another desktop had the screen at 4 looks in a row (2 s) while locked: once per run of such looks
+        if (_lost < 4) _screenTold = false;
+        else if (!_screenTold && Locked)
+        {
+            _screenTold = true;
+            log($"another desktop had the screen at {_lost} looks in a row; closed {closeCustomerPrograms()} of the Customer's programs");
+            Tell("screen", true, log);
+        }
         try { if ((DateTime.Now - agent.StartTime).TotalMilliseconds < Limit) return; } // still starting
         catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { return; }
         var silent = now - Math.Max(Interlocked.Read(ref _aliveAt), _stallAt);
