@@ -1292,7 +1292,7 @@ try {
         } catch { $processAccessDetail = $_.Exception.Message }
         finally { Remove-Item -LiteralPath $processTestDir -Recurse -Force -ErrorAction SilentlyContinue }
     }
-    Check "F14.1" "Customer program from a Program Files test folder cannot open Cafe.Agent for VM_WRITE, CREATE_THREAD, DUP_HANDLE, WRITE_DAC, TERMINATE or VM_READ" $processAccessDenied $processAccessDetail
+    Check "F14.1" "Customer program from a Program Files test folder cannot open Cafe.Agent for VM_WRITE, CREATE_THREAD, DUP_HANDLE, WRITE_DAC, TERMINATE or VM_READ, nor any of its threads to end, freeze or redirect them" $processAccessDenied $processAccessDetail
     if ($customerAgentProbe -and -not $customerAgentProbe.HasExited) { Stop-Process -Id $customerAgentProbe.Id -Force -ErrorAction SilentlyContinue }
     # An unreachable counter server must also leave the request pending; reconnecting lets the next loop retry.
     Set-Content "$data\wipe\request" ""

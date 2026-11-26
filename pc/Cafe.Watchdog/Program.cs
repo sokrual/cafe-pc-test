@@ -74,11 +74,15 @@ static class ProcessAccessProbe
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool CloseHandle(IntPtr handle);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr OpenThread(uint desiredAccess, bool inheritHandle, uint threadId);
+
     public static int Run(string[] args)
     {
         var index = Array.FindIndex(args, value => value.Equals("--test-process-access", StringComparison.OrdinalIgnoreCase));
         if (index < 0 || index + 1 >= args.Length || !uint.TryParse(args[index + 1], out var processId)) return 2;
-        // exit 11 VM_WRITE, 12 CREATE_THREAD, 13 DUP_HANDLE, 14 WRITE_DAC, 15 TERMINATE, 16 VM_READ granted; 2 unexpected error; 0 all refused
+        // exit 11 VM_WRITE, 12 CREATE_THREAD, 13 DUP_HANDLE, 14 WRITE_DAC, 15 TERMINATE, 16 VM_READ granted on the program;
+        // 17 TERMINATE, 18 SUSPEND_RESUME, 19 SET_CONTEXT granted on any of its threads; 2 unexpected error; 0 all refused
         var rights = new uint[] { 0x0020, 0x0002, 0x0040, 0x00040000, 0x0001, 0x0010 };
         for (var i = 0; i < rights.Length; i++)
         {
@@ -87,6 +91,17 @@ static class ProcessAccessProbe
             if (handle != IntPtr.Zero) { CloseHandle(handle); return 11 + i; }
             if (error != 5) return 2;
         }
+        var threads = System.Diagnostics.Process.GetProcessById((int)processId).Threads.Cast<System.Diagnostics.ProcessThread>().Select(t => (uint)t.Id).ToList();
+        if (threads.Count == 0) return 2;
+        var threadRights = new uint[] { 0x0001, 0x0002, 0x0010 };
+        for (var i = 0; i < threadRights.Length; i++)
+            foreach (var id in threads)
+            {
+                var handle = OpenThread(threadRights[i], false, id);
+                var error = Marshal.GetLastWin32Error();
+                if (handle != IntPtr.Zero) { CloseHandle(handle); return 17 + i; }
+                if (error is not (5 or 87)) return 2; // 87: the thread ended since the list was made
+            }
         return 0;
     }
 }

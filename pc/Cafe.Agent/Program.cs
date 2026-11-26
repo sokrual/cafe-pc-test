@@ -22,14 +22,15 @@ static class ProcessSecurity
     [DllImport("kernel32.dll")]
     internal static extern IntPtr LocalFree(IntPtr memory);
 
+    static bool IsCustomer(WindowsIdentity identity) => (identity.Name ?? "").Equals("Customer", StringComparison.OrdinalIgnoreCase)
+        || (identity.Name ?? "").EndsWith("\\Customer", StringComparison.OrdinalIgnoreCase);
+
     public static void Harden()
     {
         using var identity = WindowsIdentity.GetCurrent();
-        var identityName = identity.Name ?? "";
-        if (!identityName.Equals("Customer", StringComparison.OrdinalIgnoreCase)
-            && !identityName.EndsWith("\\Customer", StringComparison.OrdinalIgnoreCase))
+        if (!IsCustomer(identity))
         {
-            Program.Log($"process DACL skipped for non-Customer identity {identityName}");
+            Program.Log($"process DACL skipped for non-Customer identity {identity.Name}");
             return;
         }
         // OW (OWNER RIGHTS), not the Customer SID: without an OW entry Windows always lets the owner rewrite the DACL.
@@ -46,6 +47,42 @@ static class ProcessSecurity
         finally { LocalFree(descriptor); }
         Program.Log($"process DACL applied for Customer ({identity.User?.Value})");
     }
+
+    // Another Customer program could open every thread of this one for every right: end it, freeze it, and "set context",
+    // which changes what a thread runs (measured). Threads made from now on take the sign-in's default rights set here;
+    // the threads already running get them one by one. Called after the --test-lock-desktop switch: a program started
+    // after this change hangs (measured), and only that switch starts one.
+    public static void HardenThreads()
+    {
+        using (var identity = WindowsIdentity.GetCurrent()) if (!IsCustomer(identity)) return;
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptor("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00120800;;;OW)", 1, out var descriptor, out _))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        try
+        {
+            GetSecurityDescriptorDacl(descriptor, out _, out var dacl, out _);
+            if (!OpenProcessToken(GetCurrentProcess(), 0x0080 | 0x0008 /*ADJUST_DEFAULT | QUERY*/, out var token))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            try { if (!SetTokenInformation(token, 6 /*TokenDefaultDacl*/, ref dacl, IntPtr.Size)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error()); }
+            finally { CloseHandle(token); }
+            foreach (ProcessThread t in Process.GetCurrentProcess().Threads)
+            {
+                var thread = OpenThread(0x00040000 /*WRITE_DAC*/, false, (uint)t.Id);
+                if (thread == IntPtr.Zero) continue; // it ended since the list was made
+                var error = SetSecurityInfo(thread, 6 /*kernel object*/, 0x80000004 /*protected DACL*/, IntPtr.Zero, IntPtr.Zero, dacl, IntPtr.Zero);
+                CloseHandle(thread);
+                if (error != 0) throw new System.ComponentModel.Win32Exception((int)error);
+            }
+        }
+        finally { LocalFree(descriptor); }
+        Program.Log("thread rights applied for Customer");
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetSecurityDescriptorDacl(IntPtr descriptor, out bool present, out IntPtr dacl, out bool defaulted);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetTokenInformation(IntPtr token, int infoClass, ref IntPtr info, int length);
+    [DllImport("advapi32.dll")] static extern uint SetSecurityInfo(IntPtr handle, int type, uint info, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenThread(uint access, bool inherit, uint id);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
 }
 
 static class Program
@@ -62,6 +99,7 @@ static class Program
             : args.Contains("--test-queue-logout", StringComparer.OrdinalIgnoreCase) ? "/pc/logout" : null;
         // lockdown check E3b.L1, run as Customer: see LockDesktop.Test
         if (Arg("--test-lock-desktop") is string lockDesktopTest) { Environment.ExitCode = LockDesktop.Test(lockDesktopTest); return; }
+        ProcessSecurity.HardenThreads();
         if (testQueuePath is not null)
         {
             using var response = new WatchdogPipeClient().PostAsJsonAsync("/local/queue-action", new { path = testQueuePath }).GetAwaiter().GetResult();
