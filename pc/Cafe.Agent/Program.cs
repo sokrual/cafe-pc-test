@@ -111,7 +111,9 @@ static class Program
         LockDesktop.TestRefuseLockThread = args.Contains("--test-lock-thread-refused", StringComparer.OrdinalIgnoreCase);
         LockDesktop.TestRefuseUnlock = args.Contains("--test-unlock-refused-once", StringComparer.OrdinalIgnoreCase);
         ApplicationConfiguration.Initialize();
-        Application.Run(new Agent(Arg("--name") ?? "Gaming Cafe"));
+        var agent = new Agent(Arg("--name") ?? "Gaming Cafe");
+        MessageLoop.RunForever();
+        GC.KeepAlive(agent);
     }
 
     // never logs PINs or tokens; a log that can't be written must not stop the PC program
@@ -414,7 +416,7 @@ sealed class LockScreen : Form
                 _ = screen.Handle; // made now, so that other threads can post to it
             }
             finally { ready.Set(); }
-            Application.Run();
+            MessageLoop.RunForever();
             return 0;
         };
         if (CreateThread(IntPtr.Zero, IntPtr.Zero, Marshal.GetFunctionPointerForDelegate(_thread), IntPtr.Zero, 0, out _) == IntPtr.Zero)
@@ -533,6 +535,32 @@ sealed class LockScreen : Form
 // The lock screen's own Windows desktop, like the Windows sign-in screen. Games in exclusive fullscreen, graphics-card
 // overlays and Windows' own dialogs stay on the normal desktop, so they cannot sit above the lock screen.
 // If Windows refuses any step, the lock screen stays a window on the normal desktop, as before, and the log says why.
+// Application.Run ends at a "quit" message, which any program of the same account can post, and WinForms then closes the
+// thread's windows (read in its source). This loop does for these threads what Application.Run does, and skips "quit".
+static class MessageLoop
+{
+    [ThreadStatic] static bool _told; // one log line per thread, however many quits arrive
+    public static void RunForever()
+    {
+        while (true)
+        {
+            var got = GetMessage(out var msg, IntPtr.Zero, 0, 0);
+            if (got == -1) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            if (got == 0) { if (!_told) Program.Log("a quit message was ignored"); _told = true; continue; }
+            var m = Message.Create(msg.Window, (int)msg.Id, msg.W, msg.L);
+            if (Application.FilterMessage(ref m)) continue;
+            if (msg.Id is >= 0x0100 and <= 0x0109 && Control.FromChildHandle(msg.Window) is { } target // keys: Tab, Enter, shortcuts
+                && target.PreProcessControlMessage(ref m) == PreProcessControlState.MessageProcessed) continue;
+            TranslateMessage(ref msg);
+            DispatchMessage(ref msg);
+        }
+    }
+    [StructLayout(LayoutKind.Sequential)] struct Msg { public IntPtr Window; public uint Id; public IntPtr W, L; public uint Time; public int X, Y; }
+    [DllImport("user32.dll", EntryPoint = "GetMessageW", SetLastError = true)] static extern int GetMessage(out Msg msg, IntPtr window, uint first, uint last);
+    [DllImport("user32.dll")] static extern bool TranslateMessage(ref Msg msg);
+    [DllImport("user32.dll", EntryPoint = "DispatchMessageW")] static extern IntPtr DispatchMessage(ref Msg msg);
+}
+
 static class LockDesktop
 {
     static IntPtr _own, _normal;
@@ -741,7 +769,7 @@ static class KeyBlocker
             _proc ??= Hook; // one for every key blocker thread: Windows keeps calling it, so it must never be collected
             ok = SetWindowsHookEx(13 /*WH_KEYBOARD_LL*/, _proc, GetModuleHandle(null), 0) != IntPtr.Zero;
             ready.Set();
-            if (ok) Application.Run(); // Windows calls the hook through this thread's message loop
+            if (ok) MessageLoop.RunForever(); // Windows calls the hook through this thread's message loop
         }) { IsBackground = true, Name = "key blocker" };
         thread.Start();
         ready.Wait();
