@@ -11,12 +11,17 @@ static class Tamper
 {
     const long Limit = 15_000; // the worst stall of the whole PC measured under full load was 9.1 s
     static long _aliveAt, _oldest, _lastLook, _stallAt, _quietUntil;
-    static int _killed;
+    static int _killed, _reporter;
     static volatile int _locked = -1; // the counter's last word: 1 locked, 0 unlocked, -1 nothing heard yet
     static readonly Queue<long> Ends = new();
     static readonly ConcurrentQueue<(string What, bool Locked)> Unsent = new();
 
-    public static void Alive(long oldest) { Interlocked.Exchange(ref _oldest, oldest); Interlocked.Exchange(ref _aliveAt, Environment.TickCount64); }
+    public static void Alive(int pid, long oldest)
+    {
+        Interlocked.Exchange(ref _oldest, oldest);
+        Interlocked.Exchange(ref _aliveAt, Environment.TickCount64);
+        _reporter = pid;
+    }
 
     /// The counter's answer to the lock screen program's state request, as it passes through the pipe.
     public static void CounterSays(string state)
@@ -38,7 +43,9 @@ static class Tamper
         if (now - _lastLook > 2000) _stallAt = now; // the watchdog stalled too, so the whole PC did (measured): no one to blame
         _lastLook = now;
         SendUnsent(log);
-        if (agent is null) { Interlocked.Exchange(ref _aliveAt, now); return; } // silence counts only while there is a program that can report
+        // Silence counts only for a program that has reported. One that never could (signed in as someone other than the
+        // Customer, whom the pipe refuses, as in CI's lockdown run 45793638146) is left alone, as before this check existed.
+        if (agent is null || _reporter != agent.Id) { Interlocked.Exchange(ref _aliveAt, now); return; }
         try { if ((DateTime.Now - agent.StartTime).TotalMilliseconds < Limit) return; } // still starting
         catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { return; }
         var silent = now - Math.Max(Interlocked.Read(ref _aliveAt), _stallAt);
@@ -58,7 +65,7 @@ static class Tamper
     public static void Ended(int pid, bool inSetup, Func<int> closeCustomerPrograms, Action<string> log)
     {
         var now = Environment.TickCount64;
-        if (pid == _killed || inSetup || now < _quietUntil || !Locked) return;
+        if (pid == _killed || pid != _reporter || inSetup || now < _quietUntil || !Locked) return; // only a program that reported
         Ends.Enqueue(now);
         while (Ends.Peek() < now - 60_000) Ends.Dequeue();
         if (Ends.Count < 3) return;

@@ -524,7 +524,7 @@ static class PcProxy
                 {
                     // only the lock screen program this watchdog runs: a Customer can start a second copy of the same file
                     var ours = clientPid == WatchedAgent;
-                    if (ours) Tamper.Alive(JsonSerializer.Deserialize<AliveReport>(request.Body, new JsonSerializerOptions(JsonSerializerDefaults.Web))?.Oldest ?? 0);
+                    if (ours) Tamper.Alive((int)clientPid, JsonSerializer.Deserialize<AliveReport>(request.Body, new JsonSerializerOptions(JsonSerializerDefaults.Web))?.Oldest ?? 0);
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(ours ? 200 : 403, "{}"))).WaitAsync(TimeSpan.FromSeconds(2));
                     return;
                 }
