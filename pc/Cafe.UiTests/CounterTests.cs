@@ -52,7 +52,7 @@ public sealed class CounterTests : IDisposable
     }
 
     [Fact]
-    public async Task B53_alerts_pop_up_and_speak_for_a_pen_drive_a_Defender_threat_and_a_PC_lost_during_a_visit_but_not_for_a_WiFi_alert()
+    public async Task B53_alerts_pop_up_and_speak_for_a_pen_drive_a_Defender_threat_lock_screen_tampering_and_a_PC_lost_during_a_visit_but_not_for_a_WiFi_alert_or_a_restart()
     {
         var staff = await _rig.StaffToken();
         var key = File.ReadAllText(Path.Combine(_rig.Data, "pc1.token")).Trim();
@@ -87,9 +87,14 @@ public sealed class CounterTests : IDisposable
         Pc(HttpMethod.Post, $"/pc/pen-drive/{id}/scan", new { threats = true });
         Rig.WaitFor(() => LogText().Contains("alert: PC1: Microsoft Defender found a threat on a pen drive."), 20, "no alert for the Defender threat", LogText);
 
+        Pc(HttpMethod.Post, "/pc/tamper", new { what = "stuck", locked = false }); // a restart during a visit: on the screen only
+        Pc(HttpMethod.Post, "/pc/tamper", new { what = "ended", locked = true });
+        Rig.WaitFor(() => LogText().Contains("alert: PC1: the lock screen was ended 3 times within a minute; the Customer's programs were closed."), 20, "no alert for the lock screen report", LogText);
+
         // PC1 says nothing more; its visit is still open
         Rig.WaitFor(() => LogText().Contains("alert: PC1 stopped reaching the counter during a visit."), 45, "no alert for the PC lost during a visit", LogText);
         Assert.DoesNotContain("Wi-Fi", LogText());
+        Assert.DoesNotContain("during a visit and was restarted", LogText());
         Assert.Single(Regex.Matches(LogText(), "alert: PC1: a pen drive is waiting"));
     }
 }

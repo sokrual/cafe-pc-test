@@ -166,32 +166,8 @@ static class Wipe
             customerSession = lockScreen.SessionId;
         }
 
-        var keep = File.ReadAllLines(Path.Combine(AppContext.BaseDirectory, "keep-running.txt")).Select(l => l.Trim())
-            .Where(l => l.Length > 0 && !l.StartsWith('#')).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var programFiles = new[] { Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 }.Select(f => Environment.GetFolderPath(f) + "\\");
-        var closed = new List<Process>();
-        if (testMode)
-        {
-            // CI's lock screen runs as the runner rather than Customer; terminate it to exercise watchdog restart.
-            foreach (var ui in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(agent)))
-                if (ui.SessionId > 0 && string.Equals(Native.PathOf(ui), agent, StringComparison.OrdinalIgnoreCase))
-                    try { ui.Kill(); closed.Add(ui); } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
-        }
-        foreach (var p in Process.GetProcesses())
-        {
-            if (Owner(p) != sid) continue;
-            if (!testMode && trusted.Contains((p.Id, StartOf(p)))) continue;
-            var f = Native.PathOf(p);
-            if (!testMode && f == agent) continue;
-            // Production logs off the whole Customer session below. These exceptions avoid an abrupt close
-            // before Windows performs its normal session-end notifications.
-            if (!testMode && f is not null && keep.Contains(Path.GetFileName(f)) && programFiles.Any(d => f.StartsWith(d, StringComparison.OrdinalIgnoreCase))
-                && !Watchdog.WritableByNonAdmins(f) && !Watchdog.WritableByNonAdmins(Path.GetDirectoryName(f)!)) continue;
-            try { p.Kill(); closed.Add(p); } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
-        }
-        foreach (var p in closed) if (!p.WaitForExit(5000)) throw new TimeoutException("customer process did not exit");
 
-        var report = $"closed={closed.Count}";
+        var report = $"closed={CloseCustomerPrograms(sid, agent, trusted, testMode)}";
         var links = RemoveLinks(profile, profile, clean);
 
         // Build a complete clean profile before logging off. Its parent is inaccessible to Customer;
@@ -272,6 +248,38 @@ static class Wipe
         DeleteOldProfile(backup, clean);
         report += $"; profile=reset; links={links}; robocopy={stagedExit}; hive=restored; steam={(steamCleaned ? 1 : 0)}; tasks={removed}";
         return report;
+    }
+
+    /// Closes the Customer's programs as the clean-up does: all but Windows' own programs from before the sign-in, the lock
+    /// screen program and the keep-running.txt apps. The watchdog also calls it, with no profile reset, when the lock screen
+    /// was tampered with (B5.3 part 3).
+    public static int CloseCustomerPrograms(string sid, string agent, HashSet<(int, DateTime)> trusted, bool testMode = false)
+    {
+        var keep = File.ReadAllLines(Path.Combine(AppContext.BaseDirectory, "keep-running.txt")).Select(l => l.Trim())
+            .Where(l => l.Length > 0 && !l.StartsWith('#')).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var programFiles = new[] { Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 }.Select(f => Environment.GetFolderPath(f) + "\\");
+        var closed = new List<Process>();
+        if (testMode)
+        {
+            // CI's lock screen runs as the runner rather than Customer; terminate it to exercise watchdog restart.
+            foreach (var ui in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(agent)))
+                if (ui.SessionId > 0 && string.Equals(Native.PathOf(ui), agent, StringComparison.OrdinalIgnoreCase))
+                    try { ui.Kill(); closed.Add(ui); } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+        }
+        foreach (var p in Process.GetProcesses())
+        {
+            if (Owner(p) != sid) continue;
+            if (!testMode && trusted.Contains((p.Id, StartOf(p)))) continue;
+            var f = Native.PathOf(p);
+            if (!testMode && f == agent) continue;
+            // Production logs off the whole Customer session below. These exceptions avoid an abrupt close
+            // before Windows performs its normal session-end notifications.
+            if (!testMode && f is not null && keep.Contains(Path.GetFileName(f)) && programFiles.Any(d => f.StartsWith(d, StringComparison.OrdinalIgnoreCase))
+                && !Watchdog.WritableByNonAdmins(f) && !Watchdog.WritableByNonAdmins(Path.GetDirectoryName(f)!)) continue;
+            try { p.Kill(); closed.Add(p); } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+        }
+        foreach (var p in closed) if (!p.WaitForExit(5000)) throw new TimeoutException("customer process did not exit");
+        return closed.Count;
     }
 
     static void LogoffCustomerIfPresent(string sid)

@@ -174,11 +174,8 @@ B5  Owner features                                                  IN PROGRESS
          Decided 25 Nov (Kushagra), in this order, each its own pull request: (1) the counter window with the alerts,
          BUILT 25 Nov, see there; (2) the owner's own PC gets the same window and alerts (optional install); (3) the
          answer to the E3b known limits below; (4) the "allow or not" prompt, once Level A blocks after the cafe trial.
-         Built with it (Kushagra, 23 Nov): the answer to the E3b known limits (see 24 Nov at the end). The PC program
-         counts the times its lock desktop has lost the screen; past a limit, or when the PC program is ended again and
-         again, the watchdog closes the Customer's programs with the clean-up's own list (no profile reset). Only while
-         the counter says the PC should be locked, and the counter is told. A frozen PC program needs it to report to
-         the watchdog at set times; not designed yet.
+         Part 2 PARKED 26 Nov (Kushagra): a server of ours costs money; he is asking owners first. Part 3 BUILT 26 Nov
+         (see there): the answer to the E3b known limits.
     B5.4 Reports: revenue by day, week, month, PC, cash/UPI, staff, discounts and corrections; PDF and Excel
     B5.5 Daily encrypted backup, with a restore test
     B5.6 Messages to PCs read aloud, "Call staff" button
@@ -448,7 +445,7 @@ OWNER DECISIONS (10 Nov 2026)
               - A program can end the lock screen program with a "quit" message or by ending its threads, again and
                 again; each time the screen is open for up to a second (measured, runs 45149120379 and 45150408616).
               - A program can freeze the lock screen program's threads (measured, same runs).
-              The answer to all three is built with the counter alerts, B5.3 (see there).
+              The answer to all three is built with the counter alerts, B5.3 (see there). Answered 26 Nov, B5.3 part 3.
               Not measured: Windows 11 behind Windows' own secure screen (fix 2 does not depend on it); whether the case of
               fix 3 happens on a real PC; a real Customer's Windows sign-out, a crash report or anti-cheat with the new
               rights of fix 5; the kill gap on a real PC.
@@ -502,3 +499,39 @@ OWNER DECISIONS (10 Nov 2026)
               Full run 45645465242: 8 of 8 jobs first time, server 81/81, UI 26/26, lockdown 158/158, x64 and ARM.
               Not measured: the voice on a real PC; a game in exclusive full screen (no graphics card in CI); alerts
               while nobody is signed in to the counter window (there are none: known limit).
+26 Nov  B5.3 part 3: the answer to the E3b known limits (decided by Kushagra the same day). Measured first, as a
+              standard user on both machines (throwaway branch measure/b53-tamper): another Customer program could open
+              every thread of the lock screen program for every right, including "set context", which changes what a
+              thread runs; a "quit" posted from the normal desktop reaches only its main thread (the lock screen's and
+              the key blocker's threads are on the lock screen's desktop); full load (CPU, memory and disk together)
+              stalled the whole PC for up to 9.1 s on x64, the watchdog with it in 8 of 10 stalls; 0 false lost-screen
+              looks in 25 min with load, monitor off, screen savers and Windows' lock. Details and runs:
+              project doc claude/b53-part3-tamper-answer.md.
+              1. The lock screen program sets the rights of its threads, and of threads it makes later: Windows itself
+                 and admins keep every right, other Customer programs may only look and wait. Lockdown F14.1 also asks
+                 for end, freeze and set context on every thread. Proof 45769169734: only F14.1 fails, exit 17.
+              2. Its message loops skip "quit" (option B; A, the program ends, was also built and tested, run
+                 45777519197). UI test B53 quit: same program, the screen never open. Proof 45777515649: from the lock
+                 screen's desktop the key blocker was gone (Task Manager opened).
+              3. Heartbeat: its main, lock screen and key blocker threads note when they last ran; the lock screen's
+                 thread sends the oldest note to the watchdog once a second, and only the program the watchdog runs may
+                 send it. No report for 15 s, or a thread stuck 15 s (decided: under 10 to 15 s is no alarm): the
+                 watchdog ends it. If the counter's last word was "locked" (decided: also when the counter cannot be
+                 reached), it closes the Customer's programs (the clean-up's own close step, no profile reset) and tells
+                 the counter: the owner's review list, spoken by the counter window. During a visit: restart only, shown
+                 on the counter screen without voice (decided). Ended 3 times within a minute while locked, other than by
+                 the watchdog, a clean-up or setup mode: the same report. The watchdog does not count time while it was
+                 stalled itself, judges only while its pipe is up, and only a program that has reported. UI tests: a
+                 paused program replaced after 15.3 to 15.8 s, locked and during a visit; 3 ends reported. Proofs
+                 45793633675 and 45802389480: both fail with a watchdog that does not act.
+              4. Lost-screen count: at 4 looks in a row (2 s) at which another desktop had the screen, while locked, the
+                 same as 3: programs closed, counter told, once per run of such looks. UI test: reported after 3.0 to
+                 3.5 s of switching. Proof 45808979444: not reported within 10 s.
+              Found and fixed on the way: the installed-style watchdog in the UI tests never opened its pipe (the rig's PC
+              key was plain text; the tests now protect it for the machine, as INSTALL-PC does); a lock screen program
+              that cannot report (CI's runner, or anyone but the Customer signed in to Windows) was ended every 15 s
+              (lockdown S6.2, run 45793638146); lockdown A.C2 met the counter window INSTALL-ADMIN had opened and saw no
+              log (ARM, run 45802393977), so it closes that window first.
+              Not measured: a real cafe PC (stalls with a hard disk, games, anti-cheat looking at other programs'
+              threads); "set context" used to run code (only the right was opened); a program frozen before its first
+              report is not caught (other programs cannot freeze it since change 1).

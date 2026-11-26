@@ -22,14 +22,15 @@ static class ProcessSecurity
     [DllImport("kernel32.dll")]
     internal static extern IntPtr LocalFree(IntPtr memory);
 
+    static bool IsCustomer(WindowsIdentity identity) => (identity.Name ?? "").Equals("Customer", StringComparison.OrdinalIgnoreCase)
+        || (identity.Name ?? "").EndsWith("\\Customer", StringComparison.OrdinalIgnoreCase);
+
     public static void Harden()
     {
         using var identity = WindowsIdentity.GetCurrent();
-        var identityName = identity.Name ?? "";
-        if (!identityName.Equals("Customer", StringComparison.OrdinalIgnoreCase)
-            && !identityName.EndsWith("\\Customer", StringComparison.OrdinalIgnoreCase))
+        if (!IsCustomer(identity))
         {
-            Program.Log($"process DACL skipped for non-Customer identity {identityName}");
+            Program.Log($"process DACL skipped for non-Customer identity {identity.Name}");
             return;
         }
         // OW (OWNER RIGHTS), not the Customer SID: without an OW entry Windows always lets the owner rewrite the DACL.
@@ -46,6 +47,42 @@ static class ProcessSecurity
         finally { LocalFree(descriptor); }
         Program.Log($"process DACL applied for Customer ({identity.User?.Value})");
     }
+
+    // Another Customer program could open every thread of this one for every right: end it, freeze it, and "set context",
+    // which changes what a thread runs (measured). Threads made from now on take the sign-in's default rights set here;
+    // the threads already running get them one by one. Called after the --test-lock-desktop switch: a program started
+    // after this change hangs (measured), and only that switch starts one.
+    public static void HardenThreads()
+    {
+        using (var identity = WindowsIdentity.GetCurrent()) if (!IsCustomer(identity)) return;
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptor("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00120800;;;OW)", 1, out var descriptor, out _))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        try
+        {
+            GetSecurityDescriptorDacl(descriptor, out _, out var dacl, out _);
+            if (!OpenProcessToken(GetCurrentProcess(), 0x0080 | 0x0008 /*ADJUST_DEFAULT | QUERY*/, out var token))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            try { if (!SetTokenInformation(token, 6 /*TokenDefaultDacl*/, ref dacl, IntPtr.Size)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error()); }
+            finally { CloseHandle(token); }
+            foreach (ProcessThread t in Process.GetCurrentProcess().Threads)
+            {
+                var thread = OpenThread(0x00040000 /*WRITE_DAC*/, false, (uint)t.Id);
+                if (thread == IntPtr.Zero) continue; // it ended since the list was made
+                var error = SetSecurityInfo(thread, 6 /*kernel object*/, 0x80000004 /*protected DACL*/, IntPtr.Zero, IntPtr.Zero, dacl, IntPtr.Zero);
+                CloseHandle(thread);
+                if (error != 0) throw new System.ComponentModel.Win32Exception((int)error);
+            }
+        }
+        finally { LocalFree(descriptor); }
+        Program.Log("thread rights applied for Customer");
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetSecurityDescriptorDacl(IntPtr descriptor, out bool present, out IntPtr dacl, out bool defaulted);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetTokenInformation(IntPtr token, int infoClass, ref IntPtr info, int length);
+    [DllImport("advapi32.dll")] static extern uint SetSecurityInfo(IntPtr handle, int type, uint info, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenThread(uint access, bool inherit, uint id);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
 }
 
 static class Program
@@ -62,6 +99,7 @@ static class Program
             : args.Contains("--test-queue-logout", StringComparer.OrdinalIgnoreCase) ? "/pc/logout" : null;
         // lockdown check E3b.L1, run as Customer: see LockDesktop.Test
         if (Arg("--test-lock-desktop") is string lockDesktopTest) { Environment.ExitCode = LockDesktop.Test(lockDesktopTest); return; }
+        ProcessSecurity.HardenThreads();
         if (testQueuePath is not null)
         {
             using var response = new WatchdogPipeClient().PostAsJsonAsync("/local/queue-action", new { path = testQueuePath }).GetAwaiter().GetResult();
@@ -73,7 +111,9 @@ static class Program
         LockDesktop.TestRefuseLockThread = args.Contains("--test-lock-thread-refused", StringComparer.OrdinalIgnoreCase);
         LockDesktop.TestRefuseUnlock = args.Contains("--test-unlock-refused-once", StringComparer.OrdinalIgnoreCase);
         ApplicationConfiguration.Initialize();
-        Application.Run(new Agent(Arg("--name") ?? "Gaming Cafe"));
+        var agent = new Agent(Arg("--name") ?? "Gaming Cafe");
+        MessageLoop.RunForever();
+        GC.KeepAlive(agent);
     }
 
     // never logs PINs or tokens; a log that can't be written must not stop the PC program
@@ -123,6 +163,7 @@ sealed class Agent : ApplicationContext
         var poll = new System.Windows.Forms.Timer { Interval = 2000 };
         poll.Tick += async (_, _) =>
         {
+            Alive.Tick();
             var pending = WipePending();
             _lock.SetBusy(pending);
             if (pending) Apply(_state with { Locked = true, Message = WipeMessage() });
@@ -376,7 +417,7 @@ sealed class LockScreen : Form
                 _ = screen.Handle; // made now, so that other threads can post to it
             }
             finally { ready.Set(); }
-            Application.Run();
+            MessageLoop.RunForever();
             return 0;
         };
         if (CreateThread(IntPtr.Zero, IntPtr.Zero, Marshal.GetFunctionPointerForDelegate(_thread), IntPtr.Zero, 0, out _) == IntPtr.Zero)
@@ -434,7 +475,9 @@ sealed class LockScreen : Form
         var keepFront = new System.Windows.Forms.Timer { Interval = 500 };
         keepFront.Tick += (_, _) =>
         {
-            if (!Visible) { LockDesktop.GiveBack(); return; }
+            if (!Visible) { LockDesktop.Lost = 0; Alive.Send(); LockDesktop.GiveBack(); return; }
+            LockDesktop.CountLost(); // who has the screen at this look, before taking it back
+            Alive.Send();
             LockDesktop.Keep();
             if (WindowState == FormWindowState.Minimized) // Show desktop (Win+D) minimises windows
             { WindowState = FormWindowState.Normal; Bounds = SystemInformation.VirtualScreen; }
@@ -495,6 +538,60 @@ sealed class LockScreen : Form
 // The lock screen's own Windows desktop, like the Windows sign-in screen. Games in exclusive fullscreen, graphics-card
 // overlays and Windows' own dialogs stay on the normal desktop, so they cannot sit above the lock screen.
 // If Windows refuses any step, the lock screen stays a window on the normal desktop, as before, and the log says why.
+// The watchdog ends a lock screen program that stops answering (B5.3 part 3). Each thread that must keep running (the main
+// one, the lock screen's, each key blocker's) notes when it last ran; the lock screen's thread sends the oldest note to the
+// watchdog once a second. Under full load the whole PC stalled for up to 9.1 s (measured), every thread at once, so after
+// a late turn of its own the sender reports no stuck thread.
+static class Alive
+{
+    static readonly Dictionary<int, long> Last = [];
+    static readonly WatchdogPipeClient Pipe = new();
+    static long _sent;
+    static int _sending;
+    public static void Tick() { lock (Last) Last[Environment.CurrentManagedThreadId] = Environment.TickCount64; }
+    public static void Send()
+    {
+        Tick();
+        var now = Environment.TickCount64;
+        if (now - _sent < 1000 || Interlocked.Exchange(ref _sending, 1) == 1) return;
+        long oldest;
+        lock (Last) oldest = now - _sent > 2000 ? 0 : now - Last.Values.Min();
+        _sent = now;
+        _ = Task.Run(async () =>
+        {
+            try { using var _ = await Pipe.PostAsJsonAsync("/local/alive", new { oldest, lost = LockDesktop.Lost }); }
+            catch (HttpRequestException) { } // the watchdog's silence rule covers it
+            finally { _sending = 0; }
+        });
+    }
+}
+
+// Application.Run ends at a "quit" message, which any program of the same account can post, and WinForms then closes the
+// thread's windows (read in its source). This loop does for these threads what Application.Run does, and skips "quit".
+static class MessageLoop
+{
+    [ThreadStatic] static bool _told; // one log line per thread, however many quits arrive
+    public static void RunForever()
+    {
+        while (true)
+        {
+            var got = GetMessage(out var msg, IntPtr.Zero, 0, 0);
+            if (got == -1) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            if (got == 0) { if (!_told) Program.Log("a quit message was ignored"); _told = true; continue; }
+            var m = Message.Create(msg.Window, (int)msg.Id, msg.W, msg.L);
+            if (Application.FilterMessage(ref m)) continue;
+            if (msg.Id is >= 0x0100 and <= 0x0109 && Control.FromChildHandle(msg.Window) is { } target // keys: Tab, Enter, shortcuts
+                && target.PreProcessControlMessage(ref m) == PreProcessControlState.MessageProcessed) continue;
+            TranslateMessage(ref msg);
+            DispatchMessage(ref msg);
+        }
+    }
+    [StructLayout(LayoutKind.Sequential)] struct Msg { public IntPtr Window; public uint Id; public IntPtr W, L; public uint Time; public int X, Y; }
+    [DllImport("user32.dll", EntryPoint = "GetMessageW", SetLastError = true)] static extern int GetMessage(out Msg msg, IntPtr window, uint first, uint last);
+    [DllImport("user32.dll")] static extern bool TranslateMessage(ref Msg msg);
+    [DllImport("user32.dll", EntryPoint = "DispatchMessageW")] static extern IntPtr DispatchMessage(ref Msg msg);
+}
+
 static class LockDesktop
 {
     static IntPtr _own, _normal;
@@ -562,6 +659,25 @@ static class LockDesktop
     // 0.5 s timer calls this. Asking for the desktop that already has the screen does nothing (measured: 0.02 ms,
     // no message reaches the lock screen, typing goes on), so it asks every time and never has to look first.
     static bool _refused; // one log line per refusal, not one every 0.5 s
+    // Looks in a row at which another desktop had the screen; the heartbeat carries it to the watchdog (B5.3 part 3). Windows
+    // opens the desktop that has the screen only if this program may open it: its own does (by name), a Customer's
+    // program's own does, Windows' secure screen does not (then nobody else has it either). Measured as a standard user:
+    // 0 false looks in 25 min of idle, full load, monitor off, screen savers and Windows' lock; 20 of 20 against a program
+    // that kept switching.
+    public static volatile int Lost;
+    public static void CountLost()
+    {
+        var input = Own ? OpenInputDesktop(0, false, 0x0001 /*READOBJECTS*/) : IntPtr.Zero;
+        if (input == IntPtr.Zero) { Lost = 0; return; }
+        var buffer = new char[256];
+        var named = GetUserObjectInformation(input, 2 /*UOI_NAME*/, buffer, buffer.Length * 2, out var length);
+        CloseDesktop(input);
+        Lost = named && new string(buffer, 0, Math.Max(0, length / 2 - 1)) == _name ? 0 : Lost + 1;
+    }
+    [DllImport("user32.dll", SetLastError = true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+    [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr desktop);
+    [DllImport("user32.dll", EntryPoint = "GetUserObjectInformationW", CharSet = CharSet.Unicode)] static extern bool GetUserObjectInformation(IntPtr handle, int index, char[] info, int length, out int needed);
+
     public static void Keep()
     {
         if (!Own) return;
@@ -703,7 +819,11 @@ static class KeyBlocker
             _proc ??= Hook; // one for every key blocker thread: Windows keeps calling it, so it must never be collected
             ok = SetWindowsHookEx(13 /*WH_KEYBOARD_LL*/, _proc, GetModuleHandle(null), 0) != IntPtr.Zero;
             ready.Set();
-            if (ok) Application.Run(); // Windows calls the hook through this thread's message loop
+            if (!ok) return;
+            var alive = new System.Windows.Forms.Timer { Interval = 500 };
+            alive.Tick += (_, _) => Alive.Tick();
+            alive.Start();
+            MessageLoop.RunForever(); // Windows calls the hook through this thread's message loop
         }) { IsBackground = true, Name = "key blocker" };
         thread.Start();
         ready.Wait();

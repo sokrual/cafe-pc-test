@@ -686,15 +686,7 @@ public sealed class WatchdogTests : IDisposable
     {
         try
         {
-            File.WriteAllText(Path.Combine(Path.GetDirectoryName(_exe)!, "watchdog.args"), $"\"{Rig.Env("CAFE_AGENT_EXE")}\" {_rig.AgentArgs} --pipe-sid {WindowsIdentity.GetCurrent().User!.Value}");
-            foreach (var dir in new[] { Path.GetDirectoryName(_exe)!, Path.GetDirectoryName(Rig.Env("CAFE_AGENT_EXE"))! })
-            {
-                Grant(dir, "/inheritance:r", "/grant:r", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX");
-                Grant(dir, "/remove:g", "*S-1-5-11", "*S-1-1-0", "*S-1-5-4");
-                Grant(Path.Combine(dir, "*"), "/reset", "/T");
-            }
-            Assert.Equal(0, Sc($"create CafeWatchdog binPath= \"{_exe}\" start= demand"));
-            Assert.Equal(0, Sc("start CafeWatchdog"));
+            StartWatchdog();
             string Mine(int pid) => $"CafeLock-{pid}-";
             var covered = new List<double>();
             var lines = new List<string>();
@@ -729,6 +721,210 @@ public sealed class WatchdogTests : IDisposable
             throw;
         }
     }
+
+    // the watchdog as installed: a service running the PC program from folders only admins can change. Its pipe to the PC
+    // program needs the PC key protected for this machine, as INSTALL-PC keeps it; the rig's own key file is plain text.
+    void StartWatchdog()
+    {
+        var key = File.ReadAllBytes(_rig.TokenFile);
+        var input = new Blob { Length = key.Length, Data = Marshal.AllocHGlobal(key.Length) };
+        Marshal.Copy(key, 0, input.Data, key.Length);
+        Assert.True(CryptProtectData(ref input, null, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0x4 /*LOCAL_MACHINE*/, out var output), "the PC key could not be protected");
+        var sealedKey = new byte[output.Length];
+        Marshal.Copy(output.Data, sealedKey, 0, sealedKey.Length);
+        Marshal.FreeHGlobal(input.Data);
+        var keyFile = _rig.TokenFile + ".machine";
+        File.WriteAllBytes(keyFile, sealedKey);
+        File.WriteAllText(Path.Combine(Path.GetDirectoryName(_exe)!, "watchdog.args"),
+            $"\"{Rig.Env("CAFE_AGENT_EXE")}\" {_rig.AgentArgs.Replace(_rig.TokenFile, keyFile)} --pipe-sid {WindowsIdentity.GetCurrent().User!.Value}");
+        foreach (var dir in new[] { Path.GetDirectoryName(_exe)!, Path.GetDirectoryName(Rig.Env("CAFE_AGENT_EXE"))! })
+        {
+            Grant(dir, "/inheritance:r", "/grant:r", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX");
+            Grant(dir, "/remove:g", "*S-1-5-11", "*S-1-1-0", "*S-1-5-4");
+            Grant(Path.Combine(dir, "*"), "/reset", "/T");
+        }
+        Assert.Equal(0, Sc($"create CafeWatchdog binPath= \"{_exe}\" start= demand"));
+        Assert.Equal(0, Sc("start CafeWatchdog"));
+    }
+
+    // Any program of the same account can post "quit" to the PC program's threads (measured 32 and 38); WinForms then closes
+    // that thread's windows at once (read in its source). A customer's program posts from the normal desktop. The lock
+    // screen's and the key blocker's threads are on the lock screen's desktop, which only Windows and admins can open,
+    // so round 2 posts from there as an admin, to show what would happen if a program ever got there. Each round: within
+    // 3 s a lock screen desktop has the screen again, the normal desktop had it for under 0.5 s, and Ctrl+Shift+Esc opens
+    // no Task Manager.
+    [Fact]
+    public void B53_a_quit_message_to_the_PC_programs_threads_leaves_the_PC_locked()
+    {
+        try
+        {
+            StartWatchdog();
+            var failures = new List<string>();
+            var lines = new List<string>();
+            foreach (var (mainOnly, fromLockDesktop) in new[] { (false, false), (false, true), (true, false) })
+            {
+                var round = (mainOnly ? "the main thread" : "every thread but the main one") + (fromLockDesktop ? ", from the lock screen's desktop" : ", from the normal desktop");
+                Process? agent = null;
+                Rig.WaitFor(() => (agent = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault(p => Rig.InputDesktop().StartsWith($"CafeLock-{p.Id}-"))) is not null, 20,
+                    $"{round}: no PC program's lock screen desktop has the screen", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+                Thread.Sleep(2000);
+                Rig.ToNormalDesktop();
+                agent!.Refresh();
+                var main = (uint)agent.Threads.Cast<ProcessThread>().MinBy(t => t.StartTime)!.Id; // the first thread made is Main's
+                var targets = agent.Threads.Cast<ProcessThread>().Select(t => (uint)t.Id).Where(id => (id == main) == mainOnly).ToList();
+                if (fromLockDesktop) Rig.FollowScreen();
+                var errors = targets.Select(id => PostThreadMessage(id, 0x0012 /*WM_QUIT*/, IntPtr.Zero, IntPtr.Zero) ? 0 : Marshal.GetLastWin32Error()).ToList();
+                var posted = errors.Count(e => e == 0);
+                Rig.ToNormalDesktop();
+                var watch = Stopwatch.StartNew();
+                var open = 0.0;
+                for (var last = 0.0; watch.Elapsed < TimeSpan.FromSeconds(3); Thread.Sleep(10))
+                {
+                    var now = watch.Elapsed.TotalSeconds;
+                    if (Rig.InputDesktop() == "Default") open += now - last;
+                    last = now;
+                }
+                var locking = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault(p => Rig.InputDesktop().StartsWith($"CafeLock-{p.Id}-"));
+                var running = Process.GetProcesses().Select(p => p.Id).ToHashSet();
+                Rig.FollowScreen();
+                Keyboard.TypeSimultaneously(VirtualKeyShort.CONTROL, VirtualKeyShort.SHIFT, VirtualKeyShort.ESCAPE);
+                Thread.Sleep(2500);
+                var taskManager = Process.GetProcesses().Where(p => !running.Contains(p.Id) && p.ProcessName == "Taskmgr").ToList();
+                taskManager.ForEach(Rig.Kill);
+                var who = locking is null ? "no lock screen has the screen" : locking.Id == agent.Id ? "the same program still locks the PC" : $"a new program (pid {locking.Id}) locks the PC";
+                lines.Add($"{round}: quit posted to {posted} of {targets.Count} threads (refused with {string.Join(", ", errors.Where(e => e != 0).Distinct())}); the normal desktop had the screen for {open:F2} s; {who}; Task Manager {(taskManager.Count > 0 ? "OPENED" : "did not open")}");
+                if (locking is null || open >= 0.5 || taskManager.Count > 0) failures.Add(lines[^1]);
+            }
+            TestContext.Current.TestOutputHelper?.WriteLine("QUIT " + string.Join("\nQUIT ", lines));
+            Assert.True(failures.Count == 0, string.Join("\n", failures));
+        }
+        catch
+        {
+            Rig.Screenshot();
+            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "logs");
+            if (Directory.Exists(logs)) foreach (var f in Directory.GetFiles(logs)) Console.WriteLine($"--- {f}\n{File.ReadAllText(f)}");
+            throw;
+        }
+    }
+
+    [DllImport("user32.dll", SetLastError = true)] static extern bool PostThreadMessage(uint thread, uint message, IntPtr w, IntPtr l);
+    [StructLayout(LayoutKind.Sequential)] struct Blob { public int Length; public IntPtr Data; }
+    [DllImport("crypt32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool CryptProtectData(ref Blob input, string? description, IntPtr entropy, IntPtr reserved, IntPtr prompt, int flags, out Blob output);
+
+    // B5.3 part 3: a lock screen program that stops answering (here the test pauses it as a whole) is ended after 15 s and a
+    // new one locks the PC. Locked: the counter's review list gets it, which the counter window speaks. During a visit: only
+    // the owner's alerts on the counter screen.
+    [Fact]
+    public async Task B53_a_lock_screen_program_that_stops_answering_is_replaced_after_15_s_and_the_counter_is_told()
+    {
+        try
+        {
+            StartWatchdog();
+            var staff = await _rig.StaffToken();
+            var owner = await _rig.OwnerToken();
+            var lines = new List<string>();
+            foreach (var visit in new[] { false, true })
+            {
+                if (visit) await _rig.Post("/staff/sessions", new { pc = "PC1", phone = "9000000003", mode = "postpaid" }, staff);
+                Process? agent = null;
+                Rig.WaitFor(() => (agent = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault()) is not null
+                    && (visit ? Rig.InputDesktop() == "Default" : Rig.InputDesktop().StartsWith($"CafeLock-{agent.Id}-")), 30,
+                    visit ? "the PC did not unlock for the visit" : "no PC program's lock screen desktop has the screen", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+                var age = DateTime.Now - agent!.StartTime;
+                if (age < TimeSpan.FromSeconds(16)) Thread.Sleep(TimeSpan.FromSeconds(16) - age); // past the watchdog's start-up allowance
+                Rig.ToNormalDesktop();
+                Rig.Pause(agent, true);
+                var watch = Stopwatch.StartNew();
+                Process? next = null;
+                Rig.WaitFor(() => agent.HasExited && (next = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault(p => p.Id != agent.Id)) is not null, 40,
+                    $"{(visit ? "during a visit" : "locked")}: the paused program was not replaced within 40 s");
+                lines.Add($"{(visit ? "during a visit" : "locked")}: replaced after {watch.Elapsed.TotalSeconds:F1} s");
+                Assert.InRange(watch.Elapsed.TotalSeconds, 14, 25);
+            }
+            TestContext.Current.TestOutputHelper?.WriteLine("STUCK " + string.Join("\nSTUCK ", lines));
+            Rig.WaitFor(() => _rig.Review(staff).Any(t => t.EndsWith(" PC1: the lock screen stopped answering; it was restarted and the Customer's programs were closed")), 20,
+                "the counter's review list did not get the locked PC's report", () => string.Join("\n", _rig.Review(staff)));
+            List<string> Alerts() => _rig.Raw(HttpMethod.Get, "/staff/alerts", owner).Content.ReadFromJsonAsync<List<string>>().Result!;
+            Rig.WaitFor(() => Alerts().Any(t => t.EndsWith(" PC1: the lock screen stopped answering during a visit and was restarted")), 20,
+                "the owner's alerts did not get the restart during the visit", () => string.Join("\n", Alerts()));
+            Assert.Single(_rig.Review(staff), t => t.Contains("lock screen")); // the restart during the visit has no voice
+        }
+        catch
+        {
+            Rig.Screenshot();
+            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "logs");
+            if (Directory.Exists(logs)) foreach (var f in Directory.GetFiles(logs)) Console.WriteLine($"--- {f}\n{File.ReadAllText(f)}");
+            throw;
+        }
+    }
+
+    // B5.3 part 3: a program that keeps giving the screen to the normal desktop held it 97 to 98% of the time against the lock
+    // screen's 0.5 s timer (measured 17). Now, after 4 looks in a row (2 s), the watchdog closes the Customer's programs and
+    // tells the counter, once per run of such looks.
+    [Fact]
+    public async Task B53_a_program_that_keeps_taking_the_screen_from_the_lock_screen_is_reported_to_the_counter()
+    {
+        try
+        {
+            StartWatchdog();
+            var staff = await _rig.StaffToken();
+            Process? agent = null;
+            Rig.WaitFor(() => (agent = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault(p => Rig.InputDesktop().StartsWith($"CafeLock-{p.Id}-"))) is not null, 20,
+                "no PC program's lock screen desktop has the screen", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+            Thread.Sleep(3000); // it has reported to the watchdog, and polled the counter
+            int Told() => _rig.Review(staff).Count(t => t.EndsWith(" PC1: another program kept taking the screen from the lock screen; the Customer's programs were closed"));
+            Assert.Equal(0, Told());
+            var watch = Stopwatch.StartNew();
+            while (Told() == 0 && watch.Elapsed < TimeSpan.FromSeconds(15))
+                for (var burst = Stopwatch.StartNew(); burst.ElapsedMilliseconds < 500; Thread.Sleep(5)) Rig.SwitchToNormalDesktop();
+            var told = watch.Elapsed.TotalSeconds;
+            for (var more = Stopwatch.StartNew(); more.Elapsed < TimeSpan.FromSeconds(3); Thread.Sleep(5)) Rig.SwitchToNormalDesktop(); // the same run goes on
+            var back = Stopwatch.StartNew();
+            while (!Rig.InputDesktop().StartsWith($"CafeLock-{agent!.Id}-") && back.Elapsed < TimeSpan.FromSeconds(5)) Thread.Sleep(10);
+            TestContext.Current.TestOutputHelper?.WriteLine($"SCREEN reported after {told:F1} s of switching; the lock screen had the screen again {back.Elapsed.TotalSeconds:F2} s after it stopped");
+            Assert.True(told < 10, $"not reported within 10 s of switching ({told:F1} s)");
+            Assert.Equal(1, Told());
+            Assert.StartsWith($"CafeLock-{agent.Id}-", Rig.InputDesktop());
+        }
+        catch
+        {
+            Rig.Screenshot();
+            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "logs");
+            if (Directory.Exists(logs)) foreach (var f in Directory.GetFiles(logs)) Console.WriteLine($"--- {f}\n{File.ReadAllText(f)}");
+            throw;
+        }
+    }
+
+    // B5.3 part 3: ended 3 times within a minute while locked, by someone other than the watchdog, a clean-up or setup mode.
+    [Fact]
+    public async Task B53_a_lock_screen_program_ended_3_times_within_a_minute_while_locked_is_reported_to_the_counter()
+    {
+        try
+        {
+            StartWatchdog();
+            var staff = await _rig.StaffToken();
+            bool Told() => _rig.Review(staff).Any(t => t.EndsWith(" PC1: the lock screen was ended 3 times within a minute; the Customer's programs were closed"));
+            for (var end = 1; end <= 3; end++)
+            {
+                Process? agent = null;
+                Rig.WaitFor(() => (agent = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault(p => Rig.InputDesktop().StartsWith($"CafeLock-{p.Id}-"))) is not null, 20,
+                    $"end {end}: no PC program's lock screen desktop has the screen", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+                Thread.Sleep(3000); // it has polled the counter, so the watchdog knows the PC is locked
+                if (end == 3) Assert.False(Told(), "reported after 2 ends");
+                Rig.Kill(agent);
+            }
+            Rig.WaitFor(Told, 20, "the counter's review list did not get the report", () => string.Join("\n", _rig.Review(staff)));
+        }
+        catch
+        {
+            Rig.Screenshot();
+            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "logs");
+            if (Directory.Exists(logs)) foreach (var f in Directory.GetFiles(logs)) Console.WriteLine($"--- {f}\n{File.ReadAllText(f)}");
+            throw;
+        }
+    }
+
 
     static void Grant(string target, params string[] args)
     {

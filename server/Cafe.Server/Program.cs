@@ -164,6 +164,7 @@ app.MapPost("/pc/login", (HttpContext c, LoginBody b) => { var pc = Pc(c); var s
 app.MapPost("/pc/selflock", (HttpContext c) => cafe.PcSelfLock(Pc(c)));
 app.MapPost("/pc/setup-mode", (HttpContext c, bool on) => { cafe.PcSetupMode(Pc(c), on); return Results.Ok(); });
 app.MapPost("/pc/wifi-alert", (HttpContext c, WifiAlertBody b) => { cafe.PcWifiAlert(Pc(c), b.Network, b.Router); return Results.Ok(); });
+app.MapPost("/pc/tamper", (HttpContext c, TamperBody b) => { var pc = Pc(c); cafe.PcTamper(pc, b.What, b.Locked); Log($"{pc} lock screen report: {b.What}, locked {b.Locked}"); return Results.Ok(); });
 app.MapPost("/pc/pen-drive", (HttpContext c, PenDriveBody b) => cafe.PcPenDrive(Pc(c), b.Device, b.Name));
 app.MapPost("/pc/pen-drive/{id:long}/scan", (HttpContext c, long id, PenDriveScanBody b) => { cafe.PcPenDriveScan(Pc(c), id, b.Threats); return Results.Ok(); });
 app.MapGet("/staff/pen-drives", (HttpContext c) => cafe.PenDriveRequests(Staff(c)));
@@ -449,6 +450,7 @@ record PcBody(string Pc, string? Message);
 record TimeLockBody(bool Enabled);
 record PenDriveBody(string Device, string Name);
 record WifiAlertBody(string Network, string Router);
+record TamperBody(string What, bool Locked);
 record PenDriveScanBody(bool Threats);
 record PenDriveAccessBody(string Access);
 record OfflineUnlockLimitBody(int Minutes);

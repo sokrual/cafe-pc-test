@@ -227,6 +227,9 @@ try {
     $pinCopied = (Test-Path "$counterApp\server.pin") -and (Get-Content "$counterApp\server.pin" -Raw).Trim() -eq (Get-Content "$env:ProgramData\Cafe\server.pin" -Raw).Trim()
     Check "A.C1" "INSTALL-ADMIN puts the counter window on the counter PC: the program, the counter's fingerprint beside it (readable without admin), a desktop icon and a start with Windows" ((Test-Path "$counterApp\Cafe.Counter.exe") -and $pinCopied -and $iconsOk -eq 2) "icons $iconsOk of 2; fingerprint copied $pinCopied"
     $counterLog = Join-Path $env:TEMP "counter-window-log.txt"; Remove-Item $counterLog -ErrorAction SilentlyContinue
+    # the window INSTALL-ADMIN opened at its end may still run; a second one only shows the first and ends, writing no log here
+    # (ARM run 45802393977: A.C2's log was empty while the installer's window, from explorer.exe, was running)
+    Get-Process Cafe.Counter -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 1
     $counterRun = try { Start-Process "$counterApp\Cafe.Counter.exe" -ArgumentList "--log `"$counterLog`"" -PassThru } catch { $null }   # as installed, against the installed counter
     $counterOpened = $counterRun -and (WaitFor 60 { (Test-Path $counterLog) -and (Get-Content $counterLog -Raw) -match "counter page opened" })
     if ($counterRun) { Stop-Process -Id $counterRun.Id -Force -ErrorAction SilentlyContinue }
@@ -1292,7 +1295,7 @@ try {
         } catch { $processAccessDetail = $_.Exception.Message }
         finally { Remove-Item -LiteralPath $processTestDir -Recurse -Force -ErrorAction SilentlyContinue }
     }
-    Check "F14.1" "Customer program from a Program Files test folder cannot open Cafe.Agent for VM_WRITE, CREATE_THREAD, DUP_HANDLE, WRITE_DAC, TERMINATE or VM_READ" $processAccessDenied $processAccessDetail
+    Check "F14.1" "Customer program from a Program Files test folder cannot open Cafe.Agent for VM_WRITE, CREATE_THREAD, DUP_HANDLE, WRITE_DAC, TERMINATE or VM_READ, nor any of its threads to end, freeze or redirect them" $processAccessDenied $processAccessDetail
     if ($customerAgentProbe -and -not $customerAgentProbe.HasExited) { Stop-Process -Id $customerAgentProbe.Id -Force -ErrorAction SilentlyContinue }
     # An unreachable counter server must also leave the request pending; reconnecting lets the next loop retry.
     Set-Content "$data\wipe\request" ""

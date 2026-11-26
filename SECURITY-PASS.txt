@@ -44,11 +44,14 @@ F14 MED    Pipe check is path-based                                Fixed for Cus
     DACL, Agent Program.cs:11-49; PR E1). A program running as admin or SYSTEM is out of scope.
     Update 24 Nov (E3b security pass): the DACL let other Customer programs end the lock screen program and read its
     memory, where the PIN was found after a login (0x00121411). They now get 0x00121400: no terminate, no read memory
-    (lockdown F14.1 also asks for TERMINATE and VM_READ). Still open: a Customer program can end it with a "quit"
-    message or by ending its threads, and can freeze its threads (STATUS.txt, 24 Nov; the answer comes with B5.3).
+    (lockdown F14.1 also asks for TERMINATE and VM_READ). Update 26 Nov (B5.3 part 3): its threads refuse other
+    Customer programs too (end, freeze and "set context" were open on every thread; F14.1 now asks for them); its
+    loops skip "quit"; the pipe accepts the lock screen's heartbeat only from the program the watchdog runs (process
+    number, not path), and the watchdog acts on silence, a stuck thread, repeated ends and a lost screen (STATUS.txt,
+    26 Nov). The path check for the other pipe requests is unchanged.
 F15 MED    No power-cut test of the profile reset                  Open
 F16 LOW    Review queue has no alert                               Reduced (owner alerts on the counter screen,
-    Cafe.cs:804)
+    Cafe.cs:804; 26 Nov: lock screen reports on the review list are spoken by the counter window)
 F17 LOW    Counter logins have no idle expiry                      Reduced ("end all logins"; login kept in the browser
     tab only, sessionStorage; Windows idle lock on the counter PC)
 
