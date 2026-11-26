@@ -13,8 +13,9 @@ WHICH PROGRAM GOES WHERE (the installers put each one in place; you never copy t
                                   pen drives, updates from the counter. Nothing to open.
   Gaming PCs   Cafe.Agent.exe     The lock screen and the timer customers see.
 The alerts (voice and box): a pen drive waiting for an answer, a gaming PC that stops reaching the counter during
-a visit, and Microsoft Defender finding a threat on a pen drive. Offline unlocks and Wi-Fi alerts stay on the
-counter window only. Alerts come while someone is signed in to the counter window.
+a visit, Microsoft Defender finding a threat on a pen drive, and a locked gaming PC whose lock screen was tampered
+with (its programs are then closed). Offline unlocks, Wi-Fi alerts and a lock screen restarted during a visit stay
+on the counter window only. Alerts come while someone is signed in to the counter window.
 If something goes wrong, send a photo of the screen and the file install-log.txt
 (it is next to INSTALL-PC or INSTALL-ADMIN) on Discord to the person who gave you this software.
 
