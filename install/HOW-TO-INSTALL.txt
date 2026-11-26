@@ -1,6 +1,20 @@
 Gaming Cafe SOFTWARE - HOW TO INSTALL
 
-You need: the admin password of each PC. Do the counter PC first.
+You need: Windows 11 Pro on every PC, and the admin password of each PC. Do the counter PC first.
+
+WHICH PROGRAM GOES WHERE (the installers put each one in place; you never copy them by hand)
+  Counter PC   Cafe.Server.exe    The counter itself. Runs in the background and starts with Windows. It keeps the
+                                  money, the visits, the customers and the PCs. Nothing to open.
+  Counter PC   Cafe.Counter.exe   The counter window: the "Gaming Cafe counter" icon on the desktop. Staff and the
+                                  owner work in it. It also speaks alerts and shows them in a small box at the bottom
+                                  right, even over a game. Closing the window keeps it in the tray (next to the clock),
+                                  so alerts keep coming; "Exit" in the tray menu ends it. It starts with Windows.
+  Gaming PCs   Cafe.Watchdog.exe  Runs in the background and starts with Windows: clean-up after each customer,
+                                  pen drives, updates from the counter. Nothing to open.
+  Gaming PCs   Cafe.Agent.exe     The lock screen and the timer customers see.
+The alerts (voice and box): a pen drive waiting for an answer, a gaming PC that stops reaching the counter during
+a visit, and Microsoft Defender finding a threat on a pen drive. Offline unlocks and Wi-Fi alerts stay on the
+counter window only. Alerts come while someone is signed in to the counter window.
 If something goes wrong, send a photo of the screen and the file install-log.txt
 (it is next to INSTALL-PC or INSTALL-ADMIN) on Discord to the person who gave you this software.
 
@@ -13,8 +27,8 @@ The counter PC needs no fixed network address: if the router gives it a new one,
    (PC1.token, PC2.token ...) and the counter PC's address into this folder.
    It also sets up the internet filter by itself and keeps the list of websites used for 180 days
    (the law asks a cyber cafe for 180 days).
-2. The counter screen (https://127.0.0.1:5443/staff/) opens in the browser by itself. The browser warns about the certificate the first
-   time: click "Advanced", then "Continue". Make your owner account (name, phone number, a 6 to 12 digit PIN).
+2. The counter window opens by itself (later: the "Gaming Cafe counter" icon on the desktop). It checks by itself that it
+   talks to this counter, so there is no certificate warning. Make your owner account (name, phone number, a 6 to 12 digit PIN).
    This works only on the counter PC itself. Then sign in.
    A gaming PC added later: open "Owner security", type its name under "PC keys" and click
    "Add PC and show its key". Move the saved file (for example PC9.token) into this folder.

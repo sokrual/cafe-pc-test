@@ -8,13 +8,17 @@ AdGuard Home v0.107.79 (the internet filter on the counter PC)
   folder, INSTALL-ADMIN uses it; otherwise it downloads the same file from AdGuard's GitHub release page.
   Either way it checks the file's SHA-256 fingerprint before installing it.
 
-SHIPPED INSIDE THE CAFE PROGRAMS (Cafe.Server.exe, Cafe.Watchdog.exe, agent-runtime)
+SHIPPED INSIDE THE CAFE PROGRAMS (Cafe.Server.exe, Cafe.Counter.exe, Cafe.Watchdog.exe, agent-runtime)
 The licence texts are in the folder "licences" next to this file.
 
 .NET 10 runtime and these Microsoft packages: Microsoft.Data.Sqlite.Core, Microsoft.Extensions.Hosting.WindowsServices,
-System.Security.Cryptography.ProtectedData, System.ServiceProcess.ServiceController, System.Diagnostics.EventLog
+System.Security.Cryptography.ProtectedData, System.ServiceProcess.ServiceController, System.Diagnostics.EventLog, System.Speech
   Licence: MIT. Copyright (c) .NET Foundation and Contributors. See licences/DOTNET-MIT-LICENSE.txt.
   The .NET runtime's own third-party notices: licences/DOTNET-THIRD-PARTY-NOTICES.txt.
+
+Microsoft.Web.WebView2 1.0.4370.26 (in Cafe.Counter.exe: shows the counter screen in its own window)
+  Licence: BSD 3-Clause style. Copyright (C) Microsoft Corporation. See licences/WEBVIEW2-LICENSE.txt and its notices,
+  licences/WEBVIEW2-NOTICE.txt. Used unchanged. The WebView2 Runtime itself is part of Windows 11 and is not shipped here.
 
 SQLite3 Multiple Ciphers (packages SQLite3MC.PCLRaw.bundle, .lib and .provider 2.6.1): the encrypted database
   Licence: MIT. Copyright (c) 2023-2026 Ulrich Telle, et al.

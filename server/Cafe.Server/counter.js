@@ -200,8 +200,9 @@ async function stop(r) {
   } catch (e) { say(e.message, false); }
 }
 
-function signOut() { sessionStorage.removeItem("cafeToken"); token = null; clearInterval(poll); $("app").hidden = true; $("login").hidden = false; }
-function start() { $("login").hidden = true; $("app").hidden = false; loadRate(); refresh(); poll = setInterval(refresh, 3000); }
+const tellWindow = () => window.chrome?.webview?.postMessage({ token }); // the counter program's alerts use this same login
+function signOut() { sessionStorage.removeItem("cafeToken"); token = null; tellWindow(); clearInterval(poll); $("app").hidden = true; $("login").hidden = false; }
+function start() { tellWindow(); $("login").hidden = true; $("app").hidden = false; loadRate(); refresh(); poll = setInterval(refresh, 3000); }
 
 $("login").onsubmit = async e => {
   e.preventDefault();
