@@ -686,15 +686,7 @@ public sealed class WatchdogTests : IDisposable
     {
         try
         {
-            File.WriteAllText(Path.Combine(Path.GetDirectoryName(_exe)!, "watchdog.args"), $"\"{Rig.Env("CAFE_AGENT_EXE")}\" {_rig.AgentArgs} --pipe-sid {WindowsIdentity.GetCurrent().User!.Value}");
-            foreach (var dir in new[] { Path.GetDirectoryName(_exe)!, Path.GetDirectoryName(Rig.Env("CAFE_AGENT_EXE"))! })
-            {
-                Grant(dir, "/inheritance:r", "/grant:r", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX");
-                Grant(dir, "/remove:g", "*S-1-5-11", "*S-1-1-0", "*S-1-5-4");
-                Grant(Path.Combine(dir, "*"), "/reset", "/T");
-            }
-            Assert.Equal(0, Sc($"create CafeWatchdog binPath= \"{_exe}\" start= demand"));
-            Assert.Equal(0, Sc("start CafeWatchdog"));
+            StartWatchdog();
             string Mine(int pid) => $"CafeLock-{pid}-";
             var covered = new List<double>();
             var lines = new List<string>();
@@ -729,6 +721,77 @@ public sealed class WatchdogTests : IDisposable
             throw;
         }
     }
+
+    // the watchdog as installed: a service running the PC program from folders only admins can change
+    void StartWatchdog()
+    {
+        File.WriteAllText(Path.Combine(Path.GetDirectoryName(_exe)!, "watchdog.args"), $"\"{Rig.Env("CAFE_AGENT_EXE")}\" {_rig.AgentArgs} --pipe-sid {WindowsIdentity.GetCurrent().User!.Value}");
+        foreach (var dir in new[] { Path.GetDirectoryName(_exe)!, Path.GetDirectoryName(Rig.Env("CAFE_AGENT_EXE"))! })
+        {
+            Grant(dir, "/inheritance:r", "/grant:r", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX");
+            Grant(dir, "/remove:g", "*S-1-5-11", "*S-1-1-0", "*S-1-5-4");
+            Grant(Path.Combine(dir, "*"), "/reset", "/T");
+        }
+        Assert.Equal(0, Sc($"create CafeWatchdog binPath= \"{_exe}\" start= demand"));
+        Assert.Equal(0, Sc("start CafeWatchdog"));
+    }
+
+    // Any program of the same account can post "quit" to the PC program's threads (measured 32 and 38); WinForms then closes
+    // that thread's windows at once (read in its source). Round 1 posts it to every thread but the main one (the lock
+    // screen's and the key blocker's loops are there), round 2 to the main thread. Each round: within 3 s a lock screen
+    // desktop has the screen again, the normal desktop had it for under 0.5 s, and Ctrl+Shift+Esc opens no Task Manager.
+    [Fact]
+    public void B53_a_quit_message_to_the_PC_programs_threads_leaves_the_PC_locked()
+    {
+        try
+        {
+            StartWatchdog();
+            var failures = new List<string>();
+            var lines = new List<string>();
+            foreach (var mainOnly in new[] { false, true })
+            {
+                var round = mainOnly ? "the main thread" : "every thread but the main one";
+                Process? agent = null;
+                Rig.WaitFor(() => (agent = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault(p => Rig.InputDesktop().StartsWith($"CafeLock-{p.Id}-"))) is not null, 20,
+                    $"{round}: no PC program's lock screen desktop has the screen", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+                Thread.Sleep(2000);
+                Rig.ToNormalDesktop();
+                agent!.Refresh();
+                var main = (uint)agent.Threads.Cast<ProcessThread>().MinBy(t => t.StartTime)!.Id; // the first thread made is Main's
+                var targets = agent.Threads.Cast<ProcessThread>().Select(t => (uint)t.Id).Where(id => (id == main) == mainOnly).ToList();
+                var posted = targets.Count(id => PostThreadMessage(id, 0x0012 /*WM_QUIT*/, IntPtr.Zero, IntPtr.Zero));
+                var watch = Stopwatch.StartNew();
+                var open = 0.0;
+                for (var last = 0.0; watch.Elapsed < TimeSpan.FromSeconds(3); Thread.Sleep(10))
+                {
+                    var now = watch.Elapsed.TotalSeconds;
+                    if (Rig.InputDesktop() == "Default") open += now - last;
+                    last = now;
+                }
+                var locking = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault(p => Rig.InputDesktop().StartsWith($"CafeLock-{p.Id}-"));
+                var running = Process.GetProcesses().Select(p => p.Id).ToHashSet();
+                Rig.FollowScreen();
+                Keyboard.TypeSimultaneously(VirtualKeyShort.CONTROL, VirtualKeyShort.SHIFT, VirtualKeyShort.ESCAPE);
+                Thread.Sleep(2500);
+                var taskManager = Process.GetProcesses().Where(p => !running.Contains(p.Id) && p.ProcessName == "Taskmgr").ToList();
+                taskManager.ForEach(Rig.Kill);
+                var who = locking is null ? "no lock screen has the screen" : locking.Id == agent.Id ? "the same program still locks the PC" : $"a new program (pid {locking.Id}) locks the PC";
+                lines.Add($"{round}: quit posted to {posted} of {targets.Count} threads; the normal desktop had the screen for {open:F2} s; {who}; Task Manager {(taskManager.Count > 0 ? "OPENED" : "did not open")}");
+                if (locking is null || open >= 0.5 || taskManager.Count > 0) failures.Add(lines[^1]);
+            }
+            TestContext.Current.TestOutputHelper?.WriteLine("QUIT " + string.Join("\nQUIT ", lines));
+            Assert.True(failures.Count == 0, string.Join("\n", failures));
+        }
+        catch
+        {
+            Rig.Screenshot();
+            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "logs");
+            if (Directory.Exists(logs)) foreach (var f in Directory.GetFiles(logs)) Console.WriteLine($"--- {f}\n{File.ReadAllText(f)}");
+            throw;
+        }
+    }
+
+    [DllImport("user32.dll", SetLastError = true)] static extern bool PostThreadMessage(uint thread, uint message, IntPtr w, IntPtr l);
 
     static void Grant(string target, params string[] args)
     {
