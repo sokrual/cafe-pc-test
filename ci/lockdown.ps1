@@ -1525,6 +1525,11 @@ try {
     Remove-Item "$updateWork\ci-no-restart.flag" -Force -ErrorAction SilentlyContinue
 
     # ===== I. uninstall =====
+    # This test machine is the counter PC too. INSTALL-ADMIN's update run after A.C2 opens a counter window again (ARM run
+    # 45847883890: started by explorer.exe 2 s after that run ended), and it kept the GamingCafe folder in use at B3.I1.
+    # A gaming PC has no counter window, so it goes here, with its start-with-Windows icon.
+    Remove-Item "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\Gaming Cafe counter.lnk" -Force -ErrorAction SilentlyContinue
+    Get-Process Cafe.Counter -ErrorAction SilentlyContinue | Stop-Process -Force
     Remove-Item "$app\test-wipe-mode.flag" -Force -ErrorAction SilentlyContinue
     Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
     Copy-Item "$data\logs\*" $wd -ErrorAction SilentlyContinue   # the watchdog's log goes with the uninstall; keep it for the artifacts
