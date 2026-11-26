@@ -449,6 +449,13 @@ static class PcProxy
     static extern bool CryptUnprotectData(ref DataBlob input, out IntPtr description, IntPtr entropy, IntPtr reserved,
         IntPtr prompt, uint flags, out DataBlob output);
 
+    public static HttpResponseMessage SendServerJson(string path, object body)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = System.Net.Http.Json.JsonContent.Create(body) };
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3)); // the watchdog's loop must not wait long
+        return (_http ?? throw new InvalidOperationException("PC proxy is not initialized")).Send(request, timeout.Token);
+    }
+
     public static HttpResponseMessage SendServerRequest(HttpMethod method, string path)
     {
         using var request = new HttpRequestMessage(method, path);
@@ -503,7 +510,7 @@ static class PcProxy
         {
             try
             {
-                if (!IsLockScreenClient(pipe, out var clientPath))
+                if (!IsLockScreenClient(pipe, out var clientPath, out var clientPid))
                 {
                     RefuseOnce($"refused named-pipe client process: {clientPath ?? "unavailable"}");
                     return;
@@ -513,6 +520,14 @@ static class PcProxy
                 if (line is null) return;
                 var request = JsonSerializer.Deserialize<Request>(line);
                 using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true) { AutoFlush = true };
+                if (request is { Method: "POST", Path: "/local/alive", Body: not null })
+                {
+                    // only the lock screen program this watchdog runs: a Customer can start a second copy of the same file
+                    var ours = clientPid == WatchedAgent;
+                    if (ours) Tamper.Alive(JsonSerializer.Deserialize<AliveReport>(request.Body, new JsonSerializerOptions(JsonSerializerDefaults.Web))?.Oldest ?? 0);
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new Response(ours ? 200 : 403, "{}"))).WaitAsync(TimeSpan.FromSeconds(2));
+                    return;
+                }
                 if (request is not null && request.Method == "POST" && request.Path == "/local/queue-action" && request.Body is not null)
                 {
                     var action = JsonSerializer.Deserialize<ActionRequest>(request.Body, new JsonSerializerOptions(JsonSerializerDefaults.Web))
@@ -569,7 +584,10 @@ static class PcProxy
                 var content = await response.Content.ReadAsStringAsync(stop);
                 if (response.IsSuccessStatusCode && ((request.Method == "GET" && request.Path == "/pc/state")
                     || (request.Method == "POST" && request.Path == "/pc/login")))
+                {
                     RememberTimeLockSetting(content);
+                    Tamper.CounterSays(content);
+                }
                 if (request.Method == "GET" && request.Path == "/pc/state" && DateTime.UtcNow - _lastOfflineRefresh > TimeSpan.FromSeconds(5))
                 {
                     _lastOfflineRefresh = DateTime.UtcNow;
@@ -611,10 +629,13 @@ static class PcProxy
         throw new InvalidDataException("pipe request exceeds 64 KB");
     }
 
-    static bool IsLockScreenClient(NamedPipeServerStream pipe, out string? clientPath)
+    public static volatile uint WatchedAgent; // set by the watchdog's loop
+    sealed record AliveReport(long Oldest);
+
+    static bool IsLockScreenClient(NamedPipeServerStream pipe, out string? clientPath, out uint pid)
     {
         clientPath = null;
-        if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out var pid)) return false;
+        if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out pid)) return false;
         var process = OpenProcess(0x1000 /*PROCESS_QUERY_LIMITED_INFORMATION*/, false, pid);
         if (process == IntPtr.Zero) return false;
         try

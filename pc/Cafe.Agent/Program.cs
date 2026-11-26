@@ -163,6 +163,7 @@ sealed class Agent : ApplicationContext
         var poll = new System.Windows.Forms.Timer { Interval = 2000 };
         poll.Tick += async (_, _) =>
         {
+            Alive.Tick();
             var pending = WipePending();
             _lock.SetBusy(pending);
             if (pending) Apply(_state with { Locked = true, Message = WipeMessage() });
@@ -474,6 +475,7 @@ sealed class LockScreen : Form
         var keepFront = new System.Windows.Forms.Timer { Interval = 500 };
         keepFront.Tick += (_, _) =>
         {
+            Alive.Send();
             if (!Visible) { LockDesktop.GiveBack(); return; }
             LockDesktop.Keep();
             if (WindowState == FormWindowState.Minimized) // Show desktop (Win+D) minimises windows
@@ -535,6 +537,34 @@ sealed class LockScreen : Form
 // The lock screen's own Windows desktop, like the Windows sign-in screen. Games in exclusive fullscreen, graphics-card
 // overlays and Windows' own dialogs stay on the normal desktop, so they cannot sit above the lock screen.
 // If Windows refuses any step, the lock screen stays a window on the normal desktop, as before, and the log says why.
+// The watchdog ends a lock screen program that stops answering (B5.3 part 3). Each thread that must keep running (the main
+// one, the lock screen's, each key blocker's) notes when it last ran; the lock screen's thread sends the oldest note to the
+// watchdog once a second. Under full load the whole PC stalled for up to 9.1 s (measured), every thread at once, so after
+// a late turn of its own the sender reports no stuck thread.
+static class Alive
+{
+    static readonly Dictionary<int, long> Last = [];
+    static readonly WatchdogPipeClient Pipe = new();
+    static long _sent;
+    static int _sending;
+    public static void Tick() { lock (Last) Last[Environment.CurrentManagedThreadId] = Environment.TickCount64; }
+    public static void Send()
+    {
+        Tick();
+        var now = Environment.TickCount64;
+        if (now - _sent < 1000 || Interlocked.Exchange(ref _sending, 1) == 1) return;
+        long oldest;
+        lock (Last) oldest = now - _sent > 2000 ? 0 : now - Last.Values.Min();
+        _sent = now;
+        _ = Task.Run(async () =>
+        {
+            try { using var _ = await Pipe.PostAsJsonAsync("/local/alive", new { oldest }); }
+            catch (HttpRequestException) { } // the watchdog's silence rule covers it
+            finally { _sending = 0; }
+        });
+    }
+}
+
 // Application.Run ends at a "quit" message, which any program of the same account can post, and WinForms then closes the
 // thread's windows (read in its source). This loop does for these threads what Application.Run does, and skips "quit".
 static class MessageLoop
@@ -769,7 +799,11 @@ static class KeyBlocker
             _proc ??= Hook; // one for every key blocker thread: Windows keeps calling it, so it must never be collected
             ok = SetWindowsHookEx(13 /*WH_KEYBOARD_LL*/, _proc, GetModuleHandle(null), 0) != IntPtr.Zero;
             ready.Set();
-            if (ok) MessageLoop.RunForever(); // Windows calls the hook through this thread's message loop
+            if (!ok) return;
+            var alive = new System.Windows.Forms.Timer { Interval = 500 };
+            alive.Tick += (_, _) => Alive.Tick();
+            alive.Start();
+            MessageLoop.RunForever(); // Windows calls the hook through this thread's message loop
         }) { IsBackground = true, Name = "key blocker" };
         thread.Start();
         ready.Wait();

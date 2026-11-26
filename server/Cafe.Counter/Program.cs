@@ -141,11 +141,13 @@ sealed class CounterWindow : Form
             foreach (var r in await Get("/staff/counter"))
                 if (!r.GetProperty("online").GetBoolean() && r.GetProperty("session").ValueKind == JsonValueKind.Number)
                     now[$"away {r.GetProperty("pc").GetString()} {r.GetProperty("session")}"] = $"{r.GetProperty("pc").GetString()} stopped reaching the counter during a visit.";
-            foreach (var x in await Get("/staff/review"))
-                if (x.GetString() is string s && s.IndexOf(": Microsoft Defender found a threat", StringComparison.Ordinal) is var at and > 0)
+            foreach (var s in (await Get("/staff/review")).Select(x => x.GetString() ?? ""))
+                if (s.IndexOf(": Microsoft Defender found a threat", StringComparison.Ordinal) is var at and > 0)
                     now["threat " + s] = s[(s.IndexOf(' ') + 1)..at] + ": Microsoft Defender found a threat on a pen drive.";
-            // at a sign-in, threats already on the owner's review list are old news; waiting pen drives and missing PCs are not
-            if (_fresh) foreach (var k in now.Keys.Where(k => k.StartsWith("threat ", StringComparison.Ordinal))) _told.Add(k);
+                else if (s.Contains("lock screen", StringComparison.Ordinal)) // the watchdog's report on a locked PC
+                    now["tamper " + s] = s[(s.IndexOf(' ') + 1)..] + ".";
+            // at a sign-in, items already on the owner's review list are old news; waiting pen drives and missing PCs are not
+            if (_fresh) foreach (var k in now.Keys.Where(k => k.StartsWith("threat ", StringComparison.Ordinal) || k.StartsWith("tamper ", StringComparison.Ordinal))) _told.Add(k);
             _fresh = false;
             foreach (var (k, text) in now) if (_told.Add(k)) Alert(text);
             _told.IntersectWith(now.Keys); // a thing that ends and happens again is told again

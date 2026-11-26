@@ -798,6 +798,83 @@ public sealed class WatchdogTests : IDisposable
 
     [DllImport("user32.dll", SetLastError = true)] static extern bool PostThreadMessage(uint thread, uint message, IntPtr w, IntPtr l);
 
+    // B5.3 part 3: a lock screen program that stops answering (here the test pauses it as a whole) is ended after 15 s and a
+    // new one locks the PC. Locked: the counter's review list gets it, which the counter window speaks. During a visit: only
+    // the owner's alerts on the counter screen.
+    [Fact]
+    public async Task B53_a_lock_screen_program_that_stops_answering_is_replaced_after_15_s_and_the_counter_is_told()
+    {
+        try
+        {
+            StartWatchdog();
+            var staff = await _rig.StaffToken();
+            var owner = await _rig.OwnerToken();
+            var lines = new List<string>();
+            foreach (var visit in new[] { false, true })
+            {
+                if (visit) await _rig.Post("/staff/sessions", new { pc = "PC1", phone = "9000000003", mode = "postpaid" }, staff);
+                Process? agent = null;
+                Rig.WaitFor(() => (agent = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault()) is not null
+                    && (visit ? Rig.InputDesktop() == "Default" : Rig.InputDesktop().StartsWith($"CafeLock-{agent.Id}-")), 30,
+                    visit ? "the PC did not unlock for the visit" : "no PC program's lock screen desktop has the screen", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+                var age = DateTime.Now - agent!.StartTime;
+                if (age < TimeSpan.FromSeconds(16)) Thread.Sleep(TimeSpan.FromSeconds(16) - age); // past the watchdog's start-up allowance
+                Rig.ToNormalDesktop();
+                Rig.Pause(agent, true);
+                var watch = Stopwatch.StartNew();
+                Process? next = null;
+                Rig.WaitFor(() => agent.HasExited && (next = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault(p => p.Id != agent.Id)) is not null, 40,
+                    $"{(visit ? "during a visit" : "locked")}: the paused program was not replaced within 40 s");
+                lines.Add($"{(visit ? "during a visit" : "locked")}: replaced after {watch.Elapsed.TotalSeconds:F1} s");
+                Assert.InRange(watch.Elapsed.TotalSeconds, 14, 25);
+            }
+            TestContext.Current.TestOutputHelper?.WriteLine("STUCK " + string.Join("\nSTUCK ", lines));
+            Rig.WaitFor(() => _rig.Review(staff).Any(t => t.EndsWith(" PC1: the lock screen stopped answering; it was restarted and the Customer's programs were closed")), 20,
+                "the counter's review list did not get the locked PC's report", () => string.Join("\n", _rig.Review(staff)));
+            List<string> Alerts() => _rig.Raw(HttpMethod.Get, "/staff/alerts", owner).Content.ReadFromJsonAsync<List<string>>().Result!;
+            Rig.WaitFor(() => Alerts().Any(t => t.EndsWith(" PC1: the lock screen stopped answering during a visit and was restarted")), 20,
+                "the owner's alerts did not get the restart during the visit", () => string.Join("\n", Alerts()));
+            Assert.Single(_rig.Review(staff), t => t.Contains("lock screen")); // the restart during the visit has no voice
+        }
+        catch
+        {
+            Rig.Screenshot();
+            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "logs");
+            if (Directory.Exists(logs)) foreach (var f in Directory.GetFiles(logs)) Console.WriteLine($"--- {f}\n{File.ReadAllText(f)}");
+            throw;
+        }
+    }
+
+    // B5.3 part 3: ended 3 times within a minute while locked, by someone other than the watchdog, a clean-up or setup mode.
+    [Fact]
+    public async Task B53_a_lock_screen_program_ended_3_times_within_a_minute_while_locked_is_reported_to_the_counter()
+    {
+        try
+        {
+            StartWatchdog();
+            var staff = await _rig.StaffToken();
+            bool Told() => _rig.Review(staff).Any(t => t.EndsWith(" PC1: the lock screen was ended 3 times within a minute; the Customer's programs were closed"));
+            for (var end = 1; end <= 3; end++)
+            {
+                Process? agent = null;
+                Rig.WaitFor(() => (agent = Process.GetProcessesByName("Cafe.Agent").FirstOrDefault(p => Rig.InputDesktop().StartsWith($"CafeLock-{p.Id}-"))) is not null, 20,
+                    $"end {end}: no PC program's lock screen desktop has the screen", () => $"the screen shows desktop '{Rig.InputDesktop()}'");
+                Thread.Sleep(3000); // it has polled the counter, so the watchdog knows the PC is locked
+                if (end == 3) Assert.False(Told(), "reported after 2 ends");
+                Rig.Kill(agent);
+            }
+            Rig.WaitFor(Told, 20, "the counter's review list did not get the report", () => string.Join("\n", _rig.Review(staff)));
+        }
+        catch
+        {
+            Rig.Screenshot();
+            var logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GamingCafe", "logs");
+            if (Directory.Exists(logs)) foreach (var f in Directory.GetFiles(logs)) Console.WriteLine($"--- {f}\n{File.ReadAllText(f)}");
+            throw;
+        }
+    }
+
+
     static void Grant(string target, params string[] args)
     {
         var all = args.Length == 1 ? new[] { "/grant", args[0] } : args;

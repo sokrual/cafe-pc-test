@@ -148,6 +148,11 @@ static class Watchdog
         HashSet<(int, DateTime)> trusted = [];
         string? cleanupReason = null;
         var nextCleanup = DateTime.MinValue;
+        int Close() // the Customer's programs, after the lock screen was tampered with
+        {
+            try { return sid is null ? 0 : Wipe.CloseCustomerPrograms(sid, path, trusted); }
+            catch (Exception e) { Log($"could not close the Customer's programs: {e.Message}"); return 0; }
+        }
         while (!stop.IsCancellationRequested)
         {
             Process? agent = null;
@@ -186,6 +191,7 @@ static class Watchdog
                                 try
                                 {
                                     var testMode = File.Exists(Path.Combine(AppContext.BaseDirectory, "test-wipe-mode.flag"));
+                                    Tamper.CleanupRan();
                                     var report = Wipe.Run(sid, path, trusted, testMode);
                                     File.Delete(Wipe.Request); // only a completed reset releases the lock screen
                                     Log($"cleanup complete: {report}");
@@ -227,6 +233,8 @@ static class Watchdog
                     Log(pid is not null ? $"started {exe} in session {s} (pid {pid})" : $"could not start {exe} in session {s}: error {Marshal.GetLastWin32Error()}");
                     if (pid is int started) agent = Process.GetProcessById(started);
                 }
+                PcProxy.WatchedAgent = (uint)(agent?.Id ?? 0);
+                Tamper.Look(agent, Close, Log);
             }
             catch (Exception e) { Log($"ERROR {e.Message}"); } // the loop must never die
             // Wake when the lock screen program ends, not up to a second later: that wait was most of the time the screen
@@ -238,7 +246,9 @@ static class Watchdog
                     if (agent is not null)
                     {
                         var born = agent.StartTime;
-                        pause = agent.WaitForExit(1000) ? 1000 - (DateTime.Now - born).TotalMilliseconds : 0;
+                        var ended = agent.WaitForExit(1000);
+                        pause = ended ? 1000 - (DateTime.Now - born).TotalMilliseconds : 0;
+                        if (ended) Tamper.Ended(agent.Id, File.Exists(setup), Close, Log);
                     }
             }
             catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { } // it ended before it could be looked at
