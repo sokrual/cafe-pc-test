@@ -30,14 +30,15 @@ static class Tamper
     }
     static bool Locked => _locked != 0; // nothing heard from the counter yet: treat the PC as locked
 
-    /// Once per turn of the watchdog's loop: a second apart, unless the whole PC stalled.
+    /// Once per turn of the watchdog's loop: a second apart, unless the whole PC stalled. agent: null while there is none
+    /// running, or while the pipe it reports through is down.
     public static void Look(Process? agent, Func<int> closeCustomerPrograms, Action<string> log)
     {
         var now = Environment.TickCount64;
         if (now - _lastLook > 2000) _stallAt = now; // the watchdog stalled too, so the whole PC did (measured): no one to blame
         _lastLook = now;
         SendUnsent(log);
-        if (agent is null) return;
+        if (agent is null) { Interlocked.Exchange(ref _aliveAt, now); return; } // silence counts only while there is a program that can report
         try { if ((DateTime.Now - agent.StartTime).TotalMilliseconds < Limit) return; } // still starting
         catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { return; }
         var silent = now - Math.Max(Interlocked.Read(ref _aliveAt), _stallAt);

@@ -722,10 +722,21 @@ public sealed class WatchdogTests : IDisposable
         }
     }
 
-    // the watchdog as installed: a service running the PC program from folders only admins can change
+    // the watchdog as installed: a service running the PC program from folders only admins can change. Its pipe to the PC
+    // program needs the PC key protected for this machine, as INSTALL-PC keeps it; the rig's own key file is plain text.
     void StartWatchdog()
     {
-        File.WriteAllText(Path.Combine(Path.GetDirectoryName(_exe)!, "watchdog.args"), $"\"{Rig.Env("CAFE_AGENT_EXE")}\" {_rig.AgentArgs} --pipe-sid {WindowsIdentity.GetCurrent().User!.Value}");
+        var key = File.ReadAllBytes(_rig.TokenFile);
+        var input = new Blob { Length = key.Length, Data = Marshal.AllocHGlobal(key.Length) };
+        Marshal.Copy(key, 0, input.Data, key.Length);
+        Assert.True(CryptProtectData(ref input, null, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0x4 /*LOCAL_MACHINE*/, out var output), "the PC key could not be protected");
+        var sealedKey = new byte[output.Length];
+        Marshal.Copy(output.Data, sealedKey, 0, sealedKey.Length);
+        Marshal.FreeHGlobal(input.Data);
+        var keyFile = _rig.TokenFile + ".machine";
+        File.WriteAllBytes(keyFile, sealedKey);
+        File.WriteAllText(Path.Combine(Path.GetDirectoryName(_exe)!, "watchdog.args"),
+            $"\"{Rig.Env("CAFE_AGENT_EXE")}\" {_rig.AgentArgs.Replace(_rig.TokenFile, keyFile)} --pipe-sid {WindowsIdentity.GetCurrent().User!.Value}");
         foreach (var dir in new[] { Path.GetDirectoryName(_exe)!, Path.GetDirectoryName(Rig.Env("CAFE_AGENT_EXE"))! })
         {
             Grant(dir, "/inheritance:r", "/grant:r", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX");
@@ -797,6 +808,9 @@ public sealed class WatchdogTests : IDisposable
     }
 
     [DllImport("user32.dll", SetLastError = true)] static extern bool PostThreadMessage(uint thread, uint message, IntPtr w, IntPtr l);
+    [StructLayout(LayoutKind.Sequential)] struct Blob { public int Length; public IntPtr Data; }
+    [DllImport("crypt32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool CryptProtectData(ref Blob input, string? description, IntPtr entropy, IntPtr reserved, IntPtr prompt, int flags, out Blob output);
 
     // B5.3 part 3: a lock screen program that stops answering (here the test pauses it as a whole) is ended after 15 s and a
     // new one locks the PC. Locked: the counter's review list gets it, which the counter window speaks. During a visit: only

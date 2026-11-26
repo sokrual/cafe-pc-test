@@ -234,7 +234,7 @@ static class Watchdog
                     if (pid is int started) agent = Process.GetProcessById(started);
                 }
                 PcProxy.WatchedAgent = (uint)(agent?.Id ?? 0);
-                Tamper.Look(agent, Close, Log);
+                Tamper.Look(proxyStarted ? agent : null, Close, Log); // without the pipe the program cannot report
             }
             catch (Exception e) { Log($"ERROR {e.Message}"); } // the loop must never die
             // Wake when the lock screen program ends, not up to a second later: that wait was most of the time the screen
