@@ -104,7 +104,11 @@ sealed class CounterWindow : Form
     {
         try
         {
-            await web.EnsureCoreWebView2Async(await CoreWebView2Environment.CreateAsync(null, viewData));
+            // Right after the last window ended, WebView2 can still hold its data folder for up to 0.4 s, and a start then failed
+            // with "in use" (1 of 60 on ARM, run 45984242073): try again each second for up to 10 s instead of a blank counter.
+            for (var tries = 1; ; tries++)
+                try { await web.EnsureCoreWebView2Async(await CoreWebView2Environment.CreateAsync(null, viewData)); break; }
+                catch (Exception e) when (e.HResult == unchecked((int)0x800700AA) && tries < 10) { Log("WebView2's data folder is in use; trying again"); await Task.Delay(1000); }
             var page = web.CoreWebView2;
             page.ServerCertificateErrorDetected += (_, e) =>
             {
