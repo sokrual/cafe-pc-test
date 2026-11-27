@@ -553,3 +553,17 @@ OWNER DECISIONS (10 Nov 2026)
               a live tail, a copy, type, Microsoft Defender) never made a log busy (run 45938335921). The counter window's
               own logging stays as it is (Kushagra, 27 Nov). New UI test: with the server log held open, a PC login,
               logout and lock screen report all answer 200.
+27 Nov  Known rare test failure, written down (Kushagra, 27 Nov): on the ARM test machine only, Windows' UI search for a
+              counter window ("Gaming Cafe counter" or the alert popup) sometimes ends with "Operation timed out" after
+              about 2 s. Seen 2 times: run 45774955264, and 1 of 120 full UI test rounds (run 45952352139); 0 of 120 on x64.
+              What triggers it is not known. Ruled out: the voice call (at most 5 ms), a window thread busy for 4 s and a
+              program frozen for 4 s (Windows waited in both; runs 45977524780, 45980575952). The counter window does
+              pause on ARM (0.5-2.8 s at start, up to 1.4 s after its first alert; runs 45961172941-45961209542) but the
+              pauses did not explain it. If it shows up: run the job again.
+27 Nov  The counter window tries again when WebView2's data folder is still in use at its start (Kushagra chose this
+              over a test-only change, 27 Nov). Right after the last window ended, WebView2 held the folder for up to
+              0.4 s; a start then failed with "The requested resource is in use" and left the counter screen blank: 4 of
+              120 full UI test rounds on ARM, and 1 of 60 starts right after a kill (run 45984242073; 0 of 60 on x64). The
+              UI search was not the cause. The window now tries again each second for up to 10 s. New UI test: WebView2's
+              lock file held while the window starts (that gave the error 3 of 3 times on both machines, run 45985374232),
+              then let go: the page opens.

@@ -60,6 +60,23 @@ public sealed class CounterTests : IDisposable
         Assert.False(LogText().Contains("counter page opened"), "the page opened with a wrong fingerprint:\n" + LogText());
     }
 
+    // A start while WebView2's data folder is still in use (its lock file held, as when the last window has just ended): the
+    // window tries again and the page opens. Holding the lock file gave "in use" 3 of 3 times on both machines (run 45985374232).
+    [Fact]
+    public void Counter_window_opens_the_page_when_its_WebView2_folder_is_briefly_in_use()
+    {
+        var web = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GamingCafe", "CounterView", "EBWebView");
+        Directory.CreateDirectory(web);
+        var hold = new FileStream(Path.Combine(web, "lockfile"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        try
+        {
+            _counter = Start(Pin);
+            Rig.WaitFor(() => LogText().Contains("in use"), 30, "the window did not meet the busy folder", LogText);
+        }
+        finally { hold.Dispose(); }
+        Rig.WaitFor(() => LogText().Contains("counter page opened"), 60, "the page did not open once the folder was free", LogText);
+    }
+
     // The counter server's log file held open by another program (no sharing): every request still answers truly. Before
     // the fix a PC login answered 500 while the visit had started (run 45939488949).
     [Fact]
