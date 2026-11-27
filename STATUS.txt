@@ -567,7 +567,20 @@ OWNER DECISIONS (10 Nov 2026)
               UI search was not the cause. The window now tries again each second for up to 10 s. New UI test: WebView2's
               lock file held while the window starts (that gave the error 3 of 3 times on both machines, run 45985374232),
               then let go: the page opens.
+27 Nov  Known test machine problem, written down (Kushagra, 27 Nov): GitHub's own helper on the ARM test machine
+              (provjobd.exe) runs "wsl -u root -e ls" about every 90 s. WSL is not installed there, so Windows opens
+              "wsl --update" in a Terminal window, 95 times in 10 runs (run 45996372018). When that window comes in front
+              during a lock screen test, the test fails (4 of 120 ARM rounds). It is the likely trigger of the rare ARM UI
+              search timeout too: ending each prompt as it started made GitHub's helper try again sooner, and that
+              timeout then came 3 times in 20 rounds (runs 46010879351, 46010890849). Stopping the helper hung the job
+              (run 45998561534). A cafe PC never runs that helper; no change. If it shows up: run the job again. Kept for
+              a report to GitHub (project notes).
 27 Nov  The counter window tests search again when Windows' UI search answers "Operation timed out" (Kushagra, 27 Nov):
               up to 5 times, a second apart; a window that never shows up still fails. On GitHub's ARM test machine that
               answer came for a window that was there in 1 of 120 rounds in the morning and 3 of 3 runs that evening
               (run 46018399152); likely caused by GitHub's WSL prompts (entry above). Test change only.
+27 Nov  The screen-taking test allows one more report for each pause of 0.5 s or more in its own switching (Kushagra,
+              27 Nov). It expected exactly 1 report and got 2 in 3 of 60 runs on ARM, each after the test itself paused
+              0.7 to 3.7 s (run 46016213798; 0 of 60 on x64, pauses at most 0.24 s). In a pause the lock screen takes the
+              screen back, so the run ends and the next run is reported again, as the rule says (once per run). With no
+              pause it still demands exactly 1. The product is unchanged.
