@@ -567,3 +567,7 @@ OWNER DECISIONS (10 Nov 2026)
               UI search was not the cause. The window now tries again each second for up to 10 s. New UI test: WebView2's
               lock file held while the window starts (that gave the error 3 of 3 times on both machines, run 45985374232),
               then let go: the page opens.
+27 Nov  The counter window tests search again when Windows' UI search answers "Operation timed out" (Kushagra, 27 Nov):
+              up to 5 times, a second apart; a window that never shows up still fails. On GitHub's ARM test machine that
+              answer came for a window that was there in 1 of 120 rounds in the morning and 3 of 3 runs that evening
+              (run 46018399152); likely caused by GitHub's WSL prompts (entry above). Test change only.

@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
+using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
+using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
 using Xunit;
 
@@ -29,6 +31,20 @@ public sealed class CounterTests : IDisposable
         return new StreamReader(file).ReadToEnd();
     }
 
+    // On GitHub's ARM test machine Windows' UI search sometimes answers "Operation timed out" (0x80131505) for a window that is
+    // there: 1 of 120 rounds on the morning of 27 Nov, 3 of 3 that evening (run 46018399152). Search again, up to 5 times a
+    // second apart; a window that never shows up still fails the test.
+    AutomationElement? FindWindow(string name)
+    {
+        for (var i = 1; ; i++)
+            try { return _rig.Ui.GetDesktop().FindFirstChild(c => c.ByName(name)); }
+            catch (COMException e) when (e.HResult == unchecked((int)0x80131505) && i < 5)
+            {
+                TestContext.Current.TestOutputHelper?.WriteLine($"UI search for '{name}' timed out (try {i}); searching again");
+                Thread.Sleep(1000);
+            }
+    }
+
     Process Start(string pinFile, params string[] more)
     {
         Directory.CreateDirectory(_dir);
@@ -42,7 +58,7 @@ public sealed class CounterTests : IDisposable
     {
         _counter = Start(Pin);
         Rig.WaitFor(() => LogText().Contains("counter page opened"), 60, "the counter window did not open the counter page", LogText);
-        Assert.NotNull(_rig.Ui.GetDesktop().FindFirstChild(c => c.ByName("Gaming Cafe counter")));
+        Assert.NotNull(FindWindow("Gaming Cafe counter"));
 
         using (var again = Start(Pin)) // the desktop icon again: no second program, the running window comes up
         {
@@ -127,7 +143,7 @@ public sealed class CounterTests : IDisposable
                 .Content.ReadFromJsonAsync<Dictionary<string, object?>>().Result!["id"] is { } v ? long.Parse(v.ToString()!) : 0;
             return LogText().Contains("alert: PC1: a pen drive is waiting for an answer.");
         }, 30, "no alert for the waiting pen drive", LogText);
-        var popup = _rig.Ui.GetDesktop().FindFirstChild(c => c.ByName("Gaming Cafe alert"));
+        var popup = FindWindow("Gaming Cafe alert");
         Assert.NotNull(popup);
         Assert.Contains(popup.FindAllDescendants(c => c.ByControlType(ControlType.Text)), t => t.Name.Contains("a pen drive is waiting for an answer"));
         Rig.WaitFor(() => LogText().Contains("voice:"), 20, "the voice was not tried", LogText); // CI has no sound device: "could not speak" is fine
