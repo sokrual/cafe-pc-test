@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http.Json;
 using System.Text.RegularExpressions;
 using FlaUI.Core.Definitions;
@@ -57,6 +58,29 @@ public sealed class CounterTests : IDisposable
         Rig.WaitFor(() => LogText().Contains("counter page did not open"), 60, "with a wrong fingerprint the window did not report a refusal", LogText);
         Assert.True(LogText().Contains("refused a certificate that is not the counter's"), "no refusal in the counter window's log:\n" + LogText());
         Assert.False(LogText().Contains("counter page opened"), "the page opened with a wrong fingerprint:\n" + LogText());
+    }
+
+    // The counter server's log file held open by another program (no sharing): every request still answers truly. Before
+    // the fix a PC login answered 500 while the visit had started (run 45939488949).
+    [Fact]
+    public void Server_answers_truly_while_its_log_file_is_busy()
+    {
+        var key = File.ReadAllText(Path.Combine(_rig.Data, "pc1.token")).Trim();
+        HttpResponseMessage Pc(HttpMethod method, string path, object? body = null)
+        {
+            using var m = new HttpRequestMessage(method, path) { Content = body is null ? null : JsonContent.Create(body) };
+            m.Headers.Add("X-Pc-Token", key);
+            m.Headers.Add("X-Pc-Bind", "counter-test-bind-0123456789");
+            return _rig.Http.Send(m);
+        }
+        Assert.Equal(HttpStatusCode.OK, Pc(HttpMethod.Get, "/pc/state").StatusCode);
+        var log = Directory.GetFiles(Path.Combine(_rig.Data, "logs"), "server-*.log").Single();
+        using (new FileStream(log, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            Assert.Equal(HttpStatusCode.OK, Pc(HttpMethod.Post, "/pc/login", new { phone = "9000000003", pin = "2222" }).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, Pc(HttpMethod.Post, "/pc/logout").StatusCode);
+            Assert.Equal(HttpStatusCode.OK, Pc(HttpMethod.Post, "/pc/tamper", new { what = "stuck", locked = false }).StatusCode);
+        }
     }
 
     [Fact]
