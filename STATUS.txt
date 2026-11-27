@@ -535,3 +535,14 @@ OWNER DECISIONS (10 Nov 2026)
               Not measured: a real cafe PC (stalls with a hard disk, games, anti-cheat looking at other programs'
               threads); "set context" used to run code (only the right was opened); a program frozen before its first
               report is not caught (other programs cannot freeze it since change 1).
+26 Nov  Counter window UI tests: they now read the window's log without blocking its writes (test change only). The
+              window drops a log line when its log file is busy, and the tests' reads kept it busy: on ARM the certificate
+              test lost its "refused a certificate" line once (run 45814542587, attempt 1). Measured on the throwaway branch
+              measure/counter-flake: lost lines or a read error in 6 of 90 rounds on ARM (run 45844004839), 0 of 180 rounds
+              on both machines with the new read (run 45845923283). Ruled out on the way: a WebView2 folder still in use
+              after a kill (120 of 120 immediate restarts started, run 45840617123). Not explained: the UI Automation
+              timeout of run 45774955264 (seen once; not seen in the 84 runs of the test while measuring).
+              Also, lockdown on ARM (run 45847883890): B3.I1 found Cafe.Counter.exe left after the gaming PC uninstall. The
+              counter window that kept it in use was opened by INSTALL-ADMIN's update run after A.C2 (explorer.exe, 2 s
+              after that run ended); the test machine is the counter PC too. Lockdown now closes it, and its
+              start-with-Windows icon, right before the gaming PC uninstall. Not proven by a proof run (a timing race).
