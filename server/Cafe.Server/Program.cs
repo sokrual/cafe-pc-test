@@ -12,7 +12,9 @@ using Cafe;
 var data = Arg("--data") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Cafe");
 Directory.CreateDirectory(Path.Combine(data, "logs"));
 AdminsOnly(data);
-void Log(string line) { lock (data) File.AppendAllText(Path.Combine(data, "logs", $"server-{DateTime.Now:yyyyMMdd}.log"), $"{DateTime.Now:HH:mm:ss} {line}{Environment.NewLine}"); }
+// A busy log file costs the line, never the request: before this, a PC login answered 500 while the visit had started
+// (measured with the log held open, run 45939488949). The other three programs already skip the line.
+void Log(string line) { lock (data) try { File.AppendAllText(Path.Combine(data, "logs", $"server-{DateTime.Now:yyyyMMdd}.log"), $"{DateTime.Now:HH:mm:ss} {line}{Environment.NewLine}"); } catch (IOException) { } }
 
 using var cafe = new CafeCore(Path.Combine(data, "cafe.db"), DbKey(data), log: Log);
 var diskProtection = new CounterDiskProtection();
