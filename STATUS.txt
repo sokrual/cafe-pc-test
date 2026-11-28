@@ -589,3 +589,10 @@ OWNER DECISIONS (10 Nov 2026)
               port 5443. On 27 Nov the pair came 4 times in about 150 x64 UI jobs (a started program did nothing for
               30-60 s); on 28 Nov 0 of 60 x64 rounds, with about 19,700 small program starts timed, the slowest 2.9 s
               (runs 46100444794-46100456123, 46105819559-46105830679). Cause not known yet. Test change only.
+28 Nov  The watchdog counts a lock screen program's end even when it came while the watchdog was busy (Kushagra chose
+              this product fix, 28 Nov). It noticed an end only while waiting on the program; an end during the rest of
+              its loop (here its first turn, which also tells the counter "setup mode off") showed up only as no program
+              running, so it started a new one without counting the end. The "ended 3 times within a minute" rule then
+              undercounted: 1 of 30 runs of its test on x64, 0 of 30 on ARM (run 46124094235). Now, before starting a
+              new program because none is running, it counts the end of the one it last watched; one already counted is
+              skipped. Setup mode, clean-ups and the watchdog's own restarts stay excluded as before.

@@ -229,6 +229,9 @@ static class Watchdog
                 if (!File.Exists(setup) && ActiveSession() is uint s && (agent = Process.GetProcessesByName(exe).FirstOrDefault(p => p.SessionId == s && Native.PathOf(p) == path)) is null)
                 {
                     if (s != watched) { (watched, trusted) = (s, sid is null ? [] : Wipe.Trusted(sid)); Log($"session {s}: {trusted.Count} Windows programs kept at logout"); }
+                    // An end while this loop was busy elsewhere, not waiting on the program below, shows up only as no program
+                    // running: count it now (it was missed in 1 of 30 runs of the 3-ends test, run 46124094235).
+                    if (PcProxy.WatchedAgent != 0) Tamper.Ended((int)PcProxy.WatchedAgent, false, Close, Log);
                     var pid = Start(s, line);
                     Log(pid is not null ? $"started {exe} in session {s} (pid {pid})" : $"could not start {exe} in session {s}: error {Marshal.GetLastWin32Error()}");
                     if (pid is int started) agent = Process.GetProcessById(started);
