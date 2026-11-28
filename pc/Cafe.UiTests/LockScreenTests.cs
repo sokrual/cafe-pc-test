@@ -1291,9 +1291,11 @@ sealed class Rig : IDisposable
     {
         var took = Stopwatch.StartNew();
         using var netstat = Process.Start(new ProcessStartInfo("netstat.exe", "-ano -p tcp") { UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true })!;
-        var port = string.Join("; ", netstat.StandardOutput.ReadToEnd().Split('\n').Where(l => l.Contains(":5443 ")).Select(l => l.Trim()));
-        var state = p is null ? "none" : p.HasExited ? $"ended, exit code {p.ExitCode}" : $"still running after {(DateTime.Now - p.StartTime).TotalSeconds:F0} s";
-        return $"the program: {state}; netstat took {took.ElapsedMilliseconds} ms; port 5443: {(port.Length == 0 ? "free" : port)}";
+        var owners = netstat.StandardOutput.ReadToEnd().Split('\n').Where(l => l.Contains(":5443 ") && l.Contains("LISTENING"))
+            .Select(l => int.Parse(l.Split(' ', StringSplitOptions.RemoveEmptyEntries)[^1])).Distinct()
+            .Select(pid => { try { return $"{pid} {Process.GetProcessById(pid).ProcessName}"; } catch (ArgumentException) { return $"{pid} (gone)"; } });
+        var state = p is null ? "none" : p.HasExited ? $"ended, exit code {p.ExitCode}" : $"process {p.Id} still running after {(DateTime.Now - p.StartTime).TotalSeconds:F0} s";
+        return $"the program: {state}; netstat took {took.ElapsedMilliseconds} ms; port 5443 listened on by: {string.Join(", ", owners.DefaultIfEmpty("nobody"))}";
     }
 
     public static void WaitFor(Func<bool> ok, int seconds, string why, Func<string>? more = null)
