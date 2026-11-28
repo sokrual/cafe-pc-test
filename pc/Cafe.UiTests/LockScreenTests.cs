@@ -183,7 +183,7 @@ public sealed class LockScreenTests : IDisposable
                 "-NoProfile -Command \"Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition 'public class F : System.Windows.Forms.Form { protected override bool ShowWithoutActivation { get { return true; } } protected override System.Windows.Forms.CreateParams CreateParams { get { var p = base.CreateParams; p.ExStyle |= 0x08000008; return p; } } }'; $f = New-Object F; $f.Text = 'TopMost-attempt'; $f.Width = 400; $f.Height = 300; [System.Windows.Forms.Application]::Run($f)\"")
                 { UseShellExecute = false, CreateNoWindow = true })!;
             var top = IntPtr.Zero;
-            Rig.WaitFor(() => (top = Rig.FindWindow(null, "TopMost-attempt")) != IntPtr.Zero, 30, "the always-on-top test window never opened");
+            Rig.WaitFor(() => (top = Rig.FindWindow(null, "TopMost-attempt")) != IntPtr.Zero, 30, "the always-on-top test window never opened", () => Rig.StartFacts(other));
             Thread.Sleep(2000);
             // window handles only: UI Automation can time out while another program starts. Windows' own system dialogs
             // sit in a layer above every program; E3 (the lock screen on its own desktop) is for those.
@@ -1125,7 +1125,7 @@ sealed class Rig : IDisposable
         _server.Start(); _server.BeginOutputReadLine(); _server.BeginErrorReadLine();
         try
         {
-            WaitFor(() => File.Exists(Path.Combine(Data, "server.pin")) && Ping(), 60, "server did not start", () => _serverLog.ToString());
+            WaitFor(() => File.Exists(Path.Combine(Data, "server.pin")) && Ping(), 60, "server did not start", () => $"{StartFacts(_server)}\n{_serverLog}");
             Directory.CreateDirectory(_pcDir);
             File.Copy(Path.Combine(Data, "pc1.token"), Path.Combine(_pcDir, "pc.token"), true);
             File.Copy(Path.Combine(Data, "server.pin"), Path.Combine(_pcDir, "server.pin"), true);
@@ -1284,6 +1284,17 @@ sealed class Rig : IDisposable
 
     public static string Env(string name) => Environment.GetEnvironmentVariable(name) ?? throw new InvalidOperationException($"set {name}");
     public static void Kill(Process? p) { ToNormalDesktop(); try { if (p is { HasExited: false }) { p.Kill(true); p.WaitForExit(5000); } } catch (InvalidOperationException) { } }
+
+    // What a "did not start" failure needs to explain itself (4 times on GitHub's x64 machine on 27 Nov, 0 in 60 rounds on
+    // 28 Nov, cause unknown): did the program end, how long a small program takes to run now, and who holds the server's port.
+    public static string StartFacts(Process? p)
+    {
+        var took = Stopwatch.StartNew();
+        using var netstat = Process.Start(new ProcessStartInfo("netstat.exe", "-ano -p tcp") { UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true })!;
+        var port = string.Join("; ", netstat.StandardOutput.ReadToEnd().Split('\n').Where(l => l.Contains(":5443 ")).Select(l => l.Trim()));
+        var state = p is null ? "none" : p.HasExited ? $"ended, exit code {p.ExitCode}" : $"still running after {(DateTime.Now - p.StartTime).TotalSeconds:F0} s";
+        return $"the program: {state}; netstat took {took.ElapsedMilliseconds} ms; port 5443: {(port.Length == 0 ? "free" : port)}";
+    }
 
     public static void WaitFor(Func<bool> ok, int seconds, string why, Func<string>? more = null)
     {
