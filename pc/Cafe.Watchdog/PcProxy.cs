@@ -142,9 +142,9 @@ static class PcProxy
             _http = client;
             var listeningPipe = firstPipe;
             firstPipe = null;
-            // TEST BRANCH ONLY: hold every worker thread 4 s of every 7 s, like thread-pool starvation
+            // TEST BRANCH ONLY: hold every worker thread 6 s of every 7 s, like thread-pool starvation
             ThreadPool.SetMaxThreads(Environment.ProcessorCount, Environment.ProcessorCount);
-            new Thread(() => { while (true) { Thread.Sleep(3000); for (var i = 0; i < Environment.ProcessorCount; i++) ThreadPool.QueueUserWorkItem(_ => Thread.Sleep(4000)); Thread.Sleep(4000); } }) { IsBackground = true }.Start();
+            new Thread(() => { while (true) { Thread.Sleep(1000); for (var i = 0; i < Environment.ProcessorCount; i++) ThreadPool.QueueUserWorkItem(_ => Thread.Sleep(6000)); Thread.Sleep(6000); } }) { IsBackground = true }.Start();
             for (var i = 1; i < 4; i++) _ = Task.Run(() => Listen(clientSid, stop), CancellationToken.None); // OPTION D: 4 listening points
             try { _ = Task.Run(() => Listen(clientSid, stop, listeningPipe), CancellationToken.None); }
             catch
