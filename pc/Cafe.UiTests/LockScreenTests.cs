@@ -506,7 +506,7 @@ public sealed class OfflineLockTests
                 Part(screen, "OfflineUnlockSubmit").AsButton().Invoke();
                 var expected = i == 2 ? "10 minutes" : "Wrong phone number or code";
                 Rig.WaitFor(() => Part(screen, "Error").Name.Contains(expected, StringComparison.OrdinalIgnoreCase),
-                    10, "wrong offline code was not rejected");
+                    10, "wrong offline code was not rejected", () => $"attempt {i + 1}; the screen says '{Part(screen, "Error").Name}'");
             }
             Rig.WaitFor(() => Part(screen, "Error").Name.Contains("10 minutes", StringComparison.OrdinalIgnoreCase), 10,
                 "third wrong code did not pause offline unlock for ten minutes");

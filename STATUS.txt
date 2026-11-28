@@ -596,3 +596,11 @@ OWNER DECISIONS (10 Nov 2026)
               undercounted: 1 of 30 runs of its test on x64, 0 of 30 on ARM (run 46124094235). Now, before starting a
               new program because none is running, it counts the end of the one it last watched; one already counted is
               skipped. Setup mode, clean-ups and the watchdog's own restarts stay excluded as before.
+28 Nov  "Wrong offline code was not rejected" now says which attempt failed and what the lock screen said (Kushagra,
+              28 Nov). Seen once (27 Nov, x64); 0 of 200 runs of that test since (runs 46131834648, 46169410463). The lock
+              screen had logged "The watchdog is not reachable" 6 s before that failure, so the likely cause is the lock
+              screen briefly losing the watchdog's pipe (the watchdog keeps one listening pipe, and its blocking network
+              calls can stall it). Tried on test branches with the watchdog's worker threads held 4 or 6 s of every 7 s:
+              today's code failed 2 of 20 and 0 of 20; four listening pipes 0 of 20 and 1 of 20; a 10 s connect wait 0 of
+              20 and 0 of 20 (runs 46169382662-46170336806). That did not reliably reproduce it, so no product change yet;
+              the new message named the screen text in every forced failure. Test change only.
