@@ -17,7 +17,7 @@ sealed class WatchdogPipeClient
         try
         {
             using var pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
-            await pipe.ConnectAsync(3000);
+            await pipe.ConnectAsync(10000); // OPTION F
             using var reader = new StreamReader(pipe, Encoding.UTF8, false, 4096, true);
             using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true) { AutoFlush = true };
             var request = new Request(method.Method, path, body is null ? null : JsonSerializer.Serialize(body));
