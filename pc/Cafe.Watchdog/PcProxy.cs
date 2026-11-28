@@ -145,6 +145,7 @@ static class PcProxy
             // TEST BRANCH ONLY: hold every worker thread 4 s of every 7 s, like thread-pool starvation
             ThreadPool.SetMaxThreads(Environment.ProcessorCount, Environment.ProcessorCount);
             new Thread(() => { while (true) { Thread.Sleep(3000); for (var i = 0; i < Environment.ProcessorCount; i++) ThreadPool.QueueUserWorkItem(_ => Thread.Sleep(4000)); Thread.Sleep(4000); } }) { IsBackground = true }.Start();
+            for (var i = 1; i < 4; i++) _ = Task.Run(() => Listen(clientSid, stop), CancellationToken.None); // OPTION D: 4 listening points
             try { _ = Task.Run(() => Listen(clientSid, stop, listeningPipe), CancellationToken.None); }
             catch
             {
