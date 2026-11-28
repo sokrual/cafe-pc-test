@@ -876,15 +876,20 @@ public sealed class WatchdogTests : IDisposable
             int Told() => _rig.Review(staff).Count(t => t.EndsWith(" PC1: another program kept taking the screen from the lock screen; the Customer's programs were closed"));
             Assert.Equal(0, Told());
             var watch = Stopwatch.StartNew();
+            // A pause of 0.5 s in this test's own switching lets the lock screen take the screen back, so that run ends and the
+            // next one is reported again, as the rule says. Only on GitHub's ARM machine: 3 of 60 runs of this test, each after a
+            // pause of 0.7 to 3.7 s (run 46016213798; x64 at most 0.24 s).
+            var gap = Stopwatch.StartNew(); var pauses = 0;
+            void Switch() { if (gap.ElapsedMilliseconds >= 500) pauses++; gap.Restart(); Rig.SwitchToNormalDesktop(); }
             while (Told() == 0 && watch.Elapsed < TimeSpan.FromSeconds(15))
-                for (var burst = Stopwatch.StartNew(); burst.ElapsedMilliseconds < 500; Thread.Sleep(5)) Rig.SwitchToNormalDesktop();
+                for (var burst = Stopwatch.StartNew(); burst.ElapsedMilliseconds < 500; Thread.Sleep(5)) Switch();
             var told = watch.Elapsed.TotalSeconds;
-            for (var more = Stopwatch.StartNew(); more.Elapsed < TimeSpan.FromSeconds(3); Thread.Sleep(5)) Rig.SwitchToNormalDesktop(); // the same run goes on
+            for (var more = Stopwatch.StartNew(); more.Elapsed < TimeSpan.FromSeconds(3); Thread.Sleep(5)) Switch(); // the same run goes on
             var back = Stopwatch.StartNew();
             while (!Rig.InputDesktop().StartsWith($"CafeLock-{agent!.Id}-") && back.Elapsed < TimeSpan.FromSeconds(5)) Thread.Sleep(10);
-            TestContext.Current.TestOutputHelper?.WriteLine($"SCREEN reported after {told:F1} s of switching; the lock screen had the screen again {back.Elapsed.TotalSeconds:F2} s after it stopped");
+            TestContext.Current.TestOutputHelper?.WriteLine($"SCREEN reported after {told:F1} s of switching; the lock screen had the screen again {back.Elapsed.TotalSeconds:F2} s after it stopped; pauses of 0.5 s or more in the switching: {pauses}");
             Assert.True(told < 10, $"not reported within 10 s of switching ({told:F1} s)");
-            Assert.Equal(1, Told());
+            if (pauses == 0) Assert.Equal(1, Told()); else Assert.InRange(Told(), 1, 1 + pauses);
             Assert.StartsWith($"CafeLock-{agent.Id}-", Rig.InputDesktop());
         }
         catch
