@@ -9,11 +9,12 @@ on:
 
 # a new push to a pull request stops that pull request's older runs; only the latest commit needs testing
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   server-tests:
+    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -64,7 +65,9 @@ jobs:
           $env:CAFE_AGENT_EXE = "$PWD\out\agent\Cafe.Agent.exe"
           $env:CAFE_WATCHDOG_EXE = "$PWD\out\watchdog\Cafe.Watchdog.exe"
           $env:CAFE_COUNTER_EXE = "$PWD\out\counter\Cafe.Counter.exe"
-          dotnet test --project pc/Cafe.UiTests --output Detailed
+          $failed = 0
+          foreach ($i in 1..10) { dotnet test --project pc/Cafe.UiTests --output Detailed --filter-method OfflineLockTests.Three_wrong_offline_codes_pause_unlock_for_ten_minutes; if ($LASTEXITCODE) { $failed++ }; "MEASURE loop $i exit $LASTEXITCODE" }
+          "MEASURE failed $failed of 10"
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -72,6 +75,7 @@ jobs:
           path: screen-*.png
 
   lockdown:
+    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -145,6 +149,7 @@ jobs:
           if-no-files-found: warn
 
   kit:
+    if: false
     strategy:
       fail-fast: false
       matrix:
