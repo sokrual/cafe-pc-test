@@ -503,10 +503,14 @@ public sealed class OfflineLockTests
                 Part(screen, "StaffPhone").AsTextBox().Text = "9000000002";
                 Part(screen, "StaffCode").AsTextBox().Text = wrong;
                 Part(screen, "Minutes").AsTextBox().Text = "30";
+                var enabled = Part(screen, "OfflineUnlockSubmit").IsEnabled;
+                var took = Stopwatch.StartNew();
                 Part(screen, "OfflineUnlockSubmit").AsButton().Invoke();
                 var expected = i == 2 ? "10 minutes" : "Wrong phone number or code";
                 Rig.WaitFor(() => Part(screen, "Error").Name.Contains(expected, StringComparison.OrdinalIgnoreCase),
-                    10, "wrong offline code was not rejected");
+                    10, "wrong offline code was not rejected", () => $"attempt {i + 1}; button enabled before {enabled}; error now '{Part(screen, "Error").Name}'; code box '{Part(screen, "StaffCode").AsTextBox().Text}'");
+                var line = $"OC attempt {i + 1} answered in {took.ElapsedMilliseconds} ms: '{Part(screen, "Error").Name}' (button enabled before {enabled})";
+                Console.WriteLine(line); TestContext.Current.TestOutputHelper?.WriteLine(line);
             }
             Rig.WaitFor(() => Part(screen, "Error").Name.Contains("10 minutes", StringComparison.OrdinalIgnoreCase), 10,
                 "third wrong code did not pause offline unlock for ten minutes");
