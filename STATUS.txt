@@ -584,3 +584,8 @@ OWNER DECISIONS (10 Nov 2026)
               0.7 to 3.7 s (run 46016213798; 0 of 60 on x64, pauses at most 0.24 s). In a pause the lock screen takes the
               screen back, so the run ends and the next run is reported again, as the rule says (once per run). With no
               pause it still demands exactly 1. The product is unchanged.
+28 Nov  "Server did not start" and "the always-on-top test window never opened" now say why (Kushagra, 28 Nov): whether
+              the program had ended and its exit code, how long a netstat run took at that moment, and which program held
+              port 5443. On 27 Nov the pair came 4 times in about 150 x64 UI jobs (a started program did nothing for
+              30-60 s); on 28 Nov 0 of 60 x64 rounds, with about 19,700 small program starts timed, the slowest 2.9 s
+              (runs 46100444794-46100456123, 46105819559-46105830679). Cause not known yet. Test change only.
