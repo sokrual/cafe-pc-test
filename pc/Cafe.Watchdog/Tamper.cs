@@ -12,7 +12,7 @@ static class Tamper
 {
     const long Limit = 15_000; // the worst stall of the whole PC measured under full load was 9.1 s
     static long _aliveAt, _oldest, _lastLook, _stallAt, _quietUntil;
-    static int _killed, _reporter;
+    static int _killed, _reporter, _ended;
     static volatile int _locked = -1; // the counter's last word: 1 locked, 0 unlocked, -1 nothing heard yet
     static readonly Queue<long> Ends = new();
     static readonly ConcurrentQueue<(string What, bool Locked)> Unsent = new();
@@ -78,6 +78,9 @@ static class Tamper
     public static void Ended(int pid, bool inSetup, Func<int> closeCustomerPrograms, Action<string> log)
     {
         var now = Environment.TickCount64;
+        if (pid == _ended) return; // already counted: the loop can see one end twice. shortcut: a next program given the same
+        // process id by Windows would not be counted; Windows rarely reuses an id that fast, revisit if a 3-ends report goes missing
+        _ended = pid;
         if (pid == _killed || pid != _reporter || inSetup || now < _quietUntil || !Locked) return; // only a program that reported
         Ends.Enqueue(now);
         while (Ends.Peek() < now - 60_000) Ends.Dequeue();
